@@ -14,7 +14,7 @@ from matplotlib.animation import FFMpegWriter
 
 from . import utils
 from .assets import AssetContainer
-from .core import VideoBrowser
+from .videos import VideoBrowser
 from .opticalflow import lucas_kanade, lucas_kanade_rstc
 
 
