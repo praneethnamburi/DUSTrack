@@ -19,11 +19,13 @@ from .opticalflow import lucas_kanade, lucas_kanade_rstc
 
 
 class VideoPointAnnotator(VideoBrowser):
-    """Add point annotations to videos.
+    """
+    Add point annotations to videos.
+    
     Use arrow keys to navigate frames.
     Select a 'label category' from 0 to 9 by pressing the corresponding number key.
     Point your mouse at a desired location in the video and press the forward slash / button to add a point annotation.
-    When you're done, press 's' to save your work, which will create a '<video name>_annotatoins.json' file in the same folder as the video file.
+    When you're done, press 's' to save your work, which will create a '<video name>_annotations.json' file in the same folder as the video file.
     These annotations will be automagically loaded when you try to annotate this file again.
 
     If you're doing one label at a time, then pick the frames for the first label arbitrarily.
@@ -828,30 +830,30 @@ class VideoPointAnnotator(VideoBrowser):
 
 
 class VideoAnnotation:
-    """Manage one point annotation layer in a video.
-    Each annotation layer can contain up to 10 labels, the string representations of digits 0-9.
+    """
+    Manage one point annotation layer in a video.
+
+    Each annotation layer can contain up to 10 labels, which are string representations of digits 0-9.
     Each label is a dictionary mapping a frame number to a 2D location on the video frame.
 
     Args:
         fname (str, optional): File name of the annotations (.json) file. If it
-            doesn't exist, it will be created when save method is used. If this is a
-            video file, fname will default to <video_name>_annotations.json.
-            This can also be a deeplabcut .h5 file (either labeled data OR predicted trace)
+            doesn't exist, it will be created when the save method is used. If this is a
+            video file, `fname` will default to `<video_name>_annotations.json`.
+            This can also be a DeepLabCut `.h5` file (either labeled data OR predicted trace).
             Defaults to None.
-
         vname (str, optional): Name of the video being annotated. Defaults to None.
-
-        name (str, optional): Name of the annotation (something meaningful, for example <muscle_name>_<scorer> brachialis_praneeth)
-
-        kwargs (dict, optional):
-            palette_name = 'Set2'. Color scheme to use. Defaults to 'Set2' from seaborn.
-            ax_list = []. If ax_list is specified, then the annotation display will be initialized at those axes.
-                Alternatively, use :py:meth:`VideoAnnotation.setup_display` to specify the axis list and colors.
-            preloaded_json: the result of VideoAnnotation._load_json (in case you prefer to pickle the json files).
+        name (str, optional): Name of the annotation (something meaningful, e.g., `<muscle_name>_<scorer>` 
+            such as `brachialis_praneeth`). Defaults to None.
+        **kwargs: Additional optional parameters:
+            - `palette_name` (str, default='Set2'): Color scheme to use. Defaults to 'Set2' from seaborn.
+            - `ax_list` (list, default=[]): If specified, the annotation display will be initialized on these axes.
+            Alternatively, use :py:meth:`VideoAnnotation.setup_display` to specify the axis list and colors.
+            - `preloaded_json` (dict, optional): The result of `VideoAnnotation._load_json` (in case you prefer 
+            to pickle the JSON files).
 
     Methods:
-        to_dlc: Convert from json file format into a deeplabcut dataframe format, and optionally save the file.
-
+        to_dlc(): Convert from JSON file format into a DeepLabCut DataFrame format, and optionally save the file.
     """
 
     def __init__(
