@@ -931,8 +931,7 @@ class VideoAnnotation:
                 # Try to find the video in the same folder
                 vname_potential = os.path.join(
                     Path(fname_inp).parent,
-                    Path(fname_inp)
-                    .stem.removesuffix("_annotations")
+                    utils.removesuffix(Path(fname_inp), "_annotations")
                     .split("_annotations_")[0]
                     + ".mp4",
                 )
@@ -992,19 +991,19 @@ class VideoAnnotation:
     ):
         """Convert dlc labeled data dataframe to an annotation dictionary"""
         if False in [
-            x.removeprefix(remove_label_prefix).isdigit() for x in df.columns.levels[1]
+            utils.removeprefix(x, remove_label_prefix).isdigit() for x in df.columns.levels[1]
         ]:
             label_orig_to_internal = {
                 x: str(xcnt) for xcnt, x in enumerate(df.columns.levels[1].tolist())
             }
         else:
             label_orig_to_internal = {
-                x: x.removeprefix(remove_label_prefix)
+                x: utils.removeprefix(x, remove_label_prefix)
                 for x in df.columns.levels[1].tolist()
             }
 
         frames_str = [
-            x.removeprefix(img_prefix).removesuffix(img_suffix)
+            utils.removesuffix(utils.removeprefix(x, img_prefix), img_suffix)
             for x in df.index.levels[-1]
         ]
 
@@ -1031,14 +1030,14 @@ class VideoAnnotation:
     def _dlc_trace_to_annotation_dict(df, remove_label_prefix="point"):
         """Convery dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary."""
         if False in [
-            x.removeprefix(remove_label_prefix).isdigit() for x in df.columns.levels[1]
+            utils.removeprefix(x, remove_label_prefix).isdigit() for x in df.columns.levels[1]
         ]:
             label_orig_to_internal = {
                 x: str(xcnt) for xcnt, x in enumerate(df.columns.levels[1].tolist())
             }
         else:
             label_orig_to_internal = {
-                x: x.removeprefix(remove_label_prefix)
+                x: utils.removeprefix(x, remove_label_prefix)
                 for x in df.columns.levels[1].tolist()
             }
         frames = df.index.values
