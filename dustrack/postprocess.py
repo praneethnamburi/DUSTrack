@@ -102,7 +102,14 @@ def compute_sigmoid_weights(n_frames: int, epsilon: float = 0.01) -> tuple[np.nd
     return sigmoid_forward, sigmoid_reverse
 
 
-def lucas_kanade_rstc_2(frame_list: list, start_points: np.ndarray, end_points: np.ndarray, **lk_config) -> np.ndarray:
+def lucas_kanade_rstc_2(
+    frame_list: list,
+    start_points: np.ndarray,
+    end_points: np.ndarray,
+    sigmoid_forward: np.ndarray = None,
+    sigmoid_reverse: np.ndarray = None,
+    **lk_config,
+) -> np.ndarray:
     """
     Apply reverse sigmoid tracking correction (RSTC) to improve tracking accuracy.
 
@@ -110,6 +117,8 @@ def lucas_kanade_rstc_2(frame_list: list, start_points: np.ndarray, end_points: 
         frame_list (list): List of video frames.
         start_points (np.ndarray): Starting points for tracking, with shape (n_points, 2).
         end_points (np.ndarray): Ending points for tracking, with shape (n_points, 2).
+        sigmoid_forward (np.ndarray, optional): Precomputed forward sigmoid weights.
+        sigmoid_reverse (np.ndarray, optional): Precomputed reverse sigmoid weights.
         **lk_config: Additional configuration for the Lucas-Kanade algorithm.
 
     Returns:
@@ -120,7 +129,9 @@ def lucas_kanade_rstc_2(frame_list: list, start_points: np.ndarray, end_points: 
     assert forward_path.shape == reverse_path.shape
     n_frames, n_points = forward_path.shape[:2]
 
-    sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_frames)
+    # Compute sigmoid weights if not provided
+    if sigmoid_forward is None or sigmoid_reverse is None:
+        sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_frames)
 
     s_f = np.broadcast_to(sigmoid_forward[:, np.newaxis, np.newaxis], (n_frames, n_points, 2))
     s_r = np.broadcast_to(sigmoid_reverse[:, np.newaxis, np.newaxis], (n_frames, n_points, 2))
@@ -160,12 +171,21 @@ def lk_moving_average_filter(tracked_points: Union[str, VideoAnnotation], video_
         n_window_frames = round(window_size * video.get_avg_fps())
         video_frame_buffer = deque([gray(f) for f in video[:n_window_frames - 1].asnumpy()], maxlen=n_window_frames)
 
+        # Precompute sigmoid weights for the given window size
+        sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_window_frames)
+
         rstc_paths = np.full((n_window_frames, ann.n_frames, len(label_list), 2), np.nan)
         for cnt, (start_frame, end_frame) in tqdm(enumerate(zip(frame_list, frame_list[n_window_frames - 1:]))):
             video_frame_buffer.append(gray(video[end_frame].asnumpy()))
             start_points = [ann.data[label][start_frame] for label in label_list]
             end_points = [ann.data[label][end_frame] for label in label_list]
-            rstc_path = lucas_kanade_rstc_2(list(video_frame_buffer), start_points, end_points)
+            rstc_path = lucas_kanade_rstc_2(
+                list(video_frame_buffer),
+                start_points,
+                end_points,
+                sigmoid_forward=sigmoid_forward,
+                sigmoid_reverse=sigmoid_reverse,
+            )
 
             # Ensure the shape of rstc_path matches the slice of rstc_paths
             n_frames_in_path = rstc_path.shape[0]
@@ -187,3 +207,9 @@ def lk_moving_average_filter(tracked_points: Union[str, VideoAnnotation], video_
         ann_processed.save()
 
     return VideoAnnotation(fname_processed, ann.video.fname)
+
+if __name__ == "__main__":
+    ann = VideoAnnotation(
+        r"S:\2201000537 - Operator\data_opr02\004_02\ml_models\dlc\gt_9pt_t010-s15lk-2025-03-30\videos\iteration-0\opr02_s004_t010_us_b_009DLC_resnet50_gt_9pt_t010Mar30shuffle1_450000.h5",
+        r"S:\2201000537 - Operator\data_opr02\004_02\ml_models\dlc\gt_9pt_t010-s15lk-2025-03-30\videos\opr02_s004_t010_us_b_009.mp4"
+        )
