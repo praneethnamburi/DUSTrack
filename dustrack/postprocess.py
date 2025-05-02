@@ -261,9 +261,3 @@ def lk_moving_average_filter(
         ann_processed.save()
 
     return VideoAnnotation(fname_processed, ann.video.fname)
-
-if __name__ == "__main__":
-    ann = VideoAnnotation(
-        r"S:\2201000537 - Operator\data_opr02\004_02\ml_models\dlc\gt_9pt_t010-s15lk-2025-03-30\videos\iteration-0\opr02_s004_t010_us_b_009DLC_resnet50_gt_9pt_t010Mar30shuffle1_450000.h5",
-        r"S:\2201000537 - Operator\data_opr02\004_02\ml_models\dlc\gt_9pt_t010-s15lk-2025-03-30\videos\opr02_s004_t010_us_b_009.mp4"
-        )
