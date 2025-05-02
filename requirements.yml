@@ -1,0 +1,14 @@
+name: dustrack
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python>=3.7
+  - pip
+  - numpy
+  - opencv
+  - dill
+  - tqdm
+  - pip:
+    - opencv-contrib-python
+    - datanavigator
