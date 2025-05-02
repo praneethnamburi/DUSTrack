@@ -22,6 +22,7 @@ import os
 from typing import Union
 from pathlib import Path
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import dill
 import cv2 as cv
@@ -140,7 +141,25 @@ def lucas_kanade_rstc_2(
     return rstc_path
 
 
-def lk_moving_average_filter(tracked_points: Union[str, VideoAnnotation], video_name: str = None, window_size: float = 0.5) -> VideoAnnotation:
+def process_window(video_frame_buffer, start_points, end_points, sigmoid_forward, sigmoid_reverse):
+    """
+    Process a single window of frames for RSTC.
+    """
+    return lucas_kanade_rstc_2(
+        list(video_frame_buffer),
+        start_points,
+        end_points,
+        sigmoid_forward=sigmoid_forward,
+        sigmoid_reverse=sigmoid_reverse,
+    )
+
+
+def lk_moving_average_filter(
+    tracked_points: Union[str, VideoAnnotation],
+    video_name: str = None,
+    window_size: float = 0.5,
+    use_parallel: bool = True,
+) -> VideoAnnotation:
     """
     Post-process video annotations using the Lucas-Kanade optical flow algorithm with a moving average.
 
@@ -148,6 +167,7 @@ def lk_moving_average_filter(tracked_points: Union[str, VideoAnnotation], video_
         tracked_points (Union[str, VideoAnnotation]): Path to a tracked points file or a VideoAnnotation object.
         video_name (str, optional): Name of the video file. Required if `tracked_points` is a file path.
         window_size (float, optional): Time window (in seconds) for applying the moving average. Defaults to 0.5.
+        use_parallel (bool, optional): Whether to use parallel processing. Defaults to True.
 
     Returns:
         VideoAnnotation: Processed video annotation with smoothed tracking data.
@@ -175,21 +195,55 @@ def lk_moving_average_filter(tracked_points: Union[str, VideoAnnotation], video_
         sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_window_frames)
 
         rstc_paths = np.full((n_window_frames, ann.n_frames, len(label_list), 2), np.nan)
-        for cnt, (start_frame, end_frame) in tqdm(enumerate(zip(frame_list, frame_list[n_window_frames - 1:]))):
-            video_frame_buffer.append(gray(video[end_frame].asnumpy()))
-            start_points = [ann.data[label][start_frame] for label in label_list]
-            end_points = [ann.data[label][end_frame] for label in label_list]
-            rstc_path = lucas_kanade_rstc_2(
-                list(video_frame_buffer),
-                start_points,
-                end_points,
-                sigmoid_forward=sigmoid_forward,
-                sigmoid_reverse=sigmoid_reverse,
-            )
 
-            # Ensure the shape of rstc_path matches the slice of rstc_paths
-            n_frames_in_path = rstc_path.shape[0]
-            rstc_paths[cnt % n_window_frames, start_frame:start_frame + n_frames_in_path, :, :] = rstc_path
+        if use_parallel:
+            # Use ThreadPoolExecutor for parallel processing
+            with ThreadPoolExecutor() as executor:
+                futures = []
+                with tqdm(total=len(frame_list) - n_window_frames + 1, desc="Submitting jobs") as pbar:
+                    for cnt, (start_frame, end_frame) in enumerate(zip(frame_list, frame_list[n_window_frames - 1:])):
+                        video_frame_buffer.append(gray(video[end_frame].asnumpy()))
+                        start_points = [ann.data[label][start_frame] for label in label_list]
+                        end_points = [ann.data[label][end_frame] for label in label_list]
+
+                        # Submit the task to the executor
+                        futures.append(executor.submit(
+                            process_window,
+                            video_frame_buffer.copy(),
+                            start_points,
+                            end_points,
+                            sigmoid_forward,
+                            sigmoid_reverse,
+                        ))
+                        pbar.update(1)  # Update the progress bar as jobs are submitted
+
+                # Collect results
+                with tqdm(total=len(futures), desc="Processing results") as pbar:
+                    for cnt, future in enumerate(futures):
+                        rstc_path = future.result()
+                        n_frames_in_path = rstc_path.shape[0]
+                        start_frame = frame_list[cnt]
+                        rstc_paths[cnt % n_window_frames, start_frame:start_frame + n_frames_in_path, :, :] = rstc_path
+                        pbar.update(1)  # Update the progress bar as results are processed
+        else:
+            # Sequential processing
+            with tqdm(total=len(frame_list) - n_window_frames + 1, desc="Processing sequentially") as pbar:
+                for cnt, (start_frame, end_frame) in enumerate(zip(frame_list, frame_list[n_window_frames - 1:])):
+                    video_frame_buffer.append(gray(video[end_frame].asnumpy()))
+                    start_points = [ann.data[label][start_frame] for label in label_list]
+                    end_points = [ann.data[label][end_frame] for label in label_list]
+
+                    # Process the window sequentially
+                    rstc_path = process_window(
+                        video_frame_buffer.copy(),
+                        start_points,
+                        end_points,
+                        sigmoid_forward,
+                        sigmoid_reverse,
+                    )
+                    n_frames_in_path = rstc_path.shape[0]
+                    rstc_paths[cnt % n_window_frames, start_frame:start_frame + n_frames_in_path, :, :] = rstc_path
+                    pbar.update(1)  # Update the progress bar as results are processed
 
         with open(fname_rawlk, "wb") as f:
             dill.dump(rstc_paths, f)
