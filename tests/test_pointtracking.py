@@ -6,15 +6,11 @@ import pandas as pd
 import json
 from unittest.mock import patch, MagicMock
 
-import matplotlib.lines
-import matplotlib.figure
-import matplotlib.collections
-import matplotlib.axes
 import matplotlib.pyplot as plt
 
 import datanavigator
 from datanavigator.examples import get_example_video
-from datanavigator.pointtracking import VideoAnnotation
+from tests.conftest import simulate_key_press, simulate_key_press_at_xy, simulate_mouse_click
 
 
 @pytest.fixture(scope="module")
@@ -602,6 +598,124 @@ def test_video_annotation_display_update_visibility(video_fname):
     plt.close(fig)
     assert True  # If no exceptions, test passed
 
-# TODO: Add tests for loading different H5 formats (_dlc_df_to_annotation_dict, _dlc_trace_to_annotation_dict)
-# This would require creating fixture H5 files representing labeled data and trace data.
 
+def test_video_point_annotator_init(video_fname):
+    # simple initialization with video only. 
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    assert len(v.annotations) == 2
+    assert v.annotations[0].name == ""
+    assert v.annotations[0].fstem == "example_video_annotations"
+    assert v.annotations[-1].name == "buffer"
+    plt.close(v.figure)
+
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn"])
+    assert v.annotations.names == ["pn", "buffer"] # the _annotations.json file will not be loaded
+    plt.close(v.figure)
+    
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn"])
+    assert v.annotations.names == ["", "pn", "buffer"]
+    plt.close(v.figure)
+
+    # explicitly adding a "buffer" name will not make a difference
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn", "buffer"])
+    assert v.annotations.names == ["", "pn", "buffer"]
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn"])
+    assert len(v.annotations[""].frames) == 10
+    assert len(v.annotations["pn"].frames) == 9
+    assert len(v.annotations["buffer"].frames) == 0
+
+    # check state variables
+    assert v.statevariables.names == ['annotation_layer', 'annotation_overlay', 'annotation_label', 'number_keys']
+
+    # check the current state
+    assert v._current_idx == 0
+    assert v._current_label == v.statevariables["annotation_label"].current_state == "0"
+    assert v._current_layer == v.statevariables["annotation_layer"].current_state == ""
+    assert v._current_overlay is None and v.statevariables["annotation_overlay"].current_state is None
+
+
+    # cycle through the annotation layers
+    assert v.ann.name == ""
+    v(simulate_key_press(v.figure, key="="))
+    assert v.ann.name == "pn"
+    v(simulate_key_press(v.figure, key="="))
+    assert v.ann.name == "buffer"
+    v(simulate_key_press(v.figure, key="="))
+    assert v.ann.name == ""
+    v(simulate_key_press(v.figure, key="="))
+    assert v.ann.name == "pn"
+
+    # in layer pn, go to frame 18
+    v(simulate_key_press(v.figure, key="'")) # go to annotation label 1
+    assert v._current_label == "1"
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=18,
+        ydata=100,
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)    
+    assert v._current_idx == 18
+
+    # annotate a point with label "1" at frame 18 in layer "pn"
+    assert v._current_idx not in v.ann[v._current_label]
+    v(simulate_key_press_at_xy(
+        (v.figure, v._ax_image),
+        key="t",
+        xdata=645,
+        ydata=360
+    ))
+    assert np.allclose(v.ann[v._current_label][v._current_idx], [645, 360])
+
+    # move this point with right mouse click on the image
+    event = simulate_mouse_click(
+        (v.figure, v._ax_image),
+        xdata=700,
+        ydata=400,
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)
+    assert np.allclose(v.ann[v._current_label][v._current_idx], [700, 400])
+    
+    # check that the pn layer has 1 annotation at frame 18, and 9 existing annotations
+    assert v.ann.frames == list(np.r_[18, 50:50+18:2])
+    
+    # make buffer the annotation overlay
+    v(simulate_key_press(v.figure, key="["))
+    assert v._current_overlay == "buffer"
+
+    # interpolate with lk (check labels with lk - puts interpolated points in a buffer layer)
+    # test1 - minimal mode - two previous labeled frames to two next frames (or 1 next frame if current frame is annotated)
+    assert len(v.annotations["buffer"].frames) == 0 # check that the buffer layer is empty
+    v(simulate_key_press(v.figure, key="v"))
+    assert v.annotations["buffer"].frames == list(np.r_[18:51])
+
+    v._current_idx = 19
+    v.update()
+    v(simulate_key_press(v.figure, key="v"))
+    assert v.annotations["buffer"].frames == list(np.r_[18:53])
+
+    v._current_idx = 51
+    v.update()
+    v(simulate_key_press(v.figure, key="v"))
+    assert v.annotations["buffer"].frames == list(np.r_[18:55])
+    assert len(v.annotations["buffer"].frames) == 37 # 18 to 54, including 18 and 54
+
+    # clear the buffer layer
+    # bring the buffer layer to the foreground
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "buffer"
+    # select an event using the 'z' key
+    for xdata in (4, 85):
+        v(simulate_key_press_at_xy(
+            (v.figure, v._ax_trace_y),
+            key="z",
+            xdata=xdata,
+            ydata=400,
+        ))
+    v(simulate_key_press(v.figure, key="alt+a")) # clear the buffer layer
+    assert len(v.annotations["buffer"].frames) == 0 # check that the buffer layer is empty

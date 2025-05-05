@@ -772,7 +772,7 @@ class VideoPointAnnotator(VideoBrowser):
             mode (str, optional):
                 "all"     - LK-interpolation for all labels across all labeled frames
                 "current" - LK-interpolation for current label across all labeled frames
-                "minimal" - LK-interpolation for current label between labeled frames near the current frame
+                "minimal" - LK-interpolation for current label between labeled frames near the current frame (two previous to two next)
                 Defaults to "minimal".
         """
         assert mode in ("current", "all", "minimal")
