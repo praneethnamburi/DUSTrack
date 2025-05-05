@@ -859,18 +859,21 @@ class VideoAnnotation:
     def __init__(
         self, fname: str = None, vname: str = None, name: str = None, **kwargs
     ):
-        self.fname, vname = self._parse_inp(fname, vname)
+        self.fname, vname = self._parse_inp(fname, vname, name)
 
         if self.fname is not None:
-            self.fstem = Path(fname).stem
+            self.fstem = Path(self.fname).stem
         else:
             self.fstem = None
 
         if name is None:
             if self.fstem is None:
-                self.name = "video_annotation"
+                self.name = "noname" # default name
             else:
-                self.name = self.fstem.split("_annotations_")[-1]
+                if "_annotations_" in self.fstem:
+                    self.name = self.fstem.split("_annotations_")[-1]
+                else:
+                    self.name = "noname"
         else:
             assert isinstance(name, str)
             self.name = name
@@ -917,7 +920,7 @@ class VideoAnnotation:
         return ret
 
     @staticmethod
-    def _parse_inp(fname_inp, vname_inp):
+    def _parse_inp(fname_inp, vname_inp, name_inp):
         if fname_inp is None and vname_inp is None:
             fname, vname = fname_inp, vname_inp  # do nothing, empty annotation
         elif fname_inp is not None and vname_inp is None:
@@ -931,7 +934,7 @@ class VideoAnnotation:
                 # Try to find the video in the same folder
                 vname_potential = os.path.join(
                     Path(fname_inp).parent,
-                    utils.removesuffix(Path(fname_inp), "_annotations")
+                    utils.removesuffix(Path(fname_inp).stem, "_annotations")
                     .split("_annotations_")[0]
                     + ".mp4",
                 )
@@ -943,8 +946,9 @@ class VideoAnnotation:
         elif fname_inp is None and vname_inp is not None:
             assert utils.is_video(vname_inp)
             vname = vname_inp
+            suffix = "" if name_inp is None else f"_{name_inp}"
             fname = os.path.join(
-                Path(vname_inp).parent, Path(vname_inp).stem + "_annotations.json"
+                Path(vname_inp).parent, Path(vname_inp).stem + f"_annotations{suffix}.json"
             )
         elif fname_inp is not None and vname_inp is not None:
             assert utils.is_video(vname_inp)
