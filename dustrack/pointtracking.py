@@ -1304,7 +1304,7 @@ class VideoAnnotation:
         if color is None:
             color = self.palette[int(label)]
         else:
-            assert len(color == 3)
+            assert len(color) == 3
             assert all([0 <= x <= 1 for x in color])
             self.palette[len(self.labels)] = tuple(color)
 
@@ -1388,9 +1388,9 @@ class VideoAnnotation:
 
             ax_x.set_xlim(0, self.n_frames)
 
-    def setup_display(self, ax_list_scatter=None, ax_list_trace=None, palette=None):
+    def setup_display(self, ax_list_scatter=None, ax_list_trace_x=None, ax_list_trace_y=None, palette=None):
         self.setup_display_scatter(ax_list_scatter, palette)
-        self.setup_display_trace(ax_list_trace, palette)
+        self.setup_display_trace(ax_list_trace_x, ax_list_trace_y, palette)
 
     def update_display_scatter(self, frame_number, draw=False):
         for ax_cnt in range(len(self.plot_handles["ax_list_scatter"])):
