@@ -719,3 +719,127 @@ def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
         ))
     v(simulate_key_press(v.figure, key="alt+a")) # clear the buffer layer
     assert len(v.annotations["buffer"].frames) == 0 # check that the buffer layer is empty
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_add_remove_annotation(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn2"])
+    assert len(v.annotations) == 2
+    assert v.annotations.names == ["pn2", "buffer"]
+
+    assert v.statevariables["number_keys"].current_state == "select"
+    v(simulate_key_press(v.figure, key="`")) # toggle what number keys do
+    assert v.statevariables["number_keys"].current_state == "place"
+
+    # place 3 pointso on the current frame (addubg with "t" is already covered in the previous test)
+    v._current_idx = 45 # go to frame 45
+    v.update()
+    assert v._current_layer == "pn2"
+    for label in ("0", "1", "2"):
+        v(simulate_key_press_at_xy(
+            (v.figure, v._ax_image),
+            key=label,
+            xdata=100+int(label)*10,
+            ydata=200-int(label)*10,
+        ))
+    assert v.ann.frames == [45]
+    assert np.allclose(v.ann["0"][v._current_idx], [100, 200])
+    assert np.allclose(v.ann["1"][v._current_idx], [110, 190])
+    assert np.allclose(v.ann["2"][v._current_idx], [120, 180])
+    assert v._current_label == "2" # last label used is the current label
+
+    # remove annotation for point 2
+    assert len(v.ann["2"]) == 1 # check that the annotation for point 2 exists
+    v(simulate_key_press(v.figure, key="y"))
+    assert len(v.ann["2"]) == 0 # check that the annotation for point 2 is removed
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_conditional_move(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn2"])
+    assert len(v.annotations) == 2
+    assert v.annotations.names == ["pn2", "buffer"]
+
+    # add a point at frame 10
+    v._current_idx = 10 # go to frame 0
+    v.update()
+    v(simulate_key_press_at_xy(
+        (v.figure, v._ax_image),
+        key="t",
+        xdata=100,
+        ydata=200,
+    ))
+    assert np.allclose(v.ann["0"][v._current_idx], [100, 200])
+    
+    v(simulate_key_press(v.figure, key="left"))
+    assert v._current_idx == 9 # go to frame 9
+    v(simulate_key_press(v.figure, key="f"))
+    assert v._current_idx == 10
+    v(simulate_key_press(v.figure, key="f"))
+    assert v._current_idx == 10 # shouldn not move because there is an annotation at frame 10
+
+    v(simulate_key_press(v.figure, key="g"))
+    assert v._current_idx == 11 # go to frame 9
+    v(simulate_key_press(v.figure, key="d"))
+    assert v._current_idx == 10 # go to frame 10
+    v(simulate_key_press(v.figure, key="d"))
+    assert v._current_idx == 10 # shouldn't move because there is an annotation at frame 10
+
+
+def test_video_point_annotator_state_variables(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn"])
+    assert len(v.annotations) == 3
+    assert v.annotations.names == ["", "pn", "buffer"]
+
+    # check state variables
+    assert v.statevariables.names == ['annotation_layer', 'annotation_overlay', 'annotation_label', 'number_keys']
+
+    # check the current state
+    assert v._current_idx == 0
+    assert v._current_label == v.statevariables["annotation_label"].current_state == "0"
+    assert v._current_layer == v.statevariables["annotation_layer"].current_state == ""
+    assert v._current_overlay is None and v.statevariables["annotation_overlay"].current_state is None
+
+    assert v._current_layer == ""
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "pn"
+    v(simulate_key_press(v.figure, key="-"))
+    assert v._current_layer == ""
+    v(simulate_key_press(v.figure, key="-"))
+    assert v._current_layer == "buffer"
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == ""
+
+    assert v._current_overlay is None
+    v(simulate_key_press(v.figure, key="["))
+    assert v._current_overlay == "buffer"
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay is None
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay == ""
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay == "pn"
+
+    assert v.ann.labels == ["0", "1", "2"]
+    assert v._current_label == "0"
+    v(simulate_key_press(v.figure, key="'"))
+    assert v._current_label == "1"
+    v(simulate_key_press(v.figure, key=";"))
+    assert v._current_label == "0"
+    v(simulate_key_press(v.figure, key=";"))
+    assert v._current_label == "2"
+
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "pn"
+    assert v.ann.frames == list(np.r_[50:50+18:2]) # check that the annotation layer is empty
+    assert v._current_idx == 0
+    v(simulate_key_press(v.figure, key="."))
+    assert v._current_idx == 50
+    v(simulate_key_press(v.figure, key="."))
+    assert v._current_idx == 52
+    v(simulate_key_press(v.figure, key=","))
+    assert v._current_idx == 50
+    v(simulate_key_press(v.figure, key=","))
+    assert v._current_idx == 50
+
+    plt.close(v.figure)
