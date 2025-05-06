@@ -622,7 +622,37 @@ def test_video_point_annotator_init(video_fname):
     plt.close(v.figure)
 
 
-def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
+def test_video_point_annotator_from_annotations(ann_object):
+    v = datanavigator.VideoPointAnnotator.from_annotations(ann_object)
+    assert len(v.ann.frames) == 10
+
+
+def test_video_point_annotator_add_new_label(ann_object):
+    v = datanavigator.VideoPointAnnotator.from_annotations(ann_object)
+    assert "5" not in v.ann.labels
+    assert "5" not in v.annotations["buffer"].labels
+    v(simulate_key_press(v.figure, key="5"))
+    assert "5" in v.ann.labels
+    assert "5" in v.annotations["buffer"].labels
+    assert len(v.ann.data["5"]) == 0
+
+    # test "place" mode
+    v(simulate_key_press(v.figure, key="`")) # toggle what number keys do
+    assert v.statevariables["number_keys"].current_state == "place"
+    assert "6" not in v.ann.labels
+    v(simulate_key_press_at_xy(
+        (v.figure, v._ax_image),
+        key="6",
+        xdata=645,
+        ydata=360
+    ))
+    assert "6" in v.ann.labels
+    assert len(v.ann.data["6"]) == 1
+    assert np.allclose(v.ann["6"][v._current_idx], [645, 360])
+    assert len(v.annotations["buffer"].frames) == 0  # buffer should still be empty if we added the annotation to the current layer
+
+
+def test_video_point_annotator_key_bindings(video_fname):
     v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn"])
     assert len(v.annotations[""].frames) == 10
     assert len(v.annotations["pn"].frames) == 9
@@ -655,7 +685,7 @@ def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
     event = simulate_mouse_click(
         (v.figure, v._ax_trace_x),
         xdata=18,
-        ydata=100,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
         button=3, # Right click
     )
     v.figure.canvas.callbacks.process("button_press_event", event)    
@@ -756,6 +786,7 @@ def test_video_point_annotator_add_remove_annotation(video_fname):
 
 
 def test_video_point_annotator_conditional_move(video_fname):
+    """Test the feature that allows to change frame only if there is no annotation at the current frame."""
     v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn2"])
     assert len(v.annotations) == 2
     assert v.annotations.names == ["pn2", "buffer"]
@@ -787,6 +818,7 @@ def test_video_point_annotator_conditional_move(video_fname):
 
 
 def test_video_point_annotator_state_variables(video_fname):
+    """Test cycling through the state variables."""
     v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["", "pn"])
     assert len(v.annotations) == 3
     assert v.annotations.names == ["", "pn", "buffer"]
@@ -843,3 +875,106 @@ def test_video_point_annotator_state_variables(video_fname):
     assert v._current_idx == 50
 
     plt.close(v.figure)
+
+
+def test_video_point_annotator_frames_of_interest(video_fname):
+    """Test the frames of interest feature."""
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn3"])
+    assert len(v.annotations) == 2
+    assert v.annotations.names == ["pn3", "buffer"]
+
+    # check initial state
+    assert v.frames_of_interest == []
+
+    # add a frame of interest
+    assert v._current_layer == "pn3"
+    # test navigation with empty frames of interest
+    v(simulate_key_press(v.figure, key="alt+,")) # should not throw an error
+    v(simulate_key_press(v.figure, key="alt+.")) # should not throw an error
+
+    v._current_idx = 4
+    v.update()
+    v(simulate_key_press(v.figure, key="m", inaxes=v._ax_trace_x))
+    assert v.frames_of_interest == [4]
+    v(simulate_key_press(v.figure, key="m", inaxes=v._ax_image)) # this should not work
+    assert v.frames_of_interest == [4]
+    v(simulate_key_press(v.figure, key="m")) # this should also not work
+    assert v.frames_of_interest == [4]
+
+    
+    # add and remove a frame of interest
+    v._current_idx = 7
+    v.update()
+    v(simulate_key_press(v.figure, key="m", inaxes=v._ax_trace_x))
+    assert v.frames_of_interest == [4, 7]
+    v(simulate_key_press(v.figure, key="alt+,"))
+    assert v._current_idx == 4
+    v(simulate_key_press(v.figure, key="alt+,"))
+    assert v._current_idx == 4
+    v(simulate_key_press(v.figure, key="alt+."))
+    assert v._current_idx == 7
+    v(simulate_key_press(v.figure, key="alt+."))
+    assert v._current_idx == 7
+
+    v(simulate_key_press(v.figure, key="m", inaxes=v._ax_trace_y))
+    assert v.frames_of_interest == [4]
+
+    # label two frames, interpolate between them into the buffer, and copy frames of interest from the buffer
+    # label two frames
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=27.1,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)    
+    assert v._current_idx == 27
+    assert v._current_idx not in v.ann[v._current_label]
+    v(simulate_key_press_at_xy(
+        (v.figure, v._ax_image),
+        key="t",
+        xdata=441,
+        ydata=380
+    ))
+    assert np.allclose(v.ann[v._current_label][v._current_idx], [441, 380])
+
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=60.1,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)    
+    assert v._current_idx == 60
+    assert v._current_idx not in v.ann[v._current_label]
+    v(simulate_key_press_at_xy(
+        (v.figure, v._ax_image),
+        key="t",
+        xdata=468,
+        ydata=487
+    ))
+    assert np.allclose(v.ann[v._current_label][v._current_idx], [468, 487])
+
+    # bring buffer to overlay
+    v(simulate_key_press(v.figure, key="["))
+    assert v._current_overlay == "buffer"
+
+    # interpolate with lk (check labels with lk - puts interpolated points in a buffer layer)
+    assert len(v.annotations["buffer"].frames) == 0 # check that the buffer layer is empty
+    v(simulate_key_press(v.figure, key="v"))
+    assert v.annotations["buffer"].frames == list(np.r_[27:61])
+
+    # mark frames of interest as 31, 42, 52
+    v.frames_of_interest = [31, 42, 52]
+    v.update()
+
+    # copy frames of interest from the buffer to the annotation layer
+    v(simulate_key_press(v.figure, key="alt+c"))
+
+    assert v.ann.frames == [27, 31, 42, 52, 60]
+
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_copy_annotations(video_fname):
+    pass
