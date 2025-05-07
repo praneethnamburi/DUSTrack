@@ -977,4 +977,268 @@ def test_video_point_annotator_frames_of_interest(video_fname):
 
 
 def test_video_point_annotator_copy_annotations(video_fname):
-    pass
+    """Test the feature of copying annotations between layers."""
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn4", "pn5"])
+    # testing c - copy current annotaion from overlay to the current annotation layer
+    # add a label to pn4
+    v.annotations["pn4"].add([1,1], "1", 5)
+    
+    # go to frame 5
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=5,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)    
+    assert v._current_idx == 5
+    
+    # set current layer to pn5
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "pn5"
+    
+    # set current overlay to pn4
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay == "pn4"
+    
+    # check current state of the data
+    assert v.ann.frames == []
+    assert v.annotations["pn4"].frames == [5]
+    
+    # copy annotation from overlay to current layer
+    v(simulate_key_press(v.figure, key="c")) # nothing should happen because current label is 0
+    assert v.ann.frames == []
+        
+    # set current label to 1
+    v(simulate_key_press(v.figure, key="'"))
+
+    # copy annotation from overlay to current layer
+    v(simulate_key_press(v.figure, key="c")) # copy annotation from overlay to current layer
+    assert v.ann.frames == [5]
+    assert len(v.ann.data["1"]) == 1
+    assert all([len(v.ann.data[x]) == 0 for x in v.ann.labels if x != "1"])
+
+    # remove annotation from the current layer
+    v(simulate_key_press(v.figure, key="y")) # remove annotation from the current layer
+    assert all([len(v.ann.data[x]) == 0 for x in v.ann.labels])
+    
+    # testing alt+c - copy frames of interest from overlay to current layer
+    # add data into the buffer layer from frames 7 to 50
+    for i in range(7, 51):
+        v.annotations["buffer"].add([i, i], "1", i)
+    assert len(v.annotations["buffer"].frames) == 44 # check that the buffer layer has 44 frames
+
+    # add frames of interest
+    v.frames_of_interest = [2, 20, 23] # there is no data in 2
+    v.update()
+
+    # copy frames of interest from buffer to current layer
+    assert v._current_layer == "pn5"
+    assert list(v.annotations["pn5"].data["1"].keys()) == []
+    assert v._current_overlay != "buffer"
+    v(simulate_key_press(v.figure, key="alt+c")) # copy frames of interest from buffer to current layer
+    assert list(v.annotations["pn5"].data["1"].keys()) == []
+
+    # should only work after changing the overlay to buffer
+    v(simulate_key_press(v.figure, key="]"))
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay == "buffer"
+    v(simulate_key_press(v.figure, key="alt+c")) # copy frames of interest from buffer to current layer
+    assert list(v.annotations["pn5"].data["1"].keys()) == [20, 23]
+
+
+    # ctrl+alt+c - copy frames in interval from overlay to current layer.
+    # change current layer to pn4 and overlay to pn5
+    v(simulate_key_press(v.figure, key="="))
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "pn4"
+
+    # add interval to the current layer - select an event using the 'z' key
+    for xdata in (30, 70):
+        v(simulate_key_press_at_xy(
+            (v.figure, v._ax_trace_y),
+            key="z",
+            xdata=xdata,
+            ydata=v._ax_trace_y.get_ylim()[0],
+        ))
+    assert v.annotations[v._current_overlay].frames == list(np.r_[7:51])
+    v(simulate_key_press(v.figure, key="ctrl+alt+c")) # copy interval from overlay to current layer
+    assert v.ann.frames == list(np.r_[5, 30:51])
+
+    # copy all annotation from overlay to current layer in the current frame (no shortcut)
+    # go to frame 12
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=12,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)
+    assert v._current_idx == 12
+    assert v._current_layer == "pn4"
+    assert v._current_overlay == "buffer"
+    assert v._current_label == "1"
+
+    # add data to labels 3 and 4 in the buffer layer
+    v.annotations["buffer"].add([100,13], "3", 12)
+    v.annotations["buffer"].add([100,123], "4", 12)
+
+    assert 12 not in v.ann.frames
+    v.copy_annotations_from_overlay()
+    assert 12 in v.ann.frames
+    assert list(v.ann.data["3"].keys()) == [12]
+    assert list(v.ann.data["4"].keys()) == [12]
+    assert np.allclose(v.ann["3"][12], [100, 13])
+    assert np.allclose(v.ann["4"][12], [100, 123])
+    assert all([12 not in v.ann.data[x] for x in v.ann.labels if x not in ["1", "3", "4"]])
+
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_lucas_kanade(video_fname):
+    #-- predict_points_with_lucas_kanade --
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn6"])
+    v.ann.data = {}
+    v.ann.add_label("0")
+    v.ann.add_label("1")
+    v.ann.add_label("2")
+    v.ann.add_label("3")
+
+    # add some annotations in frame 5
+    v.annotations["pn6"].add([10,10], "0", 5)
+    v.annotations["pn6"].add([10,11], "1", 5)
+    v.annotations["pn6"].add([10,12], "2", 5)
+
+    # go to frame 8
+    event = simulate_mouse_click(
+        (v.figure, v._ax_trace_x),
+        xdata=8,
+        ydata=np.mean(v._ax_trace_x.get_ylim()),
+        button=3, # Right click
+    )
+    v.figure.canvas.callbacks.process("button_press_event", event)
+    assert v._current_idx == 8
+
+
+    # alt+b - predict current point with lucas kanade and add to the current layer
+    assert v._current_label == "0"
+    assert 8 not in v.annotations["pn6"].frames
+    v(simulate_key_press(v.figure, key="alt+b"))
+    assert 8 in v.annotations["pn6"]["0"]
+    assert 8 not in v.annotations["pn6"]["1"]
+    assert 8 not in v.annotations["pn6"]["2"]
+    assert 8 not in v.annotations["pn6"]["3"]
+    
+    # ctrl+b - predict all points with lucas kanade and add to the current layer
+    # the nearest annotated frame for ALL labels should be the same, otherwise this will not work
+    with pytest.raises(ValueError):
+        # because there is no data for label 3 in frame 5
+        v(simulate_key_press(v.figure, key="ctrl+b"))
+    v.annotations["pn6"].add([10,13], "3", 5)
+
+    with pytest.raises(AssertionError):
+        # because different labels have different nearest annotated frames
+        v(simulate_key_press(v.figure, key="ctrl+b"))
+    v(simulate_key_press(v.figure, key="y")) # otherwise the next test will fail
+    v.update()
+    
+    v(simulate_key_press(v.figure, key="ctrl+b"))
+    assert 8 in v.annotations["pn6"]["1"]
+    assert 8 in v.annotations["pn6"]["2"]
+    assert 8 in v.annotations["pn6"]["3"]
+
+
+    # change overlay to pn6 and current layer to buffer
+    v(simulate_key_press(v.figure, key="]"))
+    assert v._current_overlay == "pn6"
+    v(simulate_key_press(v.figure, key="="))
+    assert v._current_layer == "buffer"
+
+    # add an interval to the current layer - select an event using the 'z' key
+    for xdata in (6, 40):
+        v(simulate_key_press_at_xy(
+            (v.figure, v._ax_trace_y),
+            key="z",
+            xdata=xdata,
+            ydata=v._ax_trace_y.get_ylim()[0],
+        ))
+    with pytest.raises(KeyError):
+        # doesn't work if the starting point of the interval is not in the overlay
+        v(simulate_key_press(v.figure, key="ctrl+d"))
+
+    for xdata in (8, 40):
+        v(simulate_key_press_at_xy(
+            (v.figure, v._ax_trace_y),
+            key="z",
+            xdata=xdata,
+            ydata=v._ax_trace_y.get_ylim()[0],
+        ))
+    v(simulate_key_press(v.figure, key="ctrl+d"))
+
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn7"])
+    # add annotation in frames 5 and 8
+    v.annotations["pn7"].add([10,10], "0", 5)
+    v.annotations["pn7"].add([10,11], "0", 8)
+    v.annotations["pn7"].add([10,11], "1", 12)
+
+    assert v._current_idx == 0
+    v(simulate_key_press(v.figure, key="p")) # previous frame - none
+    assert v._current_idx == 0
+    v(simulate_key_press(v.figure, key="n")) # next frame
+    assert v._current_idx == 5
+    v(simulate_key_press(v.figure, key="n"))
+    assert v._current_idx == 8
+    v(simulate_key_press(v.figure, key="n"))
+    assert v._current_idx == 8 # should not move because there are no more annotations for this label
+
+    plt.close(v.figure)
+
+
+def test_save(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn7"])
+    assert not os.path.exists(v.annotations["pn7"].fname)    
+    v.save()
+    assert os.path.exists(v.annotations["pn7"].fname)
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_keep_overlapping_continuous_frames(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn8"])
+    v.ann.data = {}
+    v.ann.add_label("0")
+    v.ann.add_label("1")
+    v.ann.add_label("2")
+
+    # add annotations in frame 10-50 for label 0
+    for i in range(10, 51):
+        v.annotations["pn8"].add([i, i], "0", i)
+    
+    # add annotations in frame 20-60 for label 1
+    for i in range(20, 61):
+        v.annotations["pn8"].add([i, i], "1", i)
+    
+    # add annotations in frame 5-55 for label 2
+    for i in range(5, 56):
+        v.annotations["pn8"].add([i, i], "2", i)
+    
+    v(simulate_key_press(v.figure, key="alt+q")) # keep overlapping continuous frames
+    assert len(v.annotations["pn8"].frames) == 31 # all frames should be kept
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_render(video_fname):
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn9"])
+    v.annotations["pn9"].add([10,100], "0", 0) # add some data
+    v.annotations["pn9"].add([50,200], "0", 60) # add some data
+    out_vid_name = os.path.join(os.path.dirname(video_fname), "test_video_point_annotator_render.mp4")
+    assert not os.path.exists(out_vid_name)
+    v.render(10, 20, out_vid_name)
+    assert os.path.exists(out_vid_name)
+    # check that the video is rendered correctly
+    assert len(datanavigator.Video(out_vid_name)) == 11
+    
+    plt.close(v.figure)

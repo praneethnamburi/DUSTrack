@@ -223,7 +223,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.add_key_binding("m", self.toggle_frame_of_interest)
         self.add_key_binding("c", self.copy_current_annotation_from_overlay)
         # self.add_key_binding('ctrl+alt+c', self.copy_annotations_from_overlay)
-        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_buffer)
+        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay)
         self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay)
 
         self.add_key_binding(
@@ -419,7 +419,7 @@ class VideoPointAnnotator(VideoBrowser):
             plt.draw()
 
     def copy_annotations_from_overlay(self):
-        """Copy annotations from the overlay layer into the current layer."""
+        """Copy annotations from the overlay layer into the current layer in the current frame."""
         ann_overlay = self.annotations[self._current_overlay]
         frame_number = self._current_idx
         for label in self.ann.labels:
@@ -440,14 +440,11 @@ class VideoPointAnnotator(VideoBrowser):
                 self.ann.add(location, label, frame_number)
         self.update()
 
-    def copy_frames_of_interest_from_buffer(self):
+    def copy_frames_of_interest_from_overlay(self):
         """copy annotations at frames of interest from buffer into the current layer.
         If there is no buffer, then copy from the overlay layer.
         """
-        if "buffer" in self.annotations.names:
-            source_ann = self.annotations["buffer"]
-        else:
-            source_ann = self.annotations[self._current_overlay]
+        source_ann = self.annotations[self._current_overlay]
 
         for frame_number in self.frames_of_interest:
             for label in self.ann.labels:
@@ -488,12 +485,18 @@ class VideoPointAnnotator(VideoBrowser):
         self.ann.remove(self._current_label, self._current_idx)
         self.update()
 
-    def _get_nearest_annotated_frame(self) -> int:
+    def _get_nearest_annotated_frame(self, label=None) -> int:
         """Return the nearest frame (in either direction) number with the current label in the current annotation layer."""
+        if label is None:
+            label = self._current_label
         d = {
             abs(x - self._current_idx): x
-            for x in self.ann.get_frames(self._current_label)
+            for x in self.ann.get_frames(label)
         }
+        if not d:
+            raise ValueError(
+                f"No frames with label {label} in annotation layer {self._current_layer}."
+            )
         return d[min(d)]
 
     def previous_frame_with_current_label(self, event=None):
@@ -623,7 +626,7 @@ class VideoPointAnnotator(VideoBrowser):
 
     def select_label_with_mouse(self, event):
         """Select a label by clicking on it with the left mousebutton."""
-        if event.mouseevent.button.name == "LEFT" and len(event.ind == 1):
+        if event.mouseevent.button.name == "LEFT":
             self.statevariables["annotation_label"].set_state(str(event.ind[0]))
             print(
                 f'Picked {self._current_label} with index {self.statevariables["annotation_label"].current_state} at frame {self._current_idx}'
@@ -640,7 +643,7 @@ class VideoPointAnnotator(VideoBrowser):
             event.inaxes in (self._ax_trace_x, self._ax_trace_y)
             and event.button.name == "RIGHT"
         ):
-            self._current_idx = int(event.xdata)
+            self._current_idx = round(event.xdata)
             self.update()
 
     def toggle_frame_of_interest(self, event):
@@ -675,6 +678,7 @@ class VideoPointAnnotator(VideoBrowser):
         if start_frame is None:
             start_frame = self._get_nearest_annotated_frame()
 
+        assert len(set([self._get_nearest_annotated_frame(label) for label in labels])) == 1, "There must be a unique annotated frame across all labels."
         end_frame = self._current_idx  # always predict at the current location
 
         video = self.data
@@ -717,6 +721,10 @@ class VideoPointAnnotator(VideoBrowser):
         self.update()
 
     def interpolate_with_lk(self, all_labels=False):
+        """Interpolate with lk-rstc between selected interval. 
+        Use data in the overlay layer as start and end points.
+        Add interpolated points to the current layer.
+        """
         video = self.data
         if self._current_overlay is None:
             return
@@ -740,6 +748,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.update()
 
     def interpolate_with_lk_norstc(self, all_labels=False):
+        """Infer the motion of the current label using lucas-kanade algorithm in the selected interval."""
         video = self.data
         if self._current_overlay is None:
             return
@@ -752,7 +761,7 @@ class VideoPointAnnotator(VideoBrowser):
         start_frame, end_frame = self.get_selected_interval()
         ann_overlay = self.annotations[self._current_overlay]
         start_points = [ann_overlay.data[label][start_frame] for label in label_list]
-        end_points = [ann_overlay.data[label][end_frame] for label in label_list]
+        # end_points = [ann_overlay.data[label][end_frame] for label in label_list]
         rstc_path = lucas_kanade(video, start_frame, end_frame, start_points)
         for frame_count, frame_number in enumerate(range(start_frame, end_frame + 1)):
             for label_count, label in enumerate(label_list):
@@ -816,8 +825,10 @@ class VideoPointAnnotator(VideoBrowser):
                 )
         self.update()
 
-    def render(self, start_frame, end_frame):
-        out_vid_name = Path(self.ann.fname).with_suffix(".mp4")
+    def render(self, start_frame, end_frame, out_vid_name=None):
+        """Render the video with annotations."""
+        if out_vid_name is None:
+            out_vid_name = str(Path(self.ann.fname).with_suffix(".mp4"))
         assert not os.path.exists(out_vid_name)
         fps = self.ann.video.get_avg_fps()
         codec = "h264"
