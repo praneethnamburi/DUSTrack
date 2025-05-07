@@ -4,7 +4,7 @@ import functools
 import json
 import os
 from pathlib import Path
-from typing import Callable, Mapping, Union
+from typing import Callable, Mapping, Union, List, Tuple, Dict
 
 import numpy as np
 import pandas as pd
@@ -33,8 +33,8 @@ class VideoPointAnnotator(VideoBrowser):
 
     Args:
         vid_name (Path): Path to the video.
-        annotation_names (Union[list[str], Mapping[str, Path]], optional):
-            list[str] - Name(s) of the annotation layer(s). The file path(s) are deduced from the name(s).
+        annotation_names (Union[List[str], Mapping[str, Path]], optional):
+            List[str] - Name(s) of the annotation layer(s). The file path(s) are deduced from the name(s).
             Mapping[str, Path] - A dictionary mapping of annotation layer names to the annotation file paths.
             Defaults to '' with one layer of annotations.
         titlefunc (Callable, optional): A function used to set the title of the image axis.
@@ -45,11 +45,11 @@ class VideoPointAnnotator(VideoBrowser):
         self,
         vid_name: Path,
         annotation_names: Union[
-            list[str], Mapping[str, Path], list[VideoAnnotation]
+            List[str], Mapping[str, Path], List[VideoAnnotation]
         ] = "",
         titlefunc: Callable = None,
         image_process_func: Callable = lambda im: im,
-        height_ratios: tuple = (10, 1, 1),  # depends on your screen size
+        height_ratios: Tuple = (10, 1, 1),  # depends on your screen size
     ):
         figure_handle, (
             self._ax_image,
@@ -116,7 +116,7 @@ class VideoPointAnnotator(VideoBrowser):
             plt.draw()
 
     @classmethod
-    def from_annotations(cls, annotations: list[VideoAnnotation], *args, **kwargs):
+    def from_annotations(cls, annotations: List[VideoAnnotation], *args, **kwargs):
         if isinstance(annotations, VideoAnnotation):
             annotations = [annotations]
         video_names = {a.video.fname for a in annotations}
@@ -124,7 +124,7 @@ class VideoPointAnnotator(VideoBrowser):
         return cls(video_names.pop(), annotations, *args, **kwargs)
 
     def load_annotation_layers(
-        self, annotation_names: Union[list[str], dict[str, Path], list[VideoAnnotation]]
+        self, annotation_names: Union[List[str], Dict[str, Path], List[VideoAnnotation]]
     ):
         """Load data from annotation files if they exist, otherwise initialize annotation layers."""
         if isinstance(annotation_names, (str, VideoAnnotation)):
@@ -1542,8 +1542,8 @@ class VideoAnnotation:
             }
 
     def get_area(
-        self, labels: list | str, lowpass: float = None
-    ) -> pysampled.Data | np.ndarray:
+        self, labels: Union[List, str], lowpass: float = None
+    ) -> Union[pysampled.Data, np.ndarray]:
         """Get the area in pixel squared."""
 
         def PolyArea(x, y):
