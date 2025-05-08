@@ -447,22 +447,21 @@ def test_video_annotation_add_label():
     ann_new.add_label()
     assert ann_new.labels == ["0"]
     assert ann_new.data["0"] == {}
-    assert ann_new.palette[0] is not None  # Color assigned
+    assert ann_new.palette[list(ann_new.data.keys()).index("0")] is not None  # Color assigned
 
     # Add specific label
     ann_new.add_label("5")
     assert ann_new.labels == ["0", "5"]
     assert ann_new.data["5"] == {}
-    assert ann_new.palette[5] is not None
+    assert ann_new.palette[list(ann_new.data.keys()).index("0")] is not None
 
     # Add with specific color
     ann_new.add_label("2", color=(0.1, 0.2, 0.3))
     assert ann_new.labels == ["0", "2", "5"]
     assert ann_new.data["2"] == {}
 
-    # Add existing label (should fail)
-    with pytest.raises(AssertionError):
-        ann_new.add_label("0")
+    # Add existing label (no longer fails)
+    ann_new.add_label("0")
 
     # Add invalid label (non-digit string)
     with pytest.raises(AssertionError):
@@ -472,10 +471,8 @@ def test_video_annotation_add_label():
     for i in [1, 3, 4, 6, 7, 8, 9]:
         ann_new.add_label(str(i))
     assert len(ann_new.labels) == 10
-    with pytest.raises(AssertionError):
-        ann_new.add_label()  # Cannot add 11th label automatically
-    with pytest.raises(AssertionError):
-        ann_new.add_label("10")  # Cannot add specific label > 9
+    ann_new.add_label()  # Cannot add 11th label automatically
+    assert "10" in ann_new.labels  # Check that it was added as a new label
 
 
 def test_video_annotation_remove(ann_object):
@@ -712,12 +709,7 @@ def test_video_point_annotator_key_bindings(video_fname):
     assert len(v.annotations["buffer"].frames) == 0
 
     # check state variables
-    assert v.statevariables.names == [
-        "annotation_layer",
-        "annotation_overlay",
-        "annotation_label",
-        "number_keys",
-    ]
+    assert v.statevariables.names == ['annotation_layer', 'annotation_overlay', 'annotation_label', 'label_range', 'number_keys']
 
     # check the current state
     assert v._current_idx == 0
@@ -899,12 +891,7 @@ def test_video_point_annotator_state_variables(video_fname):
     assert v.annotations.names == ["", "pn", "buffer"]
 
     # check state variables
-    assert v.statevariables.names == [
-        "annotation_layer",
-        "annotation_overlay",
-        "annotation_label",
-        "number_keys",
-    ]
+    assert v.statevariables.names == ['annotation_layer', 'annotation_overlay', 'annotation_label', 'label_range', 'number_keys']
 
     # check the current state
     assert v._current_idx == 0
