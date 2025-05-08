@@ -363,8 +363,8 @@ class VideoPointAnnotator(VideoBrowser):
                 for ann in self.annotations._list:  # add new label to all annotations
                     if label not in ann.labels:
                         ann.add_label(label)
-                self.statevariables["annotation_label"].states = self.ann.labels
-                self.statevariables["annotation_label"].set_state(label)
+                self.update_annotation_label_states()
+                self.statevariables["annotation_label"].set_state(str(int(event.key)))
                 if self.statevariables["number_keys"].current_state == "place":
                     self.add_annotation(event)
                 self.update()
@@ -620,6 +620,12 @@ class VideoPointAnnotator(VideoBrowser):
         """Set current annotation label to the next one."""
         self.statevariables["annotation_label"].cycle()
         self.update()
+    
+    def update_annotation_label_states(self) -> None:
+        """Update the states of the annotation label state variable."""
+        # find labels in the current range
+        label_states = [str(int(x) % 10) for x in self.ann.labels if int(x) in range(int(self.statevariables["label_range"]._current_state_idx) * 10, (int(self.statevariables["label_range"]._current_state_idx) + 1) * 10)]
+        self.statevariables["annotation_label"].states = label_states
 
     def cycle_number_keys_behavior(self) -> None:
         """Number keys can be used to either select labels, or place a specific label.
@@ -632,18 +638,24 @@ class VideoPointAnnotator(VideoBrowser):
         """Increment the label range by 10."""
         self.statevariables["label_range"].cycle()
         # if the current label is not present, add it to the list of labels in all the layers!
+        current_label = self._current_label
         if self._current_label not in self.ann.labels:
             for ann in self.annotations._list:
                 ann.add_label(self._current_label)
+        self.update_annotation_label_states()
+        self.statevariables["annotation_label"].set_state(str(int(current_label) % 10))
         self.update()
     
     def decrement_label_range(self) -> None:
         """Increment the label range by 10."""
         self.statevariables["label_range"].cycle_back()
         # if the current label is not present, add it to the list of labels
+        current_label = self._current_label
         if self._current_label not in self.ann.labels:
             for ann in self.annotations._list:
                 ann.add_label(self._current_label)
+        self.update_annotation_label_states()
+        self.statevariables["annotation_label"].set_state(str(int(current_label) % 10))
         self.update()
 
     def increment_if_unannotated(self, event: Optional[Any] = None) -> None:
@@ -667,9 +679,12 @@ class VideoPointAnnotator(VideoBrowser):
     def select_label_with_mouse(self, event: Any) -> None:
         """Select a label by clicking on it with the left mousebutton."""
         if event.mouseevent.button.name == "LEFT":
-            self.statevariables["annotation_label"].set_state(str(event.ind[0]))
+            picked_label = self.ann.labels[int(event.ind[0])]
+            self.statevariables["label_range"]._current_state_idx = int(picked_label) // 10
+            self.update_annotation_label_states()
+            self.statevariables["annotation_label"].set_state(str(int(picked_label) % 10))
             print(
-                f'Picked label {self._current_label} at frame {self._current_idx}'
+                f'Picked label {picked_label} at frame {self._current_idx}'
             )
             self.update()
 
@@ -1233,7 +1248,7 @@ class VideoAnnotation:
         
         last_index = last_nonzero_index(n_labeled_frames)
 
-        self.data = {label: self.data[label] for label in self.labels if int(label) <= last_index}
+        self.data = {label: self.data[label] for idx, label in enumerate(self.labels) if idx <= last_index}
 
     def get_values_cv(self, frame_num: int) -> np.ndarray:
         """Return annotations at frame_num in a format for openCV's optical flow algorithms"""
