@@ -4,7 +4,7 @@ import functools
 import json
 import os
 from pathlib import Path
-from typing import Callable, Mapping, Union, List, Tuple, Dict
+from typing import Callable, Mapping, Union, List, Tuple, Dict, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -50,7 +50,7 @@ class VideoPointAnnotator(VideoBrowser):
         titlefunc: Callable = None,
         image_process_func: Callable = lambda im: im,
         height_ratios: Tuple = (10, 1, 1),  # depends on your screen size
-    ):
+    ) -> None:
         figure_handle, (
             self._ax_image,
             self._ax_trace_x,
@@ -116,7 +116,12 @@ class VideoPointAnnotator(VideoBrowser):
             plt.draw()
 
     @classmethod
-    def from_annotations(cls, annotations: List[VideoAnnotation], *args, **kwargs):
+    def from_annotations(
+        cls,
+        annotations: List[VideoAnnotation],
+        *args,
+        **kwargs
+    ) -> VideoPointAnnotator:
         if isinstance(annotations, VideoAnnotation):
             annotations = [annotations]
         video_names = {a.video.fname for a in annotations}
@@ -125,7 +130,7 @@ class VideoPointAnnotator(VideoBrowser):
 
     def load_annotation_layers(
         self, annotation_names: Union[List[str], Dict[str, Path], List[VideoAnnotation]]
-    ):
+    ) -> None:
         """Load data from annotation files if they exist, otherwise initialize annotation layers."""
         if isinstance(annotation_names, (str, VideoAnnotation)):
             annotation_names = [annotation_names]
@@ -182,7 +187,7 @@ class VideoPointAnnotator(VideoBrowser):
                     del ann.data[label]
             ann.sort_labels()
 
-    def set_key_bindings(self):
+    def set_key_bindings(self) -> None:
         """Set the keyboard actions."""
         self.add_key_binding("s", self.save, "Save current annotation layer")
         self.add_key_binding("t", self.add_annotation)
@@ -281,7 +286,7 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames)
 
-    def add_events(self):
+    def add_events(self) -> None:
         """Add an event to specify time intervals for interpolating with lucas-kanade."""
         event_name = "interp_with_lk"
         self.events.add(
@@ -324,7 +329,7 @@ class VideoPointAnnotator(VideoBrowser):
         """Return current annotation overlay layer"""
         return self.statevariables["annotation_overlay"].current_state
 
-    def _get_fname_annotations(self, annotation_name, suffix=".json"):
+    def _get_fname_annotations(self, annotation_name: str, suffix: str = ".json") -> str:
         """Construct the filename corresponding to an  annotation layer named annotation_name."""
         return os.path.join(
             Path(self.fname).parent,
@@ -335,7 +340,7 @@ class VideoPointAnnotator(VideoBrowser):
             + suffix,
         )
 
-    def __call__(self, event):
+    def __call__(self, event: Any) -> None:
         """Callbacks for number keys."""
         super().__call__(event)
         if event.name == "key_press_event":
@@ -355,7 +360,7 @@ class VideoPointAnnotator(VideoBrowser):
                     self.add_annotation(event)
                 self.update()
 
-    def update(self):
+    def update(self) -> None:
         """Update elements in the UI."""
         self.update_annotation_visibility(draw=False)
         # self.ann.update_display(self._current_idx, draw=False)
@@ -365,7 +370,7 @@ class VideoPointAnnotator(VideoBrowser):
         super().update()
         plt.draw()
 
-    def update_annotation_visibility(self, draw=False):
+    def update_annotation_visibility(self, draw: bool = False) -> None:
         """Update the visibility of all annotation layers, for example, when the layer is changed."""
         for ann in self.annotations:
             if ann.name == self._current_layer:
@@ -382,7 +387,7 @@ class VideoPointAnnotator(VideoBrowser):
             else:
                 ann.hide(draw=draw)
 
-    def update_frame_marker(self, draw=False):
+    def update_frame_marker(self, draw: bool = False) -> None:
         """Update the current frame location in the trace plots."""
 
         def nanlim(x):
@@ -418,7 +423,7 @@ class VideoPointAnnotator(VideoBrowser):
         if draw:
             plt.draw()
 
-    def copy_annotations_from_overlay(self):
+    def copy_annotations_from_overlay(self) -> None:
         """Copy annotations from the overlay layer into the current layer in the current frame."""
         ann_overlay = self.annotations[self._current_overlay]
         frame_number = self._current_idx
@@ -429,7 +434,7 @@ class VideoPointAnnotator(VideoBrowser):
                     self.ann.add(location, label, frame_number)
         self.update()
 
-    def copy_current_annotation_from_overlay(self):
+    def copy_current_annotation_from_overlay(self) -> None:
         """Copy annotations from the overlay layer into the current layer."""
         ann_overlay = self.annotations[self._current_overlay]
         frame_number = self._current_idx
@@ -440,7 +445,7 @@ class VideoPointAnnotator(VideoBrowser):
                 self.ann.add(location, label, frame_number)
         self.update()
 
-    def copy_frames_of_interest_from_overlay(self):
+    def copy_frames_of_interest_from_overlay(self) -> None:
         """copy annotations at frames of interest from buffer into the current layer.
         If there is no buffer, then copy from the overlay layer.
         """
@@ -454,7 +459,7 @@ class VideoPointAnnotator(VideoBrowser):
                         self.ann.add(location, label, frame_number)
         self.update()
 
-    def copy_frames_in_interval_from_overlay(self):
+    def copy_frames_in_interval_from_overlay(self) -> None:
         """For the current label only."""
         start_frame, end_frame = self.get_selected_interval()
         ann_overlay = self.annotations[self._current_overlay]
@@ -466,7 +471,12 @@ class VideoPointAnnotator(VideoBrowser):
                     self.ann.add(location, label, frame_number)
         self.update()
 
-    def _add_annotation(self, location, frame_number=None, label=None):
+    def _add_annotation(
+        self,
+        location: List[float],
+        frame_number: Optional[int] = None,
+        label: Optional[str] = None
+    ) -> None:
         """Core function for adding annotations. Allows more control."""
         if frame_number is None:
             frame_number = self._current_idx
@@ -474,18 +484,18 @@ class VideoPointAnnotator(VideoBrowser):
             label = self._current_label
         self.ann.add(location, label, frame_number)
 
-    def add_annotation(self, event):
+    def add_annotation(self, event: Any) -> None:
         """Add annotation at frame. If it exists, it'll get overwritten."""
         if event.inaxes == self._ax_image:
             self._add_annotation([float(event.xdata), float(event.ydata)])
         self.update()
 
-    def remove_annotation(self, event=None):
+    def remove_annotation(self, event: Optional[Any] = None) -> None:
         """remove annotation at the current frame if it exists"""
         self.ann.remove(self._current_label, self._current_idx)
         self.update()
 
-    def _get_nearest_annotated_frame(self, label=None) -> int:
+    def _get_nearest_annotated_frame(self, label: Optional[str] = None) -> int:
         """Return the nearest frame (in either direction) number with the current label in the current annotation layer."""
         if label is None:
             label = self._current_label
@@ -499,7 +509,7 @@ class VideoPointAnnotator(VideoBrowser):
             )
         return d[min(d)]
 
-    def previous_frame_with_current_label(self, event=None):
+    def previous_frame_with_current_label(self, event: Optional[Any] = None) -> None:
         """Go to the previous frame with the current label in the current annotation layer."""
         self._current_idx = max(
             [
@@ -511,7 +521,7 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def next_frame_with_current_label(self, event=None):
+    def next_frame_with_current_label(self, event: Optional[Any] = None) -> None:
         """Go to the next frame with the current label in the current annotation layer."""
         self._current_idx = min(
             [
@@ -523,7 +533,7 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def previous_frame_with_any_label(self, event=None):
+    def previous_frame_with_any_label(self, event: Optional[Any] = None) -> None:
         """Go to the previous frame with any label in the current annotation layer."""
         self._current_idx = max(
             [x for x in self.ann.frames if x < self._current_idx],
@@ -531,7 +541,7 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def next_frame_with_any_label(self, event=None):
+    def next_frame_with_any_label(self, event: Optional[Any] = None) -> None:
         """Go to the next frame with any label in the current annotation layer."""
         self._current_idx = min(
             [x for x in self.ann.frames if x > self._current_idx],
@@ -539,7 +549,7 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def previous_frame_of_interest(self, event=None):
+    def previous_frame_of_interest(self, event: Optional[Any] = None) -> None:
         """Go to the previous frame of interest."""
         self._current_idx = max(
             [x for x in self.frames_of_interest if x < self._current_idx],
@@ -547,14 +557,14 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def next_frame_of_interest(self, event=None):
+    def next_frame_of_interest(self, event: Optional[Any] = None) -> None:
         self._current_idx = min(
             [x for x in self.frames_of_interest if x > self._current_idx],
             default=self._current_idx,
         )
         self.update()
 
-    def _update_statevariable_annotation_label(self):
+    def _update_statevariable_annotation_label(self) -> None:
         """Update the annotation_label state variable.
         Used when the annotation_layer is changed,
         and each layer has a different set of labels.
@@ -567,64 +577,64 @@ class VideoPointAnnotator(VideoBrowser):
         else:
             x.set_state(current_state)
 
-    def previous_annotation_layer(self):
+    def previous_annotation_layer(self) -> None:
         """Go to the previous annotation layer."""
         self.statevariables["annotation_layer"].cycle_back()
         self._update_statevariable_annotation_label()
         self.update()
 
-    def next_annotation_layer(self):
+    def next_annotation_layer(self) -> None:
         """Go to the next annotation layer"""
         self.statevariables["annotation_layer"].cycle()
         self._update_statevariable_annotation_label()
         self.update()
 
-    def previous_annotation_overlay(self):
+    def previous_annotation_overlay(self) -> None:
         """Go to the previous annotation overlay layer."""
         self.statevariables["annotation_overlay"].cycle_back()
         self.update()
 
-    def next_annotation_overlay(self):
+    def next_annotation_overlay(self) -> None:
         """Go to the next annotation overlay layer."""
         self.statevariables["annotation_overlay"].cycle()
         self.update()
 
-    def previous_annotation_label(self):
+    def previous_annotation_label(self) -> None:
         """Set current annotation label to the previous one."""
         self.statevariables["annotation_label"].cycle_back()
         self.update()
 
-    def next_annotation_label(self):
+    def next_annotation_label(self) -> None:
         """Set current annotation label to the next one."""
         self.statevariables["annotation_label"].cycle()
         self.update()
 
-    def cycle_number_keys_behavior(self):
+    def cycle_number_keys_behavior(self) -> None:
         """Number keys can be used to either select labels, or place a specific label.
         Toggle between these two behaviors.
         """
         self.statevariables["number_keys"].cycle()
         self.update()
 
-    def increment_if_unannotated(self, event=None):
+    def increment_if_unannotated(self, event: Optional[Any] = None) -> None:
         """Advance the frame if the current frame doesn't have any annotations.
         Useful to pause at annotated frames when adding a new label.
         """
         if self._current_idx not in self.ann.frames:
             self.increment()
 
-    def decrement_if_unannotated(self, event=None):
+    def decrement_if_unannotated(self, event: Optional[Any] = None) -> None:
         """Go to the previous frame if the current frame doesn't have any annotations.
         Useful to pause at annotated frames when adding a new label.
         """
         if self._current_idx not in self.ann.frames:
             self.decrement()
 
-    def save(self):
+    def save(self) -> None:
         """Save current annotation layer json file."""
         self.ann.save()
 
-    def select_label_with_mouse(self, event):
+    def select_label_with_mouse(self, event: Any) -> None:
         """Select a label by clicking on it with the left mousebutton."""
         if event.mouseevent.button.name == "LEFT":
             self.statevariables["annotation_label"].set_state(str(event.ind[0]))
@@ -633,12 +643,12 @@ class VideoPointAnnotator(VideoBrowser):
             )
             self.update()
 
-    def place_label_with_mouse(self, event):
+    def place_label_with_mouse(self, event: Any) -> None:
         """Place the selected label with the right mousebutton."""
         if event.inaxes == self._ax and event.button.name == "RIGHT":
             self.add_annotation(event)
 
-    def go_to_frame(self, event):
+    def go_to_frame(self, event: Any) -> None:
         if (
             event.inaxes in (self._ax_trace_x, self._ax_trace_y)
             and event.button.name == "RIGHT"
@@ -646,7 +656,7 @@ class VideoPointAnnotator(VideoBrowser):
             self._current_idx = round(event.xdata)
             self.update()
 
-    def toggle_frame_of_interest(self, event):
+    def toggle_frame_of_interest(self, event: Any) -> None:
         """Mark/unmark the current frame as a frame of interest"""
         if event.inaxes in (self._ax_trace_x, self._ax_trace_y):
             frame_number = self._current_idx
@@ -657,13 +667,16 @@ class VideoPointAnnotator(VideoBrowser):
             self.frames_of_interest.sort()
             self.update()
 
-    def keep_overlapping_continuous_frames(self):
+    def keep_overlapping_continuous_frames(self) -> None:
         self.ann.keep_overlapping_continuous_frames()
         self.update()
 
     def predict_points_with_lucas_kanade(
-        self, labels="all", start_frame=None, mode="full"
-    ):
+        self,
+        labels: Union[str, List[str]] = "all",
+        start_frame: Optional[int] = None,
+        mode: str = "full"
+    ) -> Any:
         """Compute the location of labels at the current frame using Lucas-Kanade algorithm."""
         if labels == "all":
             labels = self.ann.labels
@@ -695,7 +708,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.update()
         return tracked_loc
 
-    def get_selected_interval(self):
+    def get_selected_interval(self) -> Tuple[int, int]:
         start_frame, end_frame = (
             self.events["interp_with_lk"]
             ._data[(self._current_layer, self._current_label)]
@@ -703,7 +716,7 @@ class VideoPointAnnotator(VideoBrowser):
         )
         return start_frame, end_frame
 
-    def remove_labels_in_interval(self, all_labels=False):
+    def remove_labels_in_interval(self, all_labels: bool = False) -> None:
         video = self.data
         if self._current_overlay is None:
             return
@@ -720,7 +733,7 @@ class VideoPointAnnotator(VideoBrowser):
                 self.ann.remove(label, frame_number)
         self.update()
 
-    def interpolate_with_lk(self, all_labels=False):
+    def interpolate_with_lk(self, all_labels: bool = False) -> None:
         """Interpolate with lk-rstc between selected interval. 
         Use data in the overlay layer as start and end points.
         Add interpolated points to the current layer.
@@ -747,7 +760,7 @@ class VideoPointAnnotator(VideoBrowser):
                 self._add_annotation(location, frame_number, label)
         self.update()
 
-    def interpolate_with_lk_norstc(self, all_labels=False):
+    def interpolate_with_lk_norstc(self, all_labels: bool = False) -> None:
         """Infer the motion of the current label using lucas-kanade algorithm in the selected interval."""
         video = self.data
         if self._current_overlay is None:
@@ -769,7 +782,7 @@ class VideoPointAnnotator(VideoBrowser):
                 self._add_annotation(location, frame_number, label)
         self.update()
 
-    def check_labels_with_lk(self, mode="minimal"):
+    def check_labels_with_lk(self, mode: str = "minimal") -> None:
         """Interpolate between all labeled frames.
         This only makes sense for sparse-labeled annotations.
         Use this when doing first-time annotations (as opposed to refinement).
@@ -825,7 +838,7 @@ class VideoPointAnnotator(VideoBrowser):
                 )
         self.update()
 
-    def render(self, start_frame, end_frame, out_vid_name=None):
+    def render(self, start_frame: int, end_frame: int, out_vid_name: Optional[str] = None) -> None:
         """Render the video with annotations."""
         if out_vid_name is None:
             out_vid_name = str(Path(self.ann.fname).with_suffix(".mp4"))
@@ -868,8 +881,12 @@ class VideoAnnotation:
     """
 
     def __init__(
-        self, fname: str = None, vname: str = None, name: str = None, **kwargs
-    ):
+        self,
+        fname: Optional[str] = None,
+        vname: Optional[str] = None,
+        name: Optional[str] = None,
+        **kwargs
+    ) -> None:
         self.fname, vname = self._parse_inp(fname, vname, name)
 
         if self.fname is not None:
@@ -911,7 +928,14 @@ class VideoAnnotation:
         self.setup_display()
 
     @classmethod
-    def from_multiple_files(cls, fname_list, vname, name, fname_merged, **kwargs):
+    def from_multiple_files(
+        cls,
+        fname_list: List[str],
+        vname: str,
+        name: str,
+        fname_merged: str,
+        **kwargs
+    ) -> VideoAnnotation:
         """Merge annotations from multiple files.
         If multiple files contain an annotation label for the same frame, values from the last file will be kept.
         """
@@ -931,7 +955,7 @@ class VideoAnnotation:
         return ret
 
     @staticmethod
-    def _parse_inp(fname_inp, vname_inp, name_inp):
+    def _parse_inp(fname_inp: Any, vname_inp: Any, name_inp: Any) -> Any:
         if fname_inp is None and vname_inp is None:
             fname, vname = fname_inp, vname_inp  # do nothing, empty annotation
         elif fname_inp is not None and vname_inp is None:
@@ -966,7 +990,7 @@ class VideoAnnotation:
             fname, vname = fname_inp, vname_inp  # do nothing
         return fname, vname
 
-    def load(self, n_annotations=10, **h5_kwargs):
+    def load(self, n_annotations: int = 10, **h5_kwargs) -> dict:
         """Load annotations from a json file, dlc h5 file, or initialize an annotation dictionary if a file doesn't exist."""
         if (self.fname is None) or (not os.path.exists(self.fname)):
             return {str(label): {} for label in range(n_annotations)}
@@ -978,7 +1002,7 @@ class VideoAnnotation:
         return self._load_dlc(self.fname, **h5_kwargs)
 
     @staticmethod
-    def _load_json(json_fname):
+    def _load_json(json_fname: str) -> dict:
         with open(json_fname, "r") as f:
             ret = {}
             for k, v in json.load(f).items():
@@ -986,7 +1010,7 @@ class VideoAnnotation:
                     ret[k] = {int(frame_num): loc for frame_num, loc in v.items()}
             return ret
 
-    def _load_dlc(self, dlc_fname, **kwargs):
+    def _load_dlc(self, dlc_fname: str, **kwargs) -> dict:
         if isinstance(dlc_fname, (str, Path)):
             assert os.path.exists(dlc_fname)
             assert Path(dlc_fname).suffix == ".h5"
@@ -1002,8 +1026,8 @@ class VideoAnnotation:
 
     @staticmethod
     def _dlc_df_to_annotation_dict(
-        df, remove_label_prefix="point", img_prefix="img", img_suffix=".png"
-    ):
+        df: pd.DataFrame, remove_label_prefix: str = "point", img_prefix: str = "img", img_suffix: str = ".png"
+    ) -> dict:
         """Convert dlc labeled data dataframe to an annotation dictionary"""
         if False in [
             utils.removeprefix(x, remove_label_prefix).isdigit() for x in df.columns.levels[1]
@@ -1042,7 +1066,7 @@ class VideoAnnotation:
         return data
 
     @staticmethod
-    def _dlc_trace_to_annotation_dict(df, remove_label_prefix="point"):
+    def _dlc_trace_to_annotation_dict(df: pd.DataFrame, remove_label_prefix: str = "point") -> dict:
         """Convery dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary."""
         if False in [
             utils.removeprefix(x, remove_label_prefix).isdigit() for x in df.columns.levels[1]
@@ -1072,29 +1096,29 @@ class VideoAnnotation:
 
         return data
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Number of annotations"""
         return len(self.data)
 
     @property
-    def n_frames(self):
+    def n_frames(self) -> int:
         """Number of frames in the video being annotated"""
         if self.video is None:
             return max(self.frames, default=-1) + 1
         return len(self.video)
 
     @property
-    def n_annotations(self):
+    def n_annotations(self) -> int:
         """Number of points being annotated in the video."""
         return len(self)
 
     @property
-    def labels(self):
+    def labels(self) -> List[str]:
         """Labels of the annotations."""
         return list(self.data.keys())
 
     @property
-    def frames(self):
+    def frames(self) -> List[int]:
         """Frame numbers in the video that have annotations."""
         ret = list(
             set([frame for label in self.labels for frame in self.get_frames(label)])
@@ -1103,7 +1127,7 @@ class VideoAnnotation:
         return ret
 
     @property
-    def frames_overlapping(self):
+    def frames_overlapping(self) -> List[int]:
         """List of frames in the video where all the labels are annotated."""
         ret = list(
             functools.reduce(
@@ -1113,12 +1137,12 @@ class VideoAnnotation:
         ret.sort()
         return ret
 
-    def get_frames(self, label):
+    def get_frames(self, label: str) -> List[int]:
         """Return a list of frames that are annotated with the current label."""
         assert label in self.labels
         return list(self.data[label].keys())
 
-    def save(self, fname=None):
+    def save(self, fname: Optional[str] = None) -> None:
         """Save the annotations json file. self.fname should be a valid file path."""
         if fname is None:
             assert self.fname is not None
@@ -1140,33 +1164,33 @@ class VideoAnnotation:
         labels_annotations = {label: len(self.data[label]) for label in self.labels}
         print(f"Saved {fname} with labels-n_annotations \n {labels_annotations}")
 
-    def sort_labels(self):
+    def sort_labels(self) -> None:
         """Sort labels in the data dictionary."""
         self.data = dict(sorted(self.data.items()))
 
-    def sort_data(self):
+    def sort_data(self) -> None:
         """Sort annotations by the frame numbers."""
         self.data = {
             label: dict(sorted(self.data[label].items())) for label in self.labels
         }
 
-    def get_values_cv(self, frame_num: int):
+    def get_values_cv(self, frame_num: int) -> np.ndarray:
         """Return annotations at frame_num in a format for openCV's optical flow algorithms"""
         return np.array(self.get_at_frame(frame_num), dtype=np.float32).reshape(
             (self.n_annotations, 1, 2)
         )
 
-    def _n_digits_in_frame_num(self):
+    def _n_digits_in_frame_num(self) -> str:
         """Number of digits to use when constructing a string from the frame number."""
         if self.n_frames is None:
             return "6"
         return str(len(str(self.n_frames)))
 
-    def _frame_num_as_str(self, frame_num: int):
+    def _frame_num_as_str(self, frame_num: int) -> str:
         """Return the frame umber as a formatted string."""
         return f"{frame_num:0{self._n_digits_in_frame_num()}}"
 
-    def add_at_frame(self, frame_num: int, values: np.ndarray):
+    def add_at_frame(self, frame_num: int, values: np.ndarray) -> None:
         """Add annotations at a frame, given the annotation values."""
         assert isinstance(frame_num, int)
         values = np.array(values)
@@ -1174,7 +1198,7 @@ class VideoAnnotation:
         for label, value in zip(self.labels, values):
             self.data[label][frame_num] = list(value)
 
-    def get_at_frame(self, frame_num: int):
+    def get_at_frame(self, frame_num: int) -> List[List[float]]:
         """Retrieve annotations at a given frame number. If an annotation is not present, nan values will be used."""
         ret = []
         for label in self.labels:
@@ -1184,7 +1208,7 @@ class VideoAnnotation:
                 ret.append([np.nan, np.nan])
         return ret
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Union[str, int]) -> Union[Dict[int, List[float]], List[List[float]]]:
         """Easy access to specific annotation, or data from a frame number."""
         if key in self.labels:
             return self.data[key]
@@ -1195,13 +1219,13 @@ class VideoAnnotation:
     def to_dlc(
         self,
         scorer: str = "praneeth",
-        output_path: str = None,
-        file_prefix: str = None,
+        output_path: Optional[str] = None,
+        file_prefix: Optional[str] = None,
         img_prefix: str = "img",
         img_suffix: str = ".png",
         label_prefix: str = "point",
         save: bool = True,
-        internal_to_dlc_labels: dict = None,
+        internal_to_dlc_labels: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
         """Save annotations in deeplabcut format."""
         if (
@@ -1303,7 +1327,7 @@ class VideoAnnotation:
         """
         return {label: self.to_signal(label) for label in self.labels}
 
-    def add_label(self, label=None, color=None):
+    def add_label(self, label: Optional[str] = None, color: Optional[Tuple[float, float, float]] = None) -> None:
         if label is None:  # pick the next available label
             assert len(self.labels) < 10
             label = f"{len(self.labels)}"
@@ -1324,17 +1348,19 @@ class VideoAnnotation:
 
         print(f"Created new label {label}")
 
-    def add(self, location, label, frame_number):
+    def add(self, location: List[float], label: str, frame_number: int) -> None:
         """Add a point annotation (location) of a given label at a frame number."""
         assert len(location) == 2
         self.data[label][frame_number] = list(location)
 
-    def remove(self, label, frame_number):
+    def remove(self, label: str, frame_number: int) -> None:
+        """Remove a point annotation of a given label at a frame number."""
         assert label in self.labels
         self.data[label].pop(frame_number, None)
 
     # display management
-    def _process_ax_list(self, ax_list, type_):
+    def _process_ax_list(self, ax_list: Union[None, plt.Axes, List[plt.Axes]], type_: str) -> List[plt.Axes]:
+        """Process the list of axes for scatter or trace plots."""
         assert type_ in ("scatter", "trace_x", "trace_y")
         if ax_list is None:
             ax_list = self.plot_handles[f"ax_list_{type_}"]
@@ -1344,7 +1370,8 @@ class VideoAnnotation:
         self.plot_handles[f"ax_list_{type_}"] = ax_list
         return ax_list
 
-    def _process_palette(self, palette):
+    def _process_palette(self, palette: Union[str, List[Tuple[float, float, float]], None]) -> List[Tuple[float, float, float]]:
+        """Process the color palette."""
         if palette is None:
             return self.palette
 
@@ -1354,7 +1381,10 @@ class VideoAnnotation:
         self.palette = palette
         return palette
 
-    def setup_display_scatter(self, ax_list_scatter=None, palette=None):
+    def setup_display_scatter(
+        self, ax_list_scatter: Union[None, plt.Axes, List[plt.Axes]] = None, palette: Union[str, List[Tuple[float, float, float]], None] = None
+    ) -> None:
+        """Setup scatter plot display."""
         ax_list_scatter = self._process_ax_list(ax_list_scatter, "scatter")
         palette = self._process_palette(palette)
 
@@ -1367,8 +1397,12 @@ class VideoAnnotation:
             )
 
     def setup_display_trace(
-        self, ax_list_trace_x=None, ax_list_trace_y=None, palette=None
-    ):
+        self,
+        ax_list_trace_x: Union[None, plt.Axes, List[plt.Axes]] = None,
+        ax_list_trace_y: Union[None, plt.Axes, List[plt.Axes]] = None,
+        palette: Union[str, List[Tuple[float, float, float]], None] = None,
+    ) -> None:
+        """Setup trace plot display."""
         ax_list_trace_x = self._process_ax_list(ax_list_trace_x, "trace_x")
         ax_list_trace_y = self._process_ax_list(ax_list_trace_y, "trace_y")
         palette = self._process_palette(palette)
@@ -1399,11 +1433,19 @@ class VideoAnnotation:
 
             ax_x.set_xlim(0, self.n_frames)
 
-    def setup_display(self, ax_list_scatter=None, ax_list_trace_x=None, ax_list_trace_y=None, palette=None):
+    def setup_display(
+        self,
+        ax_list_scatter: Union[None, plt.Axes, List[plt.Axes]] = None,
+        ax_list_trace_x: Union[None, plt.Axes, List[plt.Axes]] = None,
+        ax_list_trace_y: Union[None, plt.Axes, List[plt.Axes]] = None,
+        palette: Union[str, List[Tuple[float, float, float]], None] = None,
+    ) -> None:
+        """Setup display for scatter and trace plots."""
         self.setup_display_scatter(ax_list_scatter, palette)
         self.setup_display_trace(ax_list_trace_x, ax_list_trace_y, palette)
 
-    def update_display_scatter(self, frame_number, draw=False):
+    def update_display_scatter(self, frame_number: int, draw: bool = False) -> None:
+        """Update scatter plot display."""
         for ax_cnt in range(len(self.plot_handles["ax_list_scatter"])):
             n_pts = len(self.palette)
             scatter_offsets = np.full((n_pts, 2), np.nan)
@@ -1414,7 +1456,8 @@ class VideoAnnotation:
         if draw:
             plt.draw()
 
-    def update_display_trace(self, label=None, draw=False):
+    def update_display_trace(self, label: Optional[str] = None, draw: bool = False) -> None:
+        """Update trace plot display."""
         if label is None:
             label_list = self.labels
         else:
@@ -1431,7 +1474,8 @@ class VideoAnnotation:
         if draw:
             plt.draw()
 
-    def update_display(self, frame_number, label=None, draw=False):
+    def update_display(self, frame_number: int, label: Optional[str] = None, draw: bool = False) -> None:
+        """Update scatter and trace plot display."""
         self.update_display_scatter(frame_number, draw=False)
         self.update_display_trace(label, draw=False)
         if draw:
@@ -1460,38 +1504,41 @@ class VideoAnnotation:
     def _trace_or_label_handles(self) -> dict:
         return {**self._trace_handles, **self._label_handles}
 
-    def _set_visibility(self, visibility: bool = True, draw=False):
+    def _set_visibility(self, visibility: bool = True, draw: bool = False) -> None:
         for plot_handle in self._trace_or_label_handles.values():
             plot_handle.set_visible(visibility)
         if draw:
             plt.draw()
 
-    def hide(self, draw=True):
+    def hide(self, draw: bool = True) -> None:
         """Hide all elements (scatter, traces) in this annotation."""
         self._set_visibility(False, draw)
 
-    def show(self, draw=True):
+    def show(self, draw: bool = True) -> None:
         """Show all elements (scatter, traces) in this annotation."""
         self._set_visibility(True, draw)
 
-    def _set_trace_visibility(self, label: str, visibility: bool = True, draw=False):
+    def _set_trace_visibility(self, label: str, visibility: bool = True, draw: bool = False) -> None:
         for plot_handle_name, plot_handle in self._trace_handles.items():
             if plot_handle_name.endswith(f"_label{label}"):
                 plot_handle.set_visible(visibility)
         if draw:
             plt.draw()
 
-    def show_trace(self, label, draw=True):
+    def show_trace(self, label: str, draw: bool = True) -> None:
+        """Show trace for a specific label."""
         self._set_trace_visibility(label, True, draw)
 
-    def hide_trace(self, label, draw=True):
+    def hide_trace(self, label: str, draw: bool = True) -> None:
+        """Hide trace for a specific label."""
         self._set_trace_visibility(label, False, draw)
 
-    def show_one_trace(self, label, draw=True):
+    def show_one_trace(self, label: str, draw: bool = True) -> None:
+        """Show only one trace for a specific label."""
         for this_label in self.labels:
             self._set_trace_visibility(this_label, this_label == label, draw)
 
-    def set_alpha(self, alpha=0.4, label=None, draw=True):
+    def set_alpha(self, alpha: float = 0.4, label: Optional[str] = None, draw: bool = True) -> None:
         """Set the transparency level of all (or one) the traces and labels in this annotation.
 
         Args:
@@ -1504,7 +1551,13 @@ class VideoAnnotation:
         if draw:
             plt.draw()
 
-    def set_plot_type(self, type_="line", draw=True):
+    def set_plot_type(self, type_: str = "line", draw: bool = True) -> None:
+        """Set the plot type for traces.
+
+        Args:
+            type_ (str, optional): "line" or "dot". Defaults to "line".
+            draw (bool, optional): Update display if True. Defaults to True.
+        """
         assert type_ in ("line", "dot")
         for trace_handle in self._trace_handles.values():
             if type_ == "line":
@@ -1516,7 +1569,7 @@ class VideoAnnotation:
         if draw:
             plt.draw()
 
-    def clip_labels(self, start_frame: int, end_frame: int):
+    def clip_labels(self, start_frame: int, end_frame: int) -> None:
         """Remove annotations outside the clip range. Clip range includes start and end frame."""
         for label in self.labels:
             self.data[label] = {
@@ -1525,7 +1578,7 @@ class VideoAnnotation:
                 if start_frame <= k <= end_frame
             }
 
-    def keep_overlapping_continuous_frames(self):
+    def keep_overlapping_continuous_frames(self) -> None:
         """Keep data from consecutive frames that have all labels."""
         x = self.frames_overlapping
         frames_to_keep = sorted(
@@ -1542,7 +1595,7 @@ class VideoAnnotation:
             }
 
     def get_area(
-        self, labels: Union[List, str], lowpass: float = None
+        self, labels: Union[List[str], str], lowpass: Optional[float] = None
     ) -> Union[pysampled.Data, np.ndarray]:
         """Get the area in pixel squared."""
 
@@ -1577,7 +1630,7 @@ class VideoAnnotation:
 
 
 class VideoAnnotations(AssetContainer):
-    def add(self, name: Union[str, VideoAnnotation], fname=None, vname=None, **kwargs):
+    def add(self, name: Union[str, VideoAnnotation], fname=None, vname=None, **kwargs) -> VideoAnnotation:
         """Create-and-add"""
         if isinstance(name, VideoAnnotation):
             ann = name
