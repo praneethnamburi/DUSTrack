@@ -72,7 +72,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.annotations = VideoAnnotations(parent=self)
         self.load_annotation_layers(annotation_names, n_labels)
         if "buffer" in self.annotations.names:
-            self.annotations["buffer"].set_plot_type("line")
+            self.annotations["buffer"].plot_type = "line"
 
         # frames of interest
         self.frames_of_interest = []
@@ -88,6 +88,9 @@ class VideoPointAnnotator(VideoBrowser):
         self.statevariables.add("annotation_overlay", [None] + self.annotations.names)
         self.statevariables.add("annotation_label", self.ann.labels)
         self.statevariables.add("label_range", [f"{x*10}-{x*10+9}" for x in range(100)]) # up to 1000 labels
+        first_label = self.ann.labels[0]
+        self.statevariables["label_range"].set_state(int(first_label) // 10)
+        self.update_annotation_label_states()
         self.statevariables.add("number_keys", ["select", "place"])
         self._ax_statevar = figure_handle.add_subplot(gs[0, 0])
         self.statevariables.show(pos="middle left", fax=self._ax_statevar)
@@ -574,29 +577,14 @@ class VideoPointAnnotator(VideoBrowser):
         )
         self.update()
 
-    def _update_statevariable_annotation_label(self) -> None:
-        """Update the annotation_label state variable.
-        Used when the annotation_layer is changed,
-        and each layer has a different set of labels.
-        """
-        x = self.statevariables["annotation_label"]
-        current_state = x.current_state
-        x.states = self.ann.labels
-        if current_state not in self.ann.labels:
-            x.set_state(0)
-        else:
-            x.set_state(current_state)
-
     def previous_annotation_layer(self) -> None:
         """Go to the previous annotation layer."""
         self.statevariables["annotation_layer"].cycle_back()
-        self._update_statevariable_annotation_label()
         self.update()
 
     def next_annotation_layer(self) -> None:
         """Go to the next annotation layer"""
         self.statevariables["annotation_layer"].cycle()
-        self._update_statevariable_annotation_label()
         self.update()
 
     def previous_annotation_overlay(self) -> None:
@@ -976,6 +964,7 @@ class VideoAnnotation:
             "ax_list_trace_x": kwargs.pop("ax_list_trace_x", []),
             "ax_list_trace_y": kwargs.pop("ax_list_trace_y", []),
         }
+        self._plot_type = "dot" # line or dot
         self.setup_display()
 
     @classmethod
@@ -1053,8 +1042,7 @@ class VideoAnnotation:
         with open(json_fname, "r") as f:
             ret = {}
             for k, v in json.load(f).items():
-                if v:
-                    ret[k] = {int(frame_num): loc for frame_num, loc in v.items()}
+                ret[k] = {int(frame_num): loc for frame_num, loc in v.items()}
             return ret
 
     def _load_dlc(self, dlc_fname: str, **kwargs) -> dict:
@@ -1195,6 +1183,18 @@ class VideoAnnotation:
         )
         ret.sort()
         return ret
+    
+    @property
+    def plot_type(self) -> str:
+        """Type of plot to use for the annotations."""
+        return self._plot_type
+    
+    @plot_type.setter
+    def plot_type(self, plot_type: str) -> None:
+        """Set the type of plot to use for the annotations."""
+        assert plot_type in ("line", "dot")
+        self._plot_type = plot_type
+        self.set_plot_type(self._plot_type)
 
     def get_frames(self, label: str) -> List[int]:
         """Return a list of frames that are annotated with the current label."""
@@ -1210,7 +1210,7 @@ class VideoAnnotation:
         if Path(fname).suffix != ".json":
             raise ValueError("Supply a json file name.")
         self.sort_data()
-        self.clip_trailing_empty_labels()
+        self.remove_empty_labels()
         # cast data due to json dump issues
         data = {
             label: {
@@ -1247,6 +1247,10 @@ class VideoAnnotation:
         last_index = last_nonzero_index(n_labeled_frames)
 
         self.data = {label: self.data[label] for idx, label in enumerate(self.labels) if idx <= last_index}
+    
+    def remove_empty_labels(self) -> None:
+        """Remove empty labels from the annotation dictionary."""
+        self.data = {label: self.data[label] for label in self.labels if len(self.data[label]) > 0}
 
     def get_values_cv(self, frame_num: int) -> np.ndarray:
         """Return annotations at frame_num in a format for openCV's optical flow algorithms"""
@@ -1510,6 +1514,7 @@ class VideoAnnotation:
         """Setup display for scatter and trace plots."""
         self.setup_display_scatter(ax_list_scatter)
         self.setup_display_trace(ax_list_trace_x, ax_list_trace_y)
+        self.set_plot_type(self.plot_type)
 
     def clear_display(self) -> None:
         """Clear the display."""
