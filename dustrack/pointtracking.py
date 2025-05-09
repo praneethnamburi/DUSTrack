@@ -52,13 +52,11 @@ class VideoPointAnnotator(VideoBrowser):
         image_process_func: Callable = lambda im: im,
         height_ratios: Tuple = (10, 1, 1),  # depends on your screen size
     ) -> None:
-        figure_handle, (
-            self._ax_image,
-            self._ax_trace_x,
-            self._ax_trace_y,
-        ) = plt.subplots(
-            3, 1, gridspec_kw=dict(height_ratios=list(height_ratios)), figsize=(10, 8)
-        )
+        figure_handle = plt.figure(constrained_layout=True, figsize=(12, 8))
+        gs = figure_handle.add_gridspec(3, 2, width_ratios=[1, 4], height_ratios=list(height_ratios))
+        self._ax_image = figure_handle.add_subplot(gs[0, 1])
+        self._ax_trace_x = figure_handle.add_subplot(gs[1, :])
+        self._ax_trace_y = figure_handle.add_subplot(gs[2, :])
         self._ax_trace_x.sharex(self._ax_trace_y)
         (self._frame_marker_x,) = self._ax_trace_x.plot(
             [], [], color="black", linewidth=1
@@ -91,7 +89,8 @@ class VideoPointAnnotator(VideoBrowser):
         self.statevariables.add("annotation_label", self.ann.labels)
         self.statevariables.add("label_range", [f"{x*10}-{x*10+9}" for x in range(100)]) # up to 1000 labels
         self.statevariables.add("number_keys", ["select", "place"])
-        self.statevariables.show(pos="top left")
+        self._ax_statevar = figure_handle.add_subplot(gs[0, 0])
+        self.statevariables.show(pos="middle left", fax=self._ax_statevar)
 
         self.add_events()
 
@@ -114,7 +113,6 @@ class VideoPointAnnotator(VideoBrowser):
             plt.show(block=False)
             self.update()
             plt.setp(self._ax_trace_x.get_xticklabels(), visible=False)
-            self.figure.tight_layout()
             plt.draw()
 
     @classmethod
