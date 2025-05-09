@@ -175,19 +175,19 @@ class VideoPointAnnotator(VideoBrowser):
                 label for label, label_data in ann.data.items() if label_data
             ]
         all_labels = sorted(list(set(all_labels)))
-        if (
-            not all_labels
-        ):  # when starting without any annotations, initialize a full set of empty annotations
+        if not all_labels:
+            # when starting without any annotations, initialize a full set of empty annotations
             all_labels = [str(x) for x in range(n_labels)]
         for ann in self.annotations._list:
             for label in all_labels:
                 if label not in ann.labels:
-                    ann.data[label] = {}
+                    ann.add_label(label)
             for label in ann.labels:
                 if label not in all_labels:
                     assert not ann.data[label]
                     del ann.data[label]
             ann.sort_labels()
+            ann.re_setup_display()
 
     def set_key_bindings(self) -> None:
         """Set the keyboard actions."""
@@ -1416,15 +1416,6 @@ class VideoAnnotation:
             print(f"Label {label} already exists in layer {self.name}.")
             return
         assert label.isdigit()
-        # curr_max_label = -1 if not self.labels else max([int(x) for x in self.labels])
-        # target_label = int(label)
-        # if target_label > curr_max_label + 1:
-        #     # add all labels in between
-        #     for label_cnt in range(curr_max_label + 1, target_label+1):
-        #         self.add_label(str(label_cnt))
-        #     return
-
-        # assert int(label) == curr_max_label + 1, "Label must be the next available label."
 
         if int(label) > len(self._original_palette):
             self._original_palette = self._original_palette*2
@@ -1438,13 +1429,7 @@ class VideoAnnotation:
         self.data[label] = {}
         self.sort_labels()
 
-        # re-establish display elements when adding a label
-        self.clear_display()
-        self.setup_display(
-            ax_list_scatter=self.plot_handles["ax_list_scatter"],
-            ax_list_trace_x=self.plot_handles["ax_list_trace_x"],
-            ax_list_trace_y=self.plot_handles["ax_list_trace_y"],
-        )
+        self.re_setup_display()
 
         print(f"Created new label {label} in layer {self.name} with color {color}.")
 
@@ -1538,6 +1523,15 @@ class VideoAnnotation:
                 if handle_name in self.plot_handles:
                     self.plot_handles[handle_name].remove()
         plt.draw()
+    
+    def re_setup_display(self) -> None:
+        """re-establish display elements when adding a label"""
+        self.clear_display()
+        self.setup_display(
+            ax_list_scatter=self.plot_handles["ax_list_scatter"],
+            ax_list_trace_x=self.plot_handles["ax_list_trace_x"],
+            ax_list_trace_y=self.plot_handles["ax_list_trace_y"],
+        )
 
     def update_display_scatter(self, frame_number: int, draw: bool = False) -> None:
         """Update scatter plot display."""
@@ -1748,7 +1742,7 @@ if __name__ == "__main__":
     sys.path.append(r"C:\dev\datanavigator")
     import datanavigator
     video_fname = datanavigator.get_example_video()
-    v = VideoPointAnnotator(video_fname, "pn1", n_labels=2)
+    v = VideoPointAnnotator(video_fname, "pn2", n_labels=2)
     for ann in v.annotations:
         ann.add_label("3")
     v.update()
