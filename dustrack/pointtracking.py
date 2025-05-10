@@ -354,13 +354,18 @@ class VideoPointAnnotator(VideoBrowser):
         """Callbacks for number keys."""
         super().__call__(event)
         if event.name == "key_press_event":
-            if event.key in self.ann.labels:
-                self.statevariables["annotation_label"].set_state(str(event.key))
-                if self.statevariables["number_keys"].current_state == "place":
-                    self.add_annotation(event)
-                self.update()
-            elif event.key in [str(x) for x in range(10)]:
+            if event.key in [str(x) for x in range(10)]:
+                # number key is pressed
                 label = str(int(event.key) + int(self.statevariables["label_range"]._current_state_idx) * 10)
+                # if the label already exists
+                if label in self.ann.labels:
+                    self.statevariables["annotation_label"].set_state(str(event.key))
+                    if self.statevariables["number_keys"].current_state == "place":
+                        self.add_annotation(event)
+                    self.update()
+                    return
+                
+                # add a new label if the label doesn't exist
                 for ann in self.annotations._list:  # add new label to all annotations
                     if label not in ann.labels:
                         ann.add_label(label)
