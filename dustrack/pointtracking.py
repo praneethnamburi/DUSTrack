@@ -353,27 +353,28 @@ class VideoPointAnnotator(VideoBrowser):
     def __call__(self, event: Any) -> None:
         """Callbacks for number keys."""
         super().__call__(event)
-        if event.name == "key_press_event":
-            if event.key in [str(x) for x in range(10)]:
-                # number key is pressed
-                label = str(int(event.key) + int(self.statevariables["label_range"]._current_state_idx) * 10)
-                # if the label already exists
-                if label in self.ann.labels:
-                    self.statevariables["annotation_label"].set_state(str(event.key))
-                    if self.statevariables["number_keys"].current_state == "place":
-                        self.add_annotation(event)
-                    self.update()
-                    return
-                
+        # if a number key is pressed
+        if event.name == "key_press_event" and str(event.key).isdigit() and int(event.key) in range(10):
+            key_str = str(event.key)
+            key_int = int(event.key)
+            label = str(key_int + int(self.statevariables["label_range"]._current_state_idx) * 10)
+            
+            # if the label already exists
+            if label in self.ann.labels:
+                self.statevariables["annotation_label"].set_state(key_str)
+                if self.statevariables["number_keys"].current_state == "place":
+                    self.add_annotation(event)
+            else:                
                 # add a new label if the label doesn't exist
                 for ann in self.annotations._list:  # add new label to all annotations
                     if label not in ann.labels:
                         ann.add_label(label)
                 self.update_annotation_label_states()
-                self.statevariables["annotation_label"].set_state(str(int(event.key)))
+                self.statevariables["annotation_label"].set_state(key_str)
                 if self.statevariables["number_keys"].current_state == "place":
                     self.add_annotation(event)
-                self.update()
+
+            self.update()
 
     def update(self) -> None:
         """Update elements in the UI."""
@@ -1527,9 +1528,10 @@ class VideoAnnotation:
             self.plot_handles[f"labels_in_ax{ax_cnt}"].remove()
         for ax_cnt in range(len(self.plot_handles["ax_list_trace_x"])):
             for label in self.labels:
-                handle_name = f"trace_in_axx{ax_cnt}_label{label}"
-                if handle_name in self.plot_handles:
-                    self.plot_handles[handle_name].remove()
+                for ax_type in ("x", "y"):
+                    handle_name = f"trace_in_ax{ax_type}{ax_cnt}_label{label}"
+                    if handle_name in self.plot_handles:
+                        self.plot_handles[handle_name].remove()
         plt.draw()
     
     def re_setup_display(self) -> None:
