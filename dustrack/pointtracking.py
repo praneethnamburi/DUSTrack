@@ -70,7 +70,7 @@ class VideoPointAnnotator(VideoBrowser):
 
         # annotation layers
         self.annotations = VideoAnnotations(parent=self)
-        self.load_annotation_layers(annotation_names, n_labels)
+        self.add_annotation_layers(annotation_names, n_labels)
         if "buffer" in self.annotations.names:
             self.annotations["buffer"].plot_type = "line"
 
@@ -128,7 +128,7 @@ class VideoPointAnnotator(VideoBrowser):
         assert len(video_names) == 1  # same video across all annotations
         return cls(video_names.pop(), annotations, *args, **kwargs)
 
-    def load_annotation_layers(
+    def add_annotation_layers(
         self, 
         annotation_names: Union[List[str], Dict[str, Path], List[VideoAnnotation]],
         n_labels: int = 10
@@ -144,7 +144,7 @@ class VideoPointAnnotator(VideoBrowser):
                 a.name: a.fname for a in annotation_names
             }  # re-add because of plotting
 
-        if "buffer" not in annotation_names:
+        if "buffer" not in annotation_names and "buffer" not in self.annotations.names:
             if isinstance(annotation_names, list):
                 annotation_names.append("buffer")
             else:
@@ -189,6 +189,14 @@ class VideoPointAnnotator(VideoBrowser):
                     del ann.data[label]
             ann.sort_labels()
             ann.re_setup_display()
+
+        if "annotation_layer" in self.statevariables.names:
+            self.statevariables["annotation_layer"].states = self.annotations.names
+        if "annotation_overlay" in self.statevariables.names:
+            self.statevariables["annotation_overlay"].states = [
+                None
+            ] + self.annotations.names
+    
 
     def set_key_bindings(self) -> None:
         """Set the keyboard actions."""
