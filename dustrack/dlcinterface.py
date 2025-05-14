@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import os
-import re
 import shutil
 from pathlib import Path
 from typing import Mapping, Union
@@ -9,7 +10,6 @@ import numpy as np
 import pandas as pd
 import cv2 as cv
 from pyfilemanager import FileManager
-from datanest import Database
 import pysampled
 from ruamel.yaml.scanner import ScannerError
 from skimage import io
@@ -45,30 +45,36 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             ann.__class__ = VideoAnnotation
         
         self._dlcproject = None
+
+        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
+        self._add_dummy_button("dummy1")
         self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
         self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
         self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-
-        # add a dummy button
-        button = self.buttons.add(text="dummy", action_func=lambda x, ev: None)
-        button.ax.patch.set_visible(False)  # Hide the rectangular patch
-        button.label.set_visible(False) # Hide the text label
-        button.ax.axis('off') # Optional: Turn off the axes frame
-
+        self._add_dummy_button("dummy2")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
+
+        self.statevariables._text._pos = datanavigator.utils._parse_pos("bottom left")
         
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
             self.update()
             plt.setp(self._ax_trace_x.get_xticklabels(), visible=False)
             plt.draw()
+
+    def _add_dummy_button(self, name="dummy"):
+        # add a dummy button
+        button = self.buttons.add(text=name, action_func=lambda x, ev: None)
+        button.ax.patch.set_visible(False)  # Hide the rectangular patch
+        button.label.set_visible(False) # Hide the text label
+        button.ax.axis('off') # Optional: Turn off the axes frame
     
-    def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER):
+    def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER) -> DLCProject:
         """Create a new deeplabcut project with the current annotation layer as labels."""
         self.ann.save()
         if name is None:
-            name = self.name
+            name = f"{self.name}_{self.ann.name}"
         if path is None:
             path = str(Path(self.fname).parent)
         self._dlcproject = DLCProject(
@@ -82,18 +88,21 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
     
     def process_dlc_project(self, event=None, *args, **kwargs):
         """Process the deeplabcut project."""
+        assert self._dlcproject is not None, "DLCProject not created. Use create_dlc_project() to create it."
         plt.close(self.figure)
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
         self._dlcproject.process(*args, **kwargs)
         return self._dlcproject.annotate()
     
-    def process_with_lk(self, event=None, *args, **kwargs):
-        plt.close(self.figure)
+    def process_with_lk(self, event=None, *args, **kwargs) -> VideoAnnotation:
         ann_processed = lk_moving_average_filter(self.ann, *args, **kwargs)
         ann_processed.save()
-        return DUSTrack(self.fname, {**{ann.name: ann.fname for ann in self.annotations}, **{ann_processed.name: ann_processed.fname}})
-
+        self.add_annotation_layers(ann_processed)
+        self.statevariables["annotation_overlay"].set_state(self.ann.name)
+        self.statevariables["annotation_layer"].set_state(ann_processed.name)
+        self.update()
+        return ann_processed
 
 
 class DLCData(pysampled.Data):
