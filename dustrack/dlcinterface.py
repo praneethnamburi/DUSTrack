@@ -520,7 +520,8 @@ class DLCProject:
         # find the correct pose_cfg file
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
-        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-{source_snapshot}.index']
+        ext = '.pt' if DLC3 else '.index'
+        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
         self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
         return self
@@ -578,12 +579,19 @@ class DLCProject:
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def process(self, iteration_num=None, maxiters=500000, refine=True):
+    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None):
         """Main method that tries to take the best course of action based on the state of the project."""
         if iteration_num is None:
             iteration_num = 'latest'
         else:
             assert isinstance(iteration_num, int)
+
+        if maxiters is None:
+            if DLC3:
+                maxiters = 500000
+            else:
+                maxiters = 1000 # epochs
+
         self.current_iteration = iteration_num
 
         current_iteration = self.current_iteration
@@ -603,11 +611,18 @@ class DLCProject:
         
         if refine:
             if not self.latest_iteration_is_trained() and self.current_iteration == self.latest_iteration:
-                self.initialize_weights()
-        
+                if source_snapshot is not None:
+                    source_iteration = self.latest_iteration - int(not self.latest_iteration_is_trained())
+                else:
+                    source_iteration = None
+                self.initialize_weights(source_iteration=source_iteration, source_snapshot=source_snapshot)
+
         if not self.current_iteration_is_trained():
             try:
-                self.train(maxiters=maxiters)
+                if DLC3:
+                    self.train(epochs=maxiters)
+                else:
+                    self.train(maxiters=maxiters)
             except KeyboardInterrupt:
                 pass
 
