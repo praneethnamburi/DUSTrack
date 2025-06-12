@@ -26,6 +26,7 @@ from . import _config
 
 
 EXPERIMENTER = _config.EXPERIMENTER
+DLC3 = deeplabcut.__version__.startswith('3.')
 
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
@@ -123,7 +124,7 @@ class DLCData(pysampled.Data):
         df_h5 = pd.read_hdf(file_path)
         label_names = list(df_h5.columns.unique(level='bodyparts'))
         coords = list(df_h5.columns.unique(level='coords'))
-        vid_paths = FileManager(Path(file_path).parent).add()[f'*{Path(file_path).stem}_labeled.mp4']
+        vid_paths = FileManager(Path(file_path).parent).add()[f'*{Path(file_path).stem}*_labeled.mp4']
         if len(vid_paths) == 0:
             raise FileNotFoundError('Could not find the video file')
         sr = int(cv.VideoCapture(vid_paths[0]).get(cv.CAP_PROP_FPS))
@@ -204,6 +205,8 @@ class DLCProject:
             bodyparts = [f'point{x}' for x in annotation_names]
             self.edit_config(bodyparts=bodyparts, skeleton=None)
             self.edit_config(snapshotindex='all') # evaluate all snapshots
+            if not os.path.exists(self.paths['models']):
+                os.makedirs(self.paths['models'])
 
         try:
             deeplabcut.auxiliaryfunctions.read_config(self.config_path)
@@ -215,10 +218,12 @@ class DLCProject:
     def paths(self) -> Mapping[str, Path]:
         """Full paths to the project folder and its subfolders."""
         project_path = Path(self.config_path).parent
+        model_folder_name = 'dlc-models-pytorch' if DLC3 else 'dlc-models'
+        evaluation_folder_name = 'evaluation-results-pytorch' if DLC3 else 'evaluation-results'
         return dict(
             project       = project_path,
-            models        = project_path / 'dlc-models',
-            results       = project_path / 'evaluation-results',
+            models        = project_path / model_folder_name,
+            results       = project_path / evaluation_folder_name,
             labels        = project_path / 'labeled-data',
             training_data = project_path / 'training-datasets',
             videos        = project_path / 'videos',
@@ -320,10 +325,15 @@ class DLCProject:
     @property
     def all_snapshots(self) -> Mapping[int, list[int]]:
         """Return a dictionary mapping from model iteration number to list of training iterations in that model iteration."""
+        if DLC3:
+            ext = ".pt"
+        else:
+            ext = ".index"
+    
         ret = {}
         for iteration_num in self.all_iterations:
             source_path = self.paths['models'] / f'iteration-{iteration_num}'
-            snapshot_filenames = FileManager(source_path).add()['*train/snapshot*.index']
+            snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*{ext}']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
             snapshot_numbers.sort()
             ret[iteration_num] = snapshot_numbers
@@ -425,7 +435,11 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.current_iteration
         assert type_ in ('train', 'test')
-        cfg_files = FileManager(self.paths['models'] / f'iteration-{iteration_num}').add()[f'*{type_}/pose_cfg*']
+        if type_ == "train" and self.config['engine'] == 'pytorch':
+            cfg_name = "pytorch_config"
+        else:
+            cfg_name = "pose_cfg"
+        cfg_files = FileManager(self.paths['models'] / f'iteration-{iteration_num}').add()[f'*{type_}/{cfg_name}*']
         assert len(cfg_files) == 1
         return cfg_files[0]
     
@@ -433,6 +447,16 @@ class DLCProject:
         """Return the training iteration number with the lowest test error for a given model iteration number iteration_num."""
         if iteration_num is None:
             iteration_num = self.current_iteration
+        
+        if DLC3:
+            source_path = self.paths['models'] / f'iteration-{iteration_num}'
+            snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*.pt']
+            snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
+            best_snapshot_number = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
+            if best_snapshot_number:
+                return best_snapshot_number[0]
+            return snapshot_numbers[-1]
+
         eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
         if os.path.exists(eval_file_name):
             # pick the snapshot with the lowest training error
@@ -450,11 +474,12 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.latest_trained_iteration
         eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
+        column_name = 'test rmse_pcutoff' if DLC3 else 'Test error(px)'
         if os.path.exists(eval_file_name):
             # pick the snapshot with the lowest training error
             df_eval = pd.read_csv(eval_file_name)
             df_eval = df_eval.rename(columns=lambda x: x.strip())
-            return float(min(df_eval['Test error(px)']))
+            return float(min(df_eval[column_name]))
         return -1.
     
     def get_best_snapshot_idx(self, iteration_num: int=None) -> int:
@@ -701,7 +726,8 @@ class VideoFileManager(FileManager):
     
     @property
     def dlc_traces(self) -> dict:
-        fnames = self[f'{self.video_stem}*{self.project_name}*.h5']
+        fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
+        fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
         return {self._get_dlc_trace_name(fname): fname for fname in fnames}
     
     @property
@@ -722,7 +748,8 @@ class VideoFileManager(FileManager):
     @property
     def labeled_data(self):
         """HDF5 file containing labels in deeplabcut format, used to train and test models."""
-        ret = self[f'{self.video_stem}*CollectedData*.h5']
+        fm_temp = FileManager(str(Path(self.base_dir) / "labeled-data")).add()
+        ret = fm_temp[f'{self.video_stem}*CollectedData*.h5']
         assert len(ret) == 1
         return ret[0]
 
