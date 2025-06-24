@@ -1,1 +1,2 @@
-EXPERIMENTER = "anonymous"
+EXPERIMENTER = "x"
+NAS_IP = "192.168.100.2"

@@ -208,6 +208,20 @@ class DLCProject:
             if not os.path.exists(self.paths['models']):
                 os.makedirs(self.paths['models'])
 
+        def change_ip(inp_str):
+            x = inp_str.split('\\')
+            if len(x[2].split('.')) == 4:
+                x[2] = _config.NAS_IP
+                print(f"IP address changed to {_config.NAS_IP}")
+                return '\\'.join(x)
+            print("IP address was not changed")
+            return inp_str
+
+        if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
+            video_sets = self.config["video_sets"]
+            new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
+            self.edit_config(video_sets=new_video_sets)
+        
         try:
             deeplabcut.auxiliaryfunctions.read_config(self.config_path)
         except ScannerError as s:
@@ -334,8 +348,9 @@ class DLCProject:
         for iteration_num in self.all_iterations:
             source_path = self.paths['models'] / f'iteration-{iteration_num}'
             snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*{ext}']
-            snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
+            snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" not in Path(x).stem]
             snapshot_numbers.sort()
+            snapshot_numbers += [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
             ret[iteration_num] = snapshot_numbers
         return ret
     
@@ -435,7 +450,7 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.current_iteration
         assert type_ in ('train', 'test')
-        if type_ == "train" and self.config['engine'] == 'pytorch':
+        if DLC3:
             cfg_name = "pytorch_config"
         else:
             cfg_name = "pose_cfg"
@@ -588,9 +603,9 @@ class DLCProject:
 
         if maxiters is None:
             if DLC3:
-                maxiters = 500000
-            else:
                 maxiters = 1000 # epochs
+            else:
+                maxiters = 500000
 
         self.current_iteration = iteration_num
 
