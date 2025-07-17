@@ -1,0 +1,53 @@
+left            - decrement  
+right           - increment  
+up              - increment by 10  
+down            - decrement by 10  
+shift+left      - step forward by 1/20 of the timeline  
+shift+right     - step backward by 1/20 of the timeline  
+shift+up        - go_to_end  
+shift+down      - go_to_start  
+ctrl+c          - copy_to_clipboard  
+ctrl+k          - show key bindings  
+/               - pan right  
+l               - previous_frame_with_any_label  
+i               - pan up  
+.               - next_frame_with_any_label  
+r               - reset_axes  
+z               - Add interp_with_lk  
+s               - Save current annotation layer  
+t               - add_annotation  
+y               - remove_annotation  
+f               - increment_if_unannotated  
+g               - increment  
+h               - decrement_if_unannotated  
+-               - previous_annotation_layer  
+=               - next_annotation_layer  
+[               - previous_annotation_overlay  
+]               - next_annotation_overlay  
+;               - previous_annotation_label  
+'               - next_annotation_label  
+alt+,           - previous_frame_of_interest  
+alt+.           - next_frame_of_interest  
+j               - pan left  
+k               - pan right  
+`               - cycle_number_keys_behavior  
+n               - next_frame_with_current_label  
+p               - previous_frame_with_current_label  
+b               - previous_frame_with_current_label  
+m               - toggle_frame_of_interest  
+c               - copy_current_annotation_from_overlay  
+alt+c           - copy_frames_of_interest_from_overlay  
+ctrl+alt+c      - copy_frames_in_interval_from_overlay  
+v               - Check labels with LK - minimal mode  
+alt+v           - Check labels with LK - current label  
+ctrl+alt+v      - Check labels with LK - all labels  
+a               - Interpolate current point with LK  
+ctrl+a          - Interpolate all points with LK  
+ctrl+d          - Interpolate all points with LK  
+alt+a           - Clear current label in interval  
+ctrl+alt+a      - Clear all labels in interval  
+alt+b           - Predict current point with lucas-kanade  
+ctrl+b          - Predict all points with lucas-kanade  
+d               - keep_overlapping_continuous_frames  
+w               - increment_label_range  
+q               - decrement_label_range  
