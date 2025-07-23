@@ -31,8 +31,3 @@ if __name__ == "__main__":
     # Keep the GUI window open
     plt.show()
 
-    
-
-
-
-
