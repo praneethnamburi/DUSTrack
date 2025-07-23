@@ -10,7 +10,7 @@ if __name__ == "__main__":
     #########################################################
         # this should be the root directory of that participant!
     root_dir = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02"
-    config_path = r'C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_021_LFA-hw-2025-07-23\config.yaml'
+    config_path = r'C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_LFA-hw-2025-07-23\config.yaml'
     
     participant_id = '021' # modify the number to the participant id
     hand_side = 'LFA'
