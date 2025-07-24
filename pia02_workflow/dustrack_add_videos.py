@@ -18,7 +18,9 @@ if __name__ == "__main__":
 
     # add the videos you have annotated
     videos = [
-        'pia02_s021_013_LFA.mp4'
+        'pia02_s021_013_LFA.mp4',
+        'pia02_s021_014_LFA.mp4',
+        'pia02_s021_015_LFA.mp4',
     ]
     
     #########################################################
@@ -26,6 +28,11 @@ if __name__ == "__main__":
     participant_root_dir = os.path.join(root_dir, participant_id)
 
     videos = [os.path.join(participant_root_dir, video) for video in videos]
+    # check if all the videos exist
+    for video in videos:
+        if not os.path.exists(video):
+            print(f"Video {video} does not exist")
+            exit()
 
     deeplabcut.add_new_videos(config_path, videos, copy_videos=True)
 

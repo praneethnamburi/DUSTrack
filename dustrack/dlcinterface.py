@@ -609,7 +609,7 @@ class DLCProject:
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None):
+    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None, **kwargs):
         """Main method that tries to take the best course of action based on the state of the project."""
         if iteration_num is None:
             iteration_num = 'latest'
@@ -650,9 +650,9 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters)
+                    self.train(epochs=maxiters, **kwargs)
                 else:
-                    self.dlc2_train(maxiters=maxiters)
+                    self.dlc2_train(maxiters=maxiters, **kwargs)
             except KeyboardInterrupt:
                 pass
 

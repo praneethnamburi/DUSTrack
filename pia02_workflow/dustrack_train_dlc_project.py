@@ -11,10 +11,10 @@ from dustrack import DUSTrack, DLCProject
 
 if __name__ == "__main__":
 
-    dlc_project_config_path = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-2025-07-22\config.yaml"
+    dlc_project_config_path = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-x-2025-07-23\config.yaml"
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
-    dataset_size = 'small'  # Change this to match your dataset size
+    dataset_size = 'medium'  # Change this to match your dataset size
     
     max_snapshots_to_keep = 20
 
@@ -35,41 +35,50 @@ if __name__ == "__main__":
             [0.0002, 36000],
             [0.0001, 40_000],
         ]
-        display_iters = 20
-        save_iters = 100
+        display_iters = 1000
+        save_iters = 2000
     elif dataset_size == 'medium':
         batch_size = 4
         maxiters = 50_000
         multi_step = [
-            [0.004, 20000],
-            [0.002, 36000],
-            [0.001, 46000],
-            [0.0003, 50_000],
+            [0.001, 20000],
+            [0.0005, 36000],
+            [0.0002, 46000],
+            [0.0001, 50_000],
         ]
         display_iters = 200
-        save_iters = 1000
+        save_iters = 2500
     elif dataset_size == 'large':
         batch_size = 8
         maxiters = 75_000
         multi_step = [
-            [0.006, 30_000],
-            [0.003, 52_500],
-            [0.0015, 67_500],
-            [0.0007, 75_000],
+            [0.001, 30_000],
+            [0.0005, 52_500],
+            [0.0002, 67_500],
+            [0.0001, 75_000],
         ]
         display_iters = 500
-        save_iters = 2000
+        save_iters = 3750
     elif dataset_size == 'extralarge':
         batch_size = 16
         maxiters = 100_000
         multi_step = [
-            [0.010, 37_500],
-            [0.005, 75_000],
-            [0.002, 93_750],
-            [0.0008, 100_000],
+            [0.001, 37_500],
+            [0.0005, 75_000],
+            [0.0002, 93_750],
+            [0.0001, 100_000],
         ]
         display_iters = 500
-        save_iters = 2000
+        save_iters = 5000
+    
+    elif dataset_size == 'original_settings':
+        batch_size = 1
+        maxiters = 500000
+        multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]]
+        display_iters = 200
+        save_iters = 25000
+        max_snapshots_to_keep = 20
+
     else:
         print(f"Invalid dataset_size: {dataset_size}. Please choose 'small', 'medium', 'large', or 'extralarge'")
         exit()
@@ -88,8 +97,6 @@ if __name__ == "__main__":
 
     dlcp = DLCProject(path = dlc_project_config_path)
 
-
-    dlcp = DLCProject(dlc_project_config_path)
 
     dlcp.process(maxiters=maxiters, multi_step=multi_step, batch_size=batch_size, display_iters=display_iters, save_iters=save_iters, max_snapshots_to_keep=max_snapshots_to_keep)
 
