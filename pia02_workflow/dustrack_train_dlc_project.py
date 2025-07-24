@@ -14,7 +14,7 @@ if __name__ == "__main__":
     dlc_project_config_path = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-x-2025-07-23\config.yaml"
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
-    dataset_size = 'medium'  # Change this to match your dataset size
+    dataset_size = 'extralarge'  # Change this to match your dataset size
     
     max_snapshots_to_keep = 20
 
@@ -68,7 +68,7 @@ if __name__ == "__main__":
             [0.0002, 93_750],
             [0.0001, 100_000],
         ]
-        display_iters = 500
+        display_iters = 200
         save_iters = 5000
     
     elif dataset_size == 'original_settings':
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         max_snapshots_to_keep = 20
 
     else:
-        print(f"Invalid dataset_size: {dataset_size}. Please choose 'small', 'medium', 'large', or 'extralarge'")
+        print(f"Invalid dataset_size: {dataset_size}. Please choose 'small', 'medium', 'large', 'extralarge', or 'original_settings'")
         exit()
 
     print(f"Using {dataset_size} configuration:")

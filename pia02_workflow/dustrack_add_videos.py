@@ -10,7 +10,7 @@ if __name__ == "__main__":
     #########################################################
         # this should be the root directory of that participant!
     root_dir = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02"
-    config_path = r'C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_LFA-hw-2025-07-23\config.yaml'
+    config_path = r'C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-x-2025-07-23\config.yaml'
     
     participant_id = '021' # modify the number to the participant id
     hand_side = 'LFA'
@@ -18,6 +18,17 @@ if __name__ == "__main__":
 
     # add the videos you have annotated
     videos = [
+        'pia02_s021_002_LFA.mp4',
+        'pia02_s021_003_LFA.mp4',
+        'pia02_s021_004_LFA.mp4',
+        'pia02_s021_005_LFA.mp4',
+        'pia02_s021_006_LFA.mp4',
+        'pia02_s021_007_LFA.mp4',
+        'pia02_s021_008_LFA.mp4',
+        'pia02_s021_009_LFA.mp4',
+        'pia02_s021_010_LFA.mp4',
+        'pia02_s021_011_LFA.mp4',
+        'pia02_s021_012_LFA.mp4',
         'pia02_s021_013_LFA.mp4',
         'pia02_s021_014_LFA.mp4',
         'pia02_s021_015_LFA.mp4',
