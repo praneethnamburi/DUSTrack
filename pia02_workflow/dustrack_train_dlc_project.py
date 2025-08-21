@@ -11,7 +11,7 @@ from dustrack import DUSTrack, DLCProject
 
 if __name__ == "__main__":
 
-    dlc_project_config_path = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia02\021\pia02_s021_001_LFA_hw-x-2025-08-21\config.yaml"
+    dlc_project_config_path = r"M:\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21\config.yaml"
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
     dataset_size = 'small'  # Change this to match your dataset size

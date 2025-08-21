@@ -15,7 +15,7 @@ from dustrack import DUSTrack, DLCProject
 if __name__ == "__main__":
     annotator_name = 'hw'
     
-    vpath = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA.mp4"
+    vpath = r"M:\DLC_MODELS\021\pia02_s021_001_LFA.mp4"
 
     # Check if the video exists
     if not os.path.exists(vpath):
