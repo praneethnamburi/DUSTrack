@@ -11,7 +11,7 @@ from pia02_project_config import dlc_project_config_path
 
 if __name__ == "__main__":
 
-    dlc_project_config_path = dlc_project_config_path # from pia02_project_config.py
+    dlc_project_config_path = dlc_project_config_path
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
     dataset_size = 'small'  # Change this to match your dataset size
