@@ -14,7 +14,7 @@ if __name__ == "__main__":
     dlc_project_config_path = dlc_project_config_path
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
-    dataset_size = 'small'  # Change this to match your dataset size
+    dataset_size = 'medium'  # Change this to match your dataset size
     
     max_snapshots_to_keep = 20
 
@@ -28,45 +28,45 @@ if __name__ == "__main__":
     # Set configuration based on dataset size
     if dataset_size == 'small':
         batch_size = 1
-        maxiters = 40_000
+        maxiters = 50_000
         multi_step = [
-            [0.005, 16000],
-            [0.002, 28000],
-            [0.001, 36000],
-            [0.0005, 40_000],
+            [0.005, 15000],
+            [0.002, 30000],
+            [0.001, 40000],
+            [0.0005, 50_000],
         ]
         display_iters = 1000
         save_iters = 2000
     elif dataset_size == 'medium':
-        batch_size = 4
-        maxiters = 50_000
+        batch_size = 2
+        maxiters = 75_000
         multi_step = [
             [0.005, 20000],
-            [0.002, 36000],
-            [0.001, 46000],
-            [0.0005, 50_000],
+            [0.002, 40000],
+            [0.001, 60000],
+            [0.0005, 75_000],
         ]
         display_iters = 1000
         save_iters = 2500
     elif dataset_size == 'large':
-        batch_size = 8
-        maxiters = 75_000
+        batch_size = 4
+        maxiters = 100_000
         multi_step = [
-            [0.005, 30_000],
-            [0.002, 52_500],
-            [0.001, 67_500],
-            [0.0005, 75_000],
+            [0.005, 25000],
+            [0.002, 50000],
+            [0.001, 75000],
+            [0.0005, 100_000],
         ]
         display_iters = 1000
         save_iters = 5000
     elif dataset_size == 'extralarge':
-        batch_size = 16
-        maxiters = 100_000
+        batch_size = 8
+        maxiters = 150_000
         multi_step = [
-            [0.005, 37_500],
-            [0.002, 75_000],
-            [0.001, 93_750],
-            [0.0005, 100_000],
+            [0.005, 30000],
+            [0.002, 60000],
+            [0.001, 100000],
+            [0.0005, 150_000],
         ]
         display_iters = 1000
         save_iters = 5000
