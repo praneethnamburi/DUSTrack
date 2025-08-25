@@ -3,14 +3,14 @@
 import deeplabcut
 import os
 from utils import dlc_edit_config, copy_annotations
-
+from pia02_project_config import data_root_dir, dlc_project_config_path
 
 if __name__ == "__main__":
 
     #########################################################
         # this should be the root directory of that participant!
-    data_root_dir = r"\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21"
-    dlc_project_config_path = r'\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21\config.yaml'
+    data_root_dir = data_root_dir # from pia02_project_config.py
+    dlc_project_config_path = dlc_project_config_path # from pia02_project_config.py
     
     participant_id = '021' # modify the number to the participant id
     hand_side = 'LFA'
