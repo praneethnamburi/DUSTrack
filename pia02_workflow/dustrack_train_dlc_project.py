@@ -46,7 +46,7 @@ if __name__ == "__main__":
             [0.001, 46000],
             [0.0005, 50_000],
         ]
-        display_iters = 200
+        display_iters = 1000
         save_iters = 2500
     elif dataset_size == 'large':
         batch_size = 8
@@ -57,8 +57,8 @@ if __name__ == "__main__":
             [0.001, 67_500],
             [0.0005, 75_000],
         ]
-        display_iters = 500
-        save_iters = 3750
+        display_iters = 1000
+        save_iters = 5000
     elif dataset_size == 'extralarge':
         batch_size = 16
         maxiters = 100_000
@@ -68,7 +68,7 @@ if __name__ == "__main__":
             [0.001, 93_750],
             [0.0005, 100_000],
         ]
-        display_iters = 200
+        display_iters = 1000
         save_iters = 5000
     
     elif dataset_size == 'original_settings':
