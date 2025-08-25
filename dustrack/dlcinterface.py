@@ -556,6 +556,21 @@ class DLCProject:
         deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
         return self
     
+
+    def dlc2_train(self, **kwargs):
+        """Train the model. By default, it sets a different number of iterations and max learning rate from deeplabcut."""
+        maxiters = kwargs.pop('maxiters', 500000)
+        max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
+        multi_step = kwargs.pop('multi_step', [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
+        batch_size = kwargs.pop('batch_size', 1)
+        display_iters = kwargs.pop('display_iters', 1000)
+        save_iters = kwargs.pop('save_iters', 50000)
+        
+        cfg_file = self.get_pose_cfg_file()
+        self.edit_config(cfg_file, multi_step=multi_step, batch_size=batch_size, display_iters=display_iters, save_iters=save_iters)
+        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
+        return self
+    
     def evaluate(self, **kwargs):
         """Evaluates all the snapshots."""
         current_snapshotindex_value = self.config['snapshotindex']
@@ -594,7 +609,7 @@ class DLCProject:
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None):
+    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None, **kwargs):
         """Main method that tries to take the best course of action based on the state of the project."""
         if iteration_num is None:
             iteration_num = 'latest'
@@ -635,9 +650,9 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters)
+                    self.train(epochs=maxiters, **kwargs)
                 else:
-                    self.train(maxiters=maxiters)
+                    self.dlc2_train(maxiters=maxiters, **kwargs)
             except KeyboardInterrupt:
                 pass
 
