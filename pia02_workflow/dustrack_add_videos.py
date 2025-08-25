@@ -9,8 +9,8 @@ if __name__ == "__main__":
 
     #########################################################
         # this should be the root directory of that participant!
-    root_dir = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02"
-    config_path = r'C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-x-2025-07-23\config.yaml'
+    data_root_dir = r"\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21"
+    dlc_project_config_path = r'\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21\config.yaml'
     
     participant_id = '021' # modify the number to the participant id
     hand_side = 'LFA'
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     
     #########################################################
 
-    participant_root_dir = os.path.join(root_dir, participant_id)
+    participant_root_dir = os.path.join(data_root_dir, participant_id)
 
     videos = [os.path.join(participant_root_dir, video) for video in videos]
     # check if all the videos exist
@@ -45,10 +45,10 @@ if __name__ == "__main__":
             print(f"Video {video} does not exist")
             exit()
 
-    deeplabcut.add_new_videos(config_path, videos, copy_videos=True)
+    deeplabcut.add_new_videos(dlc_project_config_path, videos, copy_videos=True)
 
-    copy_annotations(videos, config_path)
+    copy_annotations(videos, dlc_project_config_path)
 
-    print(f"Videos added to the project at: {config_path}")
+    print(f"Videos added to the project at: {dlc_project_config_path}")
 
 

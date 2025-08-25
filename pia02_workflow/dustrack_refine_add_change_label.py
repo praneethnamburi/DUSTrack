@@ -13,8 +13,8 @@ if __name__ == "__main__":
 
     #########################################################
 
-    dlc_project_config_path = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\PianoProjectVenv\data\pia_02\021\pia02_s021_001_LFA_hw-x-2025-07-23\config.yaml"
-    video_index = 3
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_001_LFA_hw-x-2025-08-21\config.yaml"
+    video_index = 0
 
     #########################################################
     
