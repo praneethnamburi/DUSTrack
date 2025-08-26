@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 import os
+import time
+from tqdm import tqdm
 
 # Add the parent directory to Python path so we can import dustrack
 parent_dir = Path(__file__).parent.parent
@@ -11,10 +13,14 @@ from dustrack import DUSTrack, DLCProject
 
 if __name__ == "__main__":
 
-    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\018\pia02_s018_001_LFA_hw-x-2025-08-25\config.yaml"
+    # sleep for 3 hours use tqdm to show the progress
+    for i in tqdm(range(3 * 60 * 60)):
+        time.sleep(1)
+
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\018\pia02_s018_001_RFA_hw-x-2025-08-25\config.yaml"
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
-    dataset_size = 'extralarge'  # Change this to match your dataset size
+    dataset_size = 'medium'  # Change this to match your dataset size
     
     max_snapshots_to_keep = 20
 
@@ -60,7 +66,7 @@ if __name__ == "__main__":
         display_iters = 1000
         save_iters = 5000
     elif dataset_size == 'extralarge':
-        batch_size = 4
+        batch_size = 8
         maxiters = 150_000
         multi_step = [
             [0.005, 30000],

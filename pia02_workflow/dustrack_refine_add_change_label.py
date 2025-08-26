@@ -8,13 +8,13 @@ parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
 from dustrack import DUSTrack, DLCProject
-from pia02_project_config import dlc_project_config_path
+# from pia02_project_config import dlc_project_config_path
 
 if __name__ == "__main__":
 
     #########################################################
 
-    dlc_project_config_path = dlc_project_config_path # from pia02_project_config.py
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\018\pia02_s018_001_LFA_hw-x-2025-08-25\config.yaml"
     video_index = 0
 
     #########################################################
