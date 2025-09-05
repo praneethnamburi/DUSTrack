@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 import shutil
 from pathlib import Path
@@ -27,7 +28,7 @@ from . import _config
 
 EXPERIMENTER = _config.EXPERIMENTER
 DLC3 = deeplabcut.__version__.startswith('3.')
-
+DLC3_USE_LAST_SNAPSHOT = True
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
     """
@@ -46,6 +47,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             ann.__class__ = VideoAnnotation
         
         self._dlcproject = None
+        self._ax_lims = {'state': False, 'x': [None, None], 'y_trace_x': [None, None], 'y_trace_y': [None, None]}
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
         self._add_dummy_button("dummy1")
@@ -55,6 +57,9 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self._add_dummy_button("dummy2")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
+        self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
+        self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
+        self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
 
         self.statevariables._text._pos = datanavigator.utils._parse_pos("bottom left")
         
@@ -71,6 +76,23 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         button.label.set_visible(False) # Hide the text label
         button.ax.axis('off') # Optional: Turn off the axes frame
     
+    def freeze_plot_axes(self, event=None):
+        """Freeze the axes limits of the trace plots."""
+        self._ax_lims['state'] = True
+        self._ax_lims['x'] = self._ax_trace_x.get_xlim()
+        self._ax_lims['y_trace_x'] = self._ax_trace_x.get_ylim()
+        self._ax_lims['y_trace_y'] = self._ax_trace_y.get_ylim()
+        self.update()
+
+    def unfreeze_plot_axes(self, event=None):
+        """Unfreeze the axes limits of the trace plots."""
+        self._ax_lims['state'] = False
+        self._ax_lims['x'] = [None, None]
+        self._ax_lims['y_trace_x'] = [None, None]
+        self._ax_lims['y_trace_y'] = [None, None]
+        self.update()
+
+
     def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER) -> DLCProject:
         """Create a new deeplabcut project with the current annotation layer as labels."""
         self.ann.save()
@@ -104,6 +126,36 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.statevariables["annotation_layer"].set_state(ann_processed.name)
         self.update()
         return ann_processed
+    
+    def copy_existing_annotations_from_overlay(self, event=None):
+        """When you agree with the dlc model better than your manual annotations, copy the dlc overlay to the current annotation layer."""
+        overlay_name = self._current_overlay
+        if overlay_name is None:
+            raise ValueError('No annotation overlay selected.')
+        overlay_ann = self.annotations[overlay_name]
+        current_label = self._current_label
+        if (self._current_layer, current_label) in self.events[0].to_dict():
+            event_start, event_end = self.events[0].to_dict()[(self._current_layer, current_label)][0]
+        else:
+            event_start, event_end = 0, self.ann.n_frames - 1
+        # if an event is specified, nudge data only in the selected interval
+        for frame_num in self.ann.frames:
+            if event_start <= frame_num <= event_end:
+                self.ann.data[current_label][frame_num] = overlay_ann.data[current_label][frame_num]
+        self.update()
+    
+    def update(self):
+        ret = super().update()
+        if self._ax_lims['state']:
+            if self._ax_lims['x'][0] is not None:
+                self._ax_trace_x.set_xlim(self._ax_lims['x'])
+                self._ax_trace_y.set_xlim(self._ax_lims['x'])
+            if self._ax_lims['y_trace_x'][0] is not None:
+                self._ax_trace_x.set_ylim(self._ax_lims['y_trace_x'])
+            if self._ax_lims['y_trace_y'][0] is not None:
+                self._ax_trace_y.set_ylim(self._ax_lims['y_trace_y'])
+            plt.draw()
+        return ret
 
 
 class DLCData(pysampled.Data):
@@ -468,9 +520,10 @@ class DLCProject:
             snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*.pt']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
             best_snapshot_number = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
-            if best_snapshot_number:
-                return best_snapshot_number[0]
-            return snapshot_numbers[-1]
+            if not DLC3_USE_LAST_SNAPSHOT:
+                if best_snapshot_number:
+                    return best_snapshot_number[0]
+            return sorted(snapshot_numbers)[-1]
 
         eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
         if os.path.exists(eval_file_name):
@@ -556,21 +609,6 @@ class DLCProject:
         deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
         return self
     
-
-    def dlc2_train(self, **kwargs):
-        """Train the model. By default, it sets a different number of iterations and max learning rate from deeplabcut."""
-        maxiters = kwargs.pop('maxiters', 500000)
-        max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
-        multi_step = kwargs.pop('multi_step', [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        batch_size = kwargs.pop('batch_size', 1)
-        display_iters = kwargs.pop('display_iters', 1000)
-        save_iters = kwargs.pop('save_iters', 50000)
-        
-        cfg_file = self.get_pose_cfg_file()
-        self.edit_config(cfg_file, multi_step=multi_step, batch_size=batch_size, display_iters=display_iters, save_iters=save_iters)
-        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
-        return self
-    
     def evaluate(self, **kwargs):
         """Evaluates all the snapshots."""
         current_snapshotindex_value = self.config['snapshotindex']
@@ -579,7 +617,7 @@ class DLCProject:
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def analyze_videos(self, iteration_num=None, snapshotindex=None, **kwargs):
+    def analyze_videos(self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs):
         """Predict points in the videos, and create a labeled video in the videos folder."""
         if iteration_num is None:
             iteration_num = self.current_iteration
@@ -604,12 +642,13 @@ class DLCProject:
             )
 
         deeplabcut.analyze_videos(**common_params, save_as_csv=save_as_csv, **kwargs)
-        deeplabcut.create_labeled_video(**common_params)
+        if create_video:
+            deeplabcut.create_labeled_video(**common_params)
         
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def process(self, iteration_num=None, maxiters=None, refine=True, source_snapshot=None, **kwargs):
+    def process(self, iteration_num=None, maxiters=None, refine=True, create_video=True, source_snapshot=None):
         """Main method that tries to take the best course of action based on the state of the project."""
         if iteration_num is None:
             iteration_num = 'latest'
@@ -629,7 +668,7 @@ class DLCProject:
         print(f'{current_iteration=}')
         print(f'{latest_iteration=}')
         if current_iteration < latest_iteration:
-            return self.evaluate().analyze_videos()
+            return self.evaluate().analyze_videos(create_video=create_video)
 
         self.extract_frames() # do this every time in case there are any updates to the manual annotations.
         
@@ -650,13 +689,13 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters, **kwargs)
+                    self.train(epochs=maxiters)
                 else:
-                    self.dlc2_train(maxiters=maxiters, **kwargs)
+                    self.train(maxiters=maxiters)
             except KeyboardInterrupt:
                 pass
 
-        return self.evaluate().analyze_videos()
+        return self.evaluate().analyze_videos(create_video=create_video)
     
     def annotate(self, video_index: int=0, new_annotation_suffix=None):
         """Annotate a video."""
@@ -672,7 +711,20 @@ class DLCProject:
         fm_annotations = VideoFileManager(self, video_index)
         annotation_names = fm_annotations.get_all_annotation_layers(new_annotation_suffix)
         annotation_names['buffer'] = fm_annotations.get_new_json('buffer')
-        return DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1))
+        ret = DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1))
+        
+        # change dlc inference annotations to line plots
+        for ann in ret.annotations:
+            if 'dlc_' in ann.name:
+                ann.set_plot_type('line')
+
+        # set the overlay to the latest dlc inference annotations
+        ann_names = [x.name for x in ret.annotations if 'dlc_' in x.name]
+        if ann_names:
+            ret.statevariables['annotation_overlay'].set_state(ann_names[-1])
+        ret.update()
+        
+        return ret
 
     def get_trajectories(self, videos=None, iteration=None):
         if iteration is None:
@@ -743,7 +795,12 @@ class VideoFileManager(FileManager):
     
     @property
     def annotations(self) -> dict:
-        files = self[f'{self.video_stem}*_annotations*.json']
+        # name_to_path = {Path(x).stem: x for x in self.all_files}
+        pattern = f'*{self.video_stem}*_annotations*.json'
+        file_names = fnmatch.filter([Path(x).name for x in self.all_files], pattern)
+        files = [self[file_name][0] for file_name in file_names]
+        # files = [name_to_path[file_name] for file_name in file_names]
+        # files = self[f'{self.video_stem}*_annotations*.json']
         return {self._get_annotation_name(fname):fname for fname in files}
     
     @property
