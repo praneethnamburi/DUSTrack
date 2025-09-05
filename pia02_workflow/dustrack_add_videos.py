@@ -10,26 +10,27 @@ if __name__ == "__main__":
     #########################################################
     # this should be the root directory of that participant!
     root_dir = root_dir
-    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\018\pia02_s018_001_RFA_hw-x-2025-08-25\config.yaml"
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\001\pia02_s001_RFA_hw-x-2025-09-03\config.yaml"
     
-    participant_id = '018' # modify the number to the participant id
+    participant_id = '001' # modify the number to the participant id
     # hand_side = 'LFA'
-    annotator_name = 'hw' # change this to your name initials
+    # annotator_name = 'hw' # change this to your name initials
 
     # add the videos you have annotated
     videos = [
-        'pia02_s018_002_RFA.mp4',
-        'pia02_s018_003_RFA.mp4',
-        'pia02_s018_004_RFA.mp4',
-        'pia02_s018_005_RFA.mp4',
-        'pia02_s018_006_RFA.mp4',
-        'pia02_s018_007_RFA.mp4',
-        'pia02_s018_008_RFA.mp4',
-        'pia02_s018_009_RFA.mp4',
-        'pia02_s018_010_RFA.mp4',
-        'pia02_s018_011_RFA.mp4',
-        'pia02_s018_012_RFA.mp4',
-        'pia02_s018_013_RFA.mp4',
+        'pia02_s001_003_RFA.mp4',
+        'pia02_s001_004_RFA.mp4',
+        'pia02_s001_005_RFA.mp4',
+        'pia02_s001_006_RFA.mp4',
+        'pia02_s001_007_RFA.mp4',
+        'pia02_s001_008_RFA.mp4',   
+        'pia02_s001_009_RFA.mp4',
+        'pia02_s001_010_RFA.mp4',
+        'pia02_s001_011_RFA.mp4',
+        'pia02_s001_012_RFA.mp4',
+        'pia02_s001_013_RFA.mp4',
+        'pia02_s001_014_RFA.mp4',
+        'pia02_s001_015_RFA.mp4',
     ]
     
     #########################################################

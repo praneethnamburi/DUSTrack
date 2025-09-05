@@ -14,9 +14,8 @@ if __name__ == "__main__":
 
     #########################################################
 
-    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\018\pia02_s018_001_LFA_hw-x-2025-08-25\config.yaml"
-    video_index = 0
-
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\021\pia02_s021_RFA_hw-x-2025-09-02\config.yaml"
+    video_index = 4
     #########################################################
     
     # check if the config file exists
