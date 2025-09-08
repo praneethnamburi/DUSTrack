@@ -460,7 +460,11 @@ class DLCProject:
             output_path = self.paths['labels'] / video_stem
 
             if annotation_file_names_input is None:
-                annotation_file_names = sorted(FileManager(self.paths['videos']).add()[f'{video_stem}*_annotations*.json'])
+                pattern = f'{video_stem}*_annotations*.json'
+                fm = FileManager(self.paths['videos']).add()
+                file_names = fnmatch.filter([Path(x).name for x in fm.all_files], pattern)
+                annotation_file_names = sorted([fm[file_name][0] for file_name in file_names])
+                # annotation_file_names = sorted(FileManager(self.paths['videos']).add()[f'{video_stem}*_annotations*.json'])
                 # ignore the *correction* files. In theory, no training is to be done after the dlccorr files are created, but just being careful.
                 annotation_file_names = [x for x in annotation_file_names if "_dlccorr" not in x]
                 print(f'Loading annotations from {len(annotation_file_names)} file(s): ')
