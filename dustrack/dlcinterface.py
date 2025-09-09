@@ -22,6 +22,9 @@ from deeplabcut.utils.auxfun_videos import VideoWriter
 import matplotlib.pyplot as plt
 import datanavigator
 
+from skimage import io, img_as_ubyte
+from decord import VideoReader, cpu
+
 from .postprocess import lk_moving_average_filter
 from . import _config
 
@@ -484,7 +487,7 @@ class DLCProject:
 
             if save_merged_json:
                 ann.save()
-            _extract_frames(video_file_name, ann.frames, output_path, coords)
+            _extract_frames_decord(video_file_name, ann.frames, output_path, coords)
             ann.to_dlc(
                 scorer       = self.config['scorer'],
                 output_path  = output_path,
@@ -636,7 +639,10 @@ class DLCProject:
         return self
 
     def analyze_videos(self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs):
-        """Predict points in the videos, and create a labeled video in the videos folder."""
+        """Predict points in the videos, and create a labeled video in the videos folder.
+        To analyze specific videos, provide the video list using the keyword argument 
+            videos: list[str] containing the full paths to the videos.
+        """
         if iteration_num is None:
             iteration_num = self.current_iteration
         
@@ -649,13 +655,30 @@ class DLCProject:
             assert 0 <= snapshotindex < n_snapshots
         
         save_as_csv = kwargs.pop('save_as_csv', True)
+
+        if "videos" in kwargs:
+            assert isinstance(kwargs["videos"], list)
+            # if kwargs["videos"] is a list of integers, convert to list of video paths using self.video_list
+            if all(isinstance(v, int) for v in kwargs["videos"]):
+                video_indices = kwargs["videos"]
+                video_list = []
+                for idx in video_indices:
+                    if idx < 0:
+                        idx = len(self.video_list) + idx
+                    assert 0 <= idx < len(self.video_list), f"Video index {idx} is out of range."
+                    video_name = self.video_list[idx]
+                    assert os.path.exists(video_name), f"Video {video_name} does not exist."
+                    video_list.append(video_name)
+                kwargs["videos"] = video_list
+        else:
+            kwargs["videos"] = self.video_list
         
         current_snapshotindex_value = self.config['snapshotindex']
         self.edit_config(snapshotindex=snapshotindex)
-        
+
         common_params = dict(
             config     = self.config_path, 
-            videos     = self.video_list, 
+            videos     = kwargs.pop('videos'), 
             destfolder = self.paths['videos'] / f'iteration-{iteration_num}'
             )
 
@@ -713,10 +736,16 @@ class DLCProject:
             except KeyboardInterrupt:
                 pass
 
-        return self.evaluate().analyze_videos(create_video=create_video)
-    
+        analyze_videos_kwargs = {}
+        if "videos" in kwargs:
+            analyze_videos_kwargs["videos"] = kwargs.pop("videos")
+
+        return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
+
     def annotate(self, video_index: int=0, new_annotation_suffix=None):
         """Annotate a video."""
+        if video_index < 0:
+            video_index = len(self.video_list) + video_index
         assert 0 <= video_index < len(self.video_list)
         
         if new_annotation_suffix is None:
@@ -787,6 +816,71 @@ def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coo
             print("Frame", index, " not found!")
     cap.close()
     return img_names
+
+def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: str, coords: list):
+    """
+    Extract a set of frames using Decord (drop-in for the OpenCV/DLC version).
+    - video_file_name: path to video
+    - frame_idx: list of integer frame indices to extract (0-based)
+    - output_path: folder to write images into
+    - coords: [x, y, w, h] or [x1, y1, x2, y2] bbox in pixel units; applied to every frame
+    """
+    # No need to set a bridge; default 'native' is fine and we use .asnumpy()
+    vr = VideoReader(video_file_name, ctx=cpu(0), num_threads=1)  # HWC RGB uint8
+    n_frames = len(vr)
+    indexlength = max(1, int(np.ceil(np.log10(max(1, n_frames)))))
+
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    def _crop(img, coords):
+        if not coords:
+            return img
+        x0, y0, c2, c3 = map(int, coords)
+        h, w = img.shape[:2]
+
+        # Interpret coords as [x1,y1,x2,y2] if c2/c3 look like absolute corners; else [x,y,w,h]
+        if (c2 > x0) and (c3 > y0) and (c2 <= w) and (c3 <= h):
+            x1, y1, x2, y2 = x0, y0, c2, c3
+        else:
+            x1, y1 = x0, y0
+            x2, y2 = x0 + c2, y0 + c3
+
+        # Clamp to bounds
+        x1 = max(0, min(w, x1)); x2 = max(0, min(w, x2))
+        y1 = max(0, min(h, y1)); y2 = max(0, min(h, y2))
+        if x2 <= x1 or y2 <= y1:
+            return img
+        return img[y1:y2, x1:x2]
+
+    # Keep only valid indices (and preserve order)
+    valid_indices = [int(i) for i in frame_idx if isinstance(i, (int, np.integer)) and 0 <= int(i) < n_frames]
+
+    img_names = []
+    if not valid_indices:
+        for idx in frame_idx:
+            print(f"Frame {idx} not found!")
+        return img_names
+
+    # Batch fetch for consistent seeking & speed
+    batch = vr.get_batch(valid_indices).asnumpy()  # (N, H, W, 3) RGB uint8
+    for k, idx in enumerate(valid_indices):
+        frame = batch[k]
+        if coords:
+            frame = _crop(frame, coords)
+
+        image = frame if frame.dtype == np.uint8 else img_as_ubyte(frame)
+        img_name = output_path / f'img{str(idx).zfill(indexlength)}.png'
+        if not os.path.exists(img_name):
+            io.imsave(str(img_name), image)
+            print(f'{img_name.parent.stem}/{img_name.stem} saved!')
+        else:
+            print(f'{img_name.parent.stem}/{img_name.stem} already exists. Skipping extraction.')
+        img_names.append(img_name)
+
+    return img_names
+
+
 
 def get_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -> Union[str, None]:
     """Return the full path to the annotation file if it exists give the video file name, otherwise return None."""
