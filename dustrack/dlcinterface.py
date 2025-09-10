@@ -31,14 +31,12 @@ from . import _config
 
 EXPERIMENTER = _config.EXPERIMENTER
 DLC3 = deeplabcut.__version__.startswith('3.')
-DLC3_USE_LAST_SNAPSHOT = True
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
     """
     A subclass of VideoAnnotation that adds a method for applying a moving average filter to the annotations.
     """
     postprocess = lk_moving_average_filter
-
 
 class DUSTrack(datanavigator.VideoPointAnnotator):
     """
@@ -527,7 +525,7 @@ class DLCProject:
             snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*.pt']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
             best_snapshot_number = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
-            if not DLC3_USE_LAST_SNAPSHOT:
+            if not _config.DLC3_USE_LAST_SNAPSHOT:
                 if best_snapshot_number:
                     return best_snapshot_number[0]
             return sorted(snapshot_numbers)[-1]
