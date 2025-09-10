@@ -981,3 +981,27 @@ class VideoFileManager(FileManager):
             **labeled_data, 
             **self.dlc_traces
             )
+
+
+def merge_annotations_in_folder(path, annotation_suffix='merged'):
+    fm = FileManager(path).add_by_depth(0)
+    all_names = [Path(x).name for x in fm.all_files]
+    all_video_names = fnmatch.filter(all_names, '*.mp4')
+    video_files = [fm[name][0] for name in all_video_names]
+    for video_file in video_files:
+        video_stem = Path(video_file).stem.split('_annotations')[0]
+        pattern = f'{video_stem}*_annotations*.json'
+        file_names = fnmatch.filter(all_names, pattern)
+        annotation_file_names = sorted([fm[file_name][0] for file_name in file_names])
+        if len(annotation_file_names) == 0:
+            continue
+        print(f'Merging {len(annotation_file_names)} files for {video_stem}:')
+        print(annotation_file_names)
+        print(make_annotation_file_name(video_file, annotation_suffix))
+        ann = VideoAnnotation.from_multiple_files(
+            fname_list = annotation_file_names,
+            vname = str(Path(path) / video_file),
+            name = annotation_suffix,
+            fname_merged = make_annotation_file_name(video_file, annotation_suffix)
+        )
+        ann.save()
