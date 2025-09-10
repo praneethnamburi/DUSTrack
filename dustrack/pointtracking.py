@@ -1237,6 +1237,13 @@ class VideoAnnotation:
             json.dump(data, f, indent=4)
         labels_annotations = {label: len(self.data[label]) for label in self.labels}
         print(f"Saved {fname} with labels-n_annotations \n {labels_annotations}")
+    
+    def to_json(self) -> None:
+        """Alias for save method."""
+        fname = self.fname
+        assert Path(fname).suffix == ".h5"
+        fname = str(Path(fname).with_suffix(".json"))
+        self.save(fname)
 
     def sort_labels(self) -> None:
         """Sort labels in the data dictionary."""
