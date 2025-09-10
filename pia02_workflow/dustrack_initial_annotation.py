@@ -15,7 +15,7 @@ from dustrack import DUSTrack, DLCProject
 if __name__ == "__main__":
     annotator_name = 'hw'
     
-    vpath = r"\\192.168.1.104\home\piano\DLC_MODELS\001\pia02_s001_002_RFA.mp4"
+    vpath = r"\\192.168.1.104\home\piano\DLC_MODELS\022\pia02_s022_001_RFA.mp4"
 
     # Check if the video exists
     if not os.path.exists(vpath):
@@ -25,6 +25,6 @@ if __name__ == "__main__":
     
     d = DUSTrack(vpath, annotator_name)
     
-    # Keep the GUI window open
+    # Keep the GUI window open  
     plt.show()
 

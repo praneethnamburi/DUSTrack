@@ -607,13 +607,13 @@ class DLCProject:
         deeplabcut.create_training_dataset(self.config_path, net_type=net_type, **kwargs)
         return self
 
-    def train(self, **kwargs):
+    def dlc3_train(self, **kwargs):
         """Train the model. By default, it sets a different number of iterations and max learning rate from deeplabcut."""
-        maxiters = kwargs.pop('maxiters', 500000)
+        epochs = kwargs.pop('epochs', 200)
         max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
         cfg_file = self.get_pose_cfg_file()
-        self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
+        # self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
+        deeplabcut.train_network(self.config_path, epochs=epochs, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
         return self
 
     def dlc2_train(self, **kwargs):
@@ -730,7 +730,7 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters, **kwargs)
+                    self.dlc3_train(epochs=maxiters, **kwargs)
                 else:
                     self.dlc2_train(maxiters=maxiters, **kwargs)
             except KeyboardInterrupt:

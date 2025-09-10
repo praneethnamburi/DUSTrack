@@ -18,12 +18,12 @@ if __name__ == "__main__":
     #     time.sleep(1)
 
 
-    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\001\pia02_s001_LFA_hw-x-2025-09-02\config.yaml"
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\022\pia02_s022_RFA_hw-x-2025-09-09\config.yaml"
 
     refine = False
 
     # Dataset size configuration - choose one: 'small', 'medium', 'large', 'extralarge'
-    dataset_size = 'small'  # Change this to match your dataset size
+    dataset_size = 'custom'  # Change this to match your dataset size
     
     max_snapshots_to_keep = 20
 
@@ -35,8 +35,21 @@ if __name__ == "__main__":
     save_iters = None
 
     # Set configuration based on dataset size
-    if dataset_size == 'tiny':
+
+    if dataset_size == 'custom':
         batch_size = 1
+        maxiters = 150_000
+        multi_step = [
+            [0.01, 20000],
+            [0.005, 30000],
+            [0.002, 80000],
+            [0.001, 120000],
+            [0.0005, 150_000],
+        ]
+        display_iters = 200
+        save_iters = 5000
+    elif dataset_size == 'tiny':
+        batch_size = 2
         maxiters = 10_000
         multi_step = [
             [0.01, 1000],
@@ -47,16 +60,16 @@ if __name__ == "__main__":
         display_iters = 100
         save_iters = 400
     elif dataset_size == 'small':
-        batch_size = 1
+        batch_size = 2
         maxiters = 30_000
         multi_step = [
-            [0.005, 15000],
-            [0.002, 20000],
-            [0.001, 30000],
+            [0.005, 10000],
+            [0.002, 15000],
+            [0.001, 20000],
             [0.0005, 30_000],
         ]
         display_iters = 200
-        save_iters = 2000
+        save_iters = 1000
     elif dataset_size == 'medium':
         batch_size = 2
         maxiters = 50_000
