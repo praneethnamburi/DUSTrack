@@ -1122,7 +1122,7 @@ class VideoAnnotation:
     def _dlc_trace_to_annotation_dict(
         df: pd.DataFrame, remove_label_prefix: str = "point"
     ) -> dict:
-        """Convery dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary."""
+        """Convert dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary."""
         if False in [
             utils.removeprefix(x, remove_label_prefix).isdigit()
             for x in df.columns.levels[1]
@@ -1141,14 +1141,13 @@ class VideoAnnotation:
         data = {label: {} for label in label_orig_to_internal.values()}
         scorer = df.columns.levels[0].values[0]
         for label_orig, label_internal in label_orig_to_internal.items():
+            coords = df.loc[:, (scorer, label_orig, ["x", "y"])]
             for frame in frames:
-                coord_val = [
-                    df.loc[frame][scorer, label_orig, coord_name]
-                    for coord_name in ("x", "y")
-                ]
-                if np.all(np.isnan(coord_val)):
-                    continue
-                data[label_internal][frame] = coord_val
+                if frame in coords.index:
+                    coord_val = coords.loc[frame].values
+                    if np.all(np.isnan(coord_val)):
+                        continue
+                    data[label_internal][frame] = coord_val.tolist()
 
         return data
 
