@@ -725,6 +725,8 @@ class DLCProject:
         analyze_videos_kwargs = {}
         if "videos" in kwargs:
             analyze_videos_kwargs["videos"] = kwargs.pop("videos")
+        if "analyse_batchsize" in kwargs:
+            analyze_videos_kwargs["batchsize"] = kwargs.pop("analyse_batchsize")
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
