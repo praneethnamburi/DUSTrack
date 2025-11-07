@@ -21,8 +21,7 @@ if __name__ == "__main__":
 
 
 
-    dlc_project_config_path = r"/home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models/001/001_LFA-x-2025-11-06/config.yaml"
-    
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\pia02_s001_007_LFA2_hw-x-2025-11-06\config.yaml"
     # check if the project exists
     if not os.path.exists(dlc_project_config_path):
         print(f"Project config file {dlc_project_config_path} does not exist")
@@ -30,7 +29,7 @@ if __name__ == "__main__":
 
     dlcp = DLCProject(path = dlc_project_config_path)
     
-    # dlcp.process(maxiters=300, batchsize=128)
+    dlcp.process(maxiters=300)
 
     # dlcp.extract_frames()
     # dlcp.extract_frames()
