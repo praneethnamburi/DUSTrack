@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     
     # participant_ids are a list of participant id with format 001, 002, 003, 004, etc
-    participant_ids = np.arange(1, 11)
+    participant_ids = np.arange(11, 56)
     participant_ids = [f'0{participant_id:02d}' for participant_id in participant_ids]
     print(f"Number of participant ids: {len(participant_ids)}")
     # print all participant ids

@@ -930,7 +930,8 @@ class VideoFileManager(FileManager):
     def dlc_traces(self) -> dict:
         fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
         # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
-        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5']
+        # I want both .h5 file and json file
+        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
         return {self._get_dlc_trace_name(fname): fname for fname in fnames}
     
     @property

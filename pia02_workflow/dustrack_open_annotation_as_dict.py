@@ -36,12 +36,18 @@ if __name__ == "__main__":
     #     exit()
 
     # Define the annotation layers to load
-    vpath = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\videos\pia02_s051_004_LFA2.mp4"
+    vpath = r"\\192.168.1.104\home\piano\us_videos_for_tracking2\pia02_s003_001_LFA2.mp4"
 
+    annotation_file_path_0 = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models\003\003_LFA-x-2025-11-07\videos\iteration-0\pia02_s003_001_LFA2DLC_Resnet50_003_LFANov7shuffle1_snapshot_200.h5"
+    annotation_file_path_1 = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models\003\003_LFA-x-2025-11-07\videos\iteration-1\pia02_s003_001_LFA2DLC_Resnet50_003_LFANov7shuffle1_snapshot_200.h5"
+    annotation_file_path_2 = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models\003\003_LFA-x-2025-11-07\videos\iteration-2\pia02_s003_001_LFA2DLC_Resnet50_003_LFANov7shuffle1_snapshot_200.h5"
+    old_annotation_file_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\videos\iteration-0\pia02_s003_001_LFA2DLC_Resnet50_interosseous_pn24Oct24shuffle1_snapshot_best-270.h5"
     annotation_layers = {
-        'annotation1': r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\videos\pia02_s051_004_LFA2_annotations_iteration-3.json",
-        'annotation2': r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\videos\pia02_s051_004_LFA2_annotations_pn22.json"
-        }    
+        'annotation_0': annotation_file_path_0,
+        'annotation_1': annotation_file_path_1,
+        'annotation_2': annotation_file_path_2,
+        'old_annotation': old_annotation_file_path
+        }
     # Check if annotation files exist
     for layer_name, file_path in annotation_layers.items():
         if not os.path.exists(file_path):
