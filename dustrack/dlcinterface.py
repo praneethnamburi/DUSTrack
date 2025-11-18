@@ -596,9 +596,13 @@ class DLCProject:
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
         ext = '.pt' if DLC3 else '.index'
-        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-{source_snapshot}{ext}']
+        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
-        self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
+
+        if DLC3:
+            self.edit_config(cfg_file, resume_training_from=init_weights_files[0].removesuffix('.index'))
+        else:
+            self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
         return self
 
     def create_training_dataset(self, **kwargs):
@@ -725,8 +729,8 @@ class DLCProject:
         analyze_videos_kwargs = {}
         if "videos" in kwargs:
             analyze_videos_kwargs["videos"] = kwargs.pop("videos")
-        if "analyse_batchsize" in kwargs:
-            analyze_videos_kwargs["batchsize"] = kwargs.pop("analyse_batchsize")
+        if "analyze_batchsize" in kwargs:
+            analyze_videos_kwargs["batchsize"] = kwargs.pop("analyze_batchsize")
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
