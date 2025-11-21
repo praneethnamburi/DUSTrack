@@ -29,7 +29,7 @@ if __name__ == "__main__":
     parser.add_argument("--cuda-device", type=int, default=1, help="CUDA device to use")
 
     # analyse batch size:
-    parser.add_argument("--analyse-batch-size", type=int, default=128, help="Batch size for analysis")
+    parser.add_argument("--analyze-batchsize", type=int, default=128, help="Batch size for analysis")
 
     args = parser.parse_args()
 
@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
     dlcp = DLCProject(path = dlc_project_config_path)
 
-    dlcp.process(maxiters=args.max_iters, analyse_batchsize=args.analyse_batch_size, create_video=False)
+    dlcp.process(maxiters=args.max_iters, analyse_batchsize=args.analyze_batchsize, create_video=False)
 
     # from dustrack import _config
     # _config.DLC3_USE_LAST_SNAPSHOT = False
