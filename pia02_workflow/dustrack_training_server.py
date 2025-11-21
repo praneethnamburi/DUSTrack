@@ -78,3 +78,19 @@ if __name__ == "__main__":
 
 # vpath = r"/home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models/001/001_LFA-x-2025-11-07/videos/pia02_s001_007_LFA2.mp4"
 # prediction_path = r'/home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models/001/001_LFA-x-2025-11-07/videos/iteration-2/pia02_s001_007_LFA2DLC_Resnet50_001_LFANov7shuffle1_snapshot_200.h5'
+
+
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s001/LFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s001/RFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s002/LFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s002/RFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s003/LFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s003/RFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s004/LFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s004/RFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s005/LFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
+# python /home/hwjwei/projects/pia02/DUSTrack/pia02_workflow/dustrack_training_server.py --dlc-project-config-path /home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/s005/RFA/interosseous_pn24-x-2025-10-24/config.yaml --cuda-device 3
