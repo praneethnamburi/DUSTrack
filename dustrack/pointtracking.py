@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Callable, Mapping, Union, List, Tuple, Dict, Optional, Any
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -1746,6 +1747,72 @@ class VideoAnnotation:
         if self.video is None:  # return np.array
             return area_vals
         return pysampled.Data(area_vals, sr=self.video.get_avg_fps())
+    
+    def export_video(self, out_file_name=None, start_frame=None, end_frame=None):
+        assert self.video is not None
+
+        if start_frame is None:
+            start_frame = 0
+        
+        if end_frame is None:
+            end_frame = self.n_frames - 1
+
+        if out_file_name is None:
+            assert self.fname is not None, "Please provide a file name to save the video."
+            out_file_name = str(Path(self.fname).parent / f"{Path(self.fname).stem}_sf{start_frame}_ef{end_frame}.mp4")
+            print(f"Saving video to {out_file_name}")
+
+        dpi = 200
+        # video_data = self.video[start_frame:end_frame+1]
+
+        def setup(ann):
+            plot_handles = {}
+            first_frame = self.video[start_frame].asnumpy()
+            ny, nx, _ = first_frame.shape
+
+            figure = plt.figure(frameon=False, figsize=((nx / dpi), (ny / dpi)))
+            ax = figure.add_subplot(111)
+            dummy_xy = [np.nan]*len(ann.palette)
+            plot_handles["im"] = ax.imshow(first_frame)
+            plot_handles["scatter"] = ax.scatter(dummy_xy, dummy_xy, color=ann.palette, s=4**2, edgecolors=[0, 0, 0], linewidths=0.3)
+            ax.set_xlim(0, nx)
+            ax.set_ylim(0, ny)
+            ax.axis("off")
+            ax.invert_yaxis()
+            plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
+            plot_handles["ax"] = ax
+            plot_handles["figure"] = figure
+            return plot_handles
+        
+        def update(ann, frame_number, plot_handles, scatter_points=None):
+            n_pts = len(ann.palette)
+            scatter_offsets = np.full((n_pts, 2), np.nan)
+            if scatter_points is None:
+                scatter_points = ann.get_at_frame(frame_number)
+            scatter_offsets[[int(label) for label in ann.labels], :] = scatter_points
+            plot_handles["im"].set_data(self.video[frame_number].asnumpy())
+            plot_handles['scatter'].set_offsets(scatter_offsets)
+        
+        prev_backend = plt.get_backend()
+        plt.switch_backend("agg")
+        plot_handles = setup(self)
+
+        n_frames = end_frame - start_frame + 1
+        writer = FFMpegWriter(fps=self.video.get_avg_fps(), codec="h264")
+
+        
+        assert not os.path.exists(out_file_name)
+        p1, p2 = list(self.to_signals().values())
+        p1 = p1.lowpass(15)
+        p2 = p2.lowpass(15)
+        with writer.saving(plot_handles["figure"], out_file_name, dpi=dpi):
+            for frame_number in tqdm(range(start_frame, end_frame+1)): # tqdm(range(ann.n_frames)):
+                scatter_points = [list(p1[int(frame_number)]), list(p2[int(frame_number)])]
+                update(self, frame_number, plot_handles, scatter_points=scatter_points)
+                writer.grab_frame()
+        
+        plt.close(plot_handles["figure"])
+        plt.switch_backend(prev_backend)
 
 
 class VideoAnnotations(AssetContainer):
