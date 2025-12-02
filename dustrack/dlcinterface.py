@@ -22,15 +22,14 @@ import datanavigator
 from skimage import io, img_as_ubyte
 from decord import VideoReader, cpu
 
-import sys
-sys.path.append(r"C:\dev\DUSTrack")  # for development purposes
-
 from dustrack.postprocess import lk_moving_average_filter
 from dustrack import _config
 
 try:
     import deeplabcut
     from deeplabcut.utils.auxfun_videos import VideoWriter
+    from ruamel.yaml.scanner import ScannerError
+    from dustrack import imagesimilarity
     DLC3 = deeplabcut.__version__.startswith('3.')
     HAS_DLC = True
 except ImportError:
@@ -59,10 +58,11 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
         self._add_dummy_button("dummy1")
-        self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
-        self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
-        self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-        self._add_dummy_button("dummy2")
+        if HAS_DLC:
+            self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
+            self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
+            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
+            self._add_dummy_button("dummy2")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)

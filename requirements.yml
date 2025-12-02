@@ -3,12 +3,20 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python>=3.7
+  - python>=3.7,<=3.13
   - pip
-  - numpy
-  - opencv
+  - numpy<2
+  - pandas
+  - matplotlib
+  - portion
+  - ffmpeg-python
+  - pytables
   - dill
   - tqdm
+  - scikit-image
   - pip:
-    - opencv-contrib-python
-    - datanavigator
+    - opencv-python
+    - pysampled
+    - decord
+    - pyfilemanager
+    - datanavigator>=1.1.3
