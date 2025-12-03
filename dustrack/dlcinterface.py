@@ -12,7 +12,6 @@ import pandas as pd
 import cv2 as cv
 from pyfilemanager import FileManager
 import pysampled
-from ruamel.yaml.scanner import ScannerError
 from skimage import io
 from skimage.util import img_as_ubyte
 
