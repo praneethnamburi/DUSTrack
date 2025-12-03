@@ -58,7 +58,6 @@ try:
     import deeplabcut
     from deeplabcut.utils.auxfun_videos import VideoWriter
     from ruamel.yaml.scanner import ScannerError
-    from . import imagesimilarity
     DLC3 = deeplabcut.__version__.startswith('3.')
     HAS_DLC = True
 except ImportError:
