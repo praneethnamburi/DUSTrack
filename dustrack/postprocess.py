@@ -23,7 +23,7 @@ Typical Usage:
     >>> # Apply post-processing with 0.5 second window
     >>> ann_smooth = lk_moving_average_filter(ann, window_size=0.5)
 
-    In practice, access the lk_moving_average_filter method via dustrack.dlcinterface.VideoAnnotation:
+In practice, access the lk_moving_average_filter method via :class:`~dustrack.dlcinterface.VideoAnnotation`:
     >>> from dustrack.dlcinterface import VideoAnnotation
     >>> ann = VideoAnnotation('video_dlc_predictions.h5', 'video.mp4')
     >>> ann_rstc = ann.postprocess()

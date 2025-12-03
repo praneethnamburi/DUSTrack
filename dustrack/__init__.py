@@ -2,8 +2,8 @@
 DUSTrack: Semi-automated point tracking in ultrasound videos.
 
 
-There are three main components in the DUSTrack workflow, mamely the DUSTrack
-GUI for inital manaual annotation, the module for deep learning based tracking
+There are three main components in the DUSTrack workflow, namely the DUSTrack
+GUI for initial manual annotation, the module for deep learning based tracking
 using DLC project management, and the annotation class with LK-RSTC
 post-processing.
 
