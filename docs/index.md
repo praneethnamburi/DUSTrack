@@ -8,5 +8,9 @@
 ```
 
 ```{toctree}
+:hidden:
+
+DUSTrack <self>
+keyboardshortcuts
 api
 ```

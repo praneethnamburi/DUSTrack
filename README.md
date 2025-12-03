@@ -61,7 +61,7 @@ d = DUSTrack(video_path, "pn")
 ```
 
 **Next steps:**
-- Use the GUI to mark points of interest in your video (see [Keyboard shortcuts](https://github.com/praneethnamburi/DUSTrack/raw/main/docs/source/resources/keyboard_shortcuts.pdf))
+- Use the GUI to mark points of interest in your video (see [Keyboard shortcuts](https://github.com/praneethnamburi/DUSTrack/raw/main/docs/source/resources/keyboard_shortcuts.png))
 - Track points using optical flow and/or train a deep learning model
 - Export tracking results as a `.json` file for further analysis
 

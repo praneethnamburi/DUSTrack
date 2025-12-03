@@ -32,8 +32,11 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_theme_options = {
     "collapse_navigation": False,
+    "navigation_depth": 4,
+    "includehidden": True,
+    "titles_only": False,
 }
-html_static_path = []
+html_static_path = ["_static"]
 
 autodoc_member_order = "bysource"
 napoleon_use_ivar = True
