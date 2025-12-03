@@ -1,8 +1,5 @@
 # API Reference
 
-This page provides detailed documentation for all modules and functions in the DUSTrack package.
-
-## Overview
 ```{eval-rst}
 .. automodule:: dustrack
     :members:
@@ -21,7 +18,9 @@ This page provides detailed documentation for all modules and functions in the D
     :special-members: __init__
 ```
 
-## DeepLabCut Interface
+## Deep learning
+
+Interface class for using ResNets via DeepLabCut.
 
 ```{eval-rst}
 .. autoclass:: dustrack.dlcinterface.DLCProject
@@ -31,7 +30,9 @@ This page provides detailed documentation for all modules and functions in the D
     :special-members: __init__
 ```
 
-## LK-RSTC Post-Processing
+## Optical flow
+
+Module for optical flow based postprocessing using the LK-RSTC algorithm.
 
 ```{eval-rst}
 .. automodule:: dustrack.postprocess

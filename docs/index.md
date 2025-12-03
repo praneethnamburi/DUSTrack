@@ -10,7 +10,8 @@
 ```{toctree}
 :hidden:
 
-DUSTrack <self>
+Home <self>
+dustrackgui
 keyboardshortcuts
 api
 ```
