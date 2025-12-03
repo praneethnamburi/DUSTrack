@@ -51,14 +51,14 @@ import datanavigator
 from skimage import io, img_as_ubyte
 from decord import VideoReader, cpu
 
-from dustrack.postprocess import lk_moving_average_filter
-from dustrack import _config
+from .postprocess import lk_moving_average_filter
+from . import _config
 
 try:
     import deeplabcut
     from deeplabcut.utils.auxfun_videos import VideoWriter
     from ruamel.yaml.scanner import ScannerError
-    from dustrack import imagesimilarity
+    from . import imagesimilarity
     DLC3 = deeplabcut.__version__.startswith('3.')
     HAS_DLC = True
 except ImportError:
