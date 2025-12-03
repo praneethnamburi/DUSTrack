@@ -1,0 +1,4 @@
+sphinx==6.2.1
+sphinx-rtd-theme==2.0.0
+myst-parser==1.0.0
+sphinxcontrib-youtube==1.4.1

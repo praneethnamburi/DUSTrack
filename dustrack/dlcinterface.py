@@ -420,7 +420,7 @@ if HAS_DLC:
         """Interface to deeplabcut training and inference
         Current workflow:
             1. Create a project with some videos. Videos will be copied.
-                d = DLCProject(r'C:\data_opr02\004_02\ml_models\dlc', name='opr02_s004_muscles', experimenter='praneeth', videos=[<video_list>])
+                d = DLCProject(r'C:/data_opr02/004_02/ml_models/dlc', name='opr02_s004_muscles', experimenter='praneeth', videos=[<video_list>])
             2. Launch the initial annnotator for video 0, repeat if there are more videos
                 d.annotate(0) 
             3. Extract frames, train network, evaluate network, analyze videos, and create labeled video

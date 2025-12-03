@@ -158,6 +158,7 @@ def compute_sigmoid_weights(n_frames: int, epsilon: float = 0.01) -> tuple[np.nd
         tuple[np.ndarray, np.ndarray]: Two arrays of shape (n_frames,):
             - sigmoid_forward: Decreasing weights from ~1 to ~0
             - sigmoid_reverse: Increasing weights from ~0 to ~1
+            
             Forward and reverse weights sum to 1.0 at each frame.
     
     Mathematical Form:

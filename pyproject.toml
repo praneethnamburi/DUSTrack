@@ -42,13 +42,17 @@ classifiers = [
 ]
 keywords = ["video", "tracking", "computer-vision", "motion-analysis", "point-tracking"]
 
+[project.optional-dependencies]
+docs = [
+    "sphinx==6.2.1",
+    "sphinx-rtd-theme==2.0.0",
+    "myst-parser==1.0.0",
+    "sphinxcontrib-youtube==1.4.1"
+]
+
 [project.urls]
 Home = "https://github.com/praneethnamburi/DUSTrack"
 
 [tool.black]
 line-length = 88
 target-version = ['py37', 'py38', 'py39', 'py310', 'py311', 'py312', 'py313']
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
