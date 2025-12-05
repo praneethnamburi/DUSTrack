@@ -37,6 +37,11 @@ except ImportError:
     print('deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.')
     HAS_DLC = False
 
+import re
+from pathlib import PureWindowsPath, PurePosixPath
+
+
+
 EXPERIMENTER = _config.EXPERIMENTER
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
@@ -464,25 +469,24 @@ class DLCProject:
             if not os.path.exists(self.paths['models']):
                 os.makedirs(self.paths['models'])
 
-        def change_ip(inp_str):
-            x = inp_str.split('\\')
-            if len(x[2].split('.')) == 4:
-                x[2] = _config.NAS_IP
-                print(f"IP address changed to {_config.NAS_IP}")
-                return '\\'.join(x)
-            print("IP address was not changed")
-            return inp_str
+        # def change_ip(inp_str):
+        #     x = inp_str.split('\\')
+        #     if len(x[2].split('.')) == 4:
+        #         x[2] = _config.NAS_IP
+        #         print(f"IP address changed to {_config.NAS_IP}")
+        #         return '\\'.join(x)
+        #     print("IP address was not changed")
+        #     return inp_str
 
-        if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
-            video_sets = self.config["video_sets"]
-            new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
-            self.edit_config(video_sets=new_video_sets)
-        
-        try:
-            deeplabcut.auxiliaryfunctions.read_config(self.config_path)
-        except ScannerError as s:
-            print('Config file is corrupted. Fix it manually.')
-            print('If there is no _ in the name, then the config file has issues when dealing with folders on the server. ')
+        # if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
+        #     video_sets = self.config["video_sets"]
+        #     new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
+        #     self.edit_config(video_sets=new_video_sets)
+
+        # use self config path and each video path to create a new video_sets using rebase_to_config
+        video_sets = self.config["video_sets"]
+        new_video_sets = {rebase_to_config(self.config_path, k):v for k,v in video_sets.items()}
+        self.edit_config(video_sets=new_video_sets)
 
     @property
     def paths(self) -> Mapping[str, Path]:
@@ -952,9 +956,13 @@ class DLCProject:
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
         ext = '.pt' if DLC3 else '.index'
-        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-{source_snapshot}{ext}']
+        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
-        self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
+
+        if DLC3:
+            self.edit_config(cfg_file, resume_training_from=init_weights_files[0].removesuffix('.index'))
+        else:
+            self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
         return self
 
     def create_training_dataset(self, **kwargs):
@@ -985,7 +993,7 @@ class DLCProject:
         max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
         cfg_file = self.get_pose_cfg_file()
         self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
+        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, pytorch_cfg_updates={"runner.eval_interval": 25},**kwargs)
         return self
     
     def evaluate(self, **kwargs):
@@ -1149,6 +1157,8 @@ class DLCProject:
         analyze_videos_kwargs = {}
         if "videos" in kwargs:
             analyze_videos_kwargs["videos"] = kwargs.pop("videos")
+        if "analyze_batchsize" in kwargs:
+            analyze_videos_kwargs["batchsize"] = kwargs.pop("analyze_batchsize")
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
@@ -1481,7 +1491,8 @@ class VideoFileManager(FileManager):
         """
         fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
         # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
-        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5']
+        # I want both .h5 file and json file
+        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
         return {self._get_dlc_trace_name(fname): fname for fname in fnames}
     
     @property
@@ -1609,3 +1620,51 @@ def merge_annotations_in_folder(path, annotation_suffix='merged'):
             fname_merged = make_annotation_file_name(video_file, annotation_suffix)
         )
         ann.save()
+
+
+
+def rebase_to_config(config_path: str, old_path: str) -> str:
+    """
+    Rebase 'old_path' (some file inside the project) onto the project root
+    implied by 'config_path' (points to config.yaml or the project dir).
+
+    Keeps the correct root/anchor:
+      - Posix: leading "/"
+      - Windows: drive letters (e.g., "C:\\") and UNC shares ("\\\\server\\share")
+    Returns separators inferred from 'config_path'.
+    """
+    # Choose path flavor by the config path
+    is_windows_like = ("\\" in config_path) or config_path.startswith("\\\\") or bool(re.match(r"^[A-Za-z]:", config_path))
+    PathCls = PureWindowsPath if is_windows_like else PurePosixPath
+
+    # Parse the config path *as-is* to keep its anchor
+    cfg = PathCls(config_path)
+    # Project root is the directory that contains config.yaml; if a directory is passed, use it
+    new_root = cfg.parent if cfg.name.lower() == "config.yaml" else cfg
+    if not new_root.name:
+        raise ValueError(f"Cannot infer project folder name from: {config_path!r}")
+    project_name = new_root.name
+
+    # Split helper that handles both slash types
+    split = lambda p: [x for x in re.split(r"[\\/]+", p.strip()) if x]
+
+    old_parts = split(old_path)
+
+    # Find the LAST occurrence of the project folder name (exact, then case-insensitive)
+    def find_idx(parts, name):
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i] == name:
+                return i
+        name_cf = name.casefold()
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i].casefold() == name_cf:
+                return i
+        return None
+
+    idx = find_idx(old_parts, project_name)
+    if idx is None:
+        raise ValueError(f"Project folder {project_name!r} not found in old_path: {old_path!r}")
+
+    tail = old_parts[idx + 1:]
+    rebased = new_root / PathCls(*tail) if tail else new_root
+    return str(rebased)
