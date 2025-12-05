@@ -16,13 +16,12 @@ if __name__ == "__main__":
 
     # dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\config.yaml"
     participant_root_directory = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models_general"
-    participant_id = 's005'
-    hand = 'RFA'
+    participant_id = 's001'
+    hand = 'LFA'
     # hand = 'RFA'
 
-    video_index = 4 # modify the video index to the video you want to annotate
-
-
+    video_index = 12# modify the video index to the video you want to annotate
+ 
     dlc_project_config_path = os.path.join(participant_root_directory, participant_id, hand, "interosseous_pn24-x-2025-10-24", "config.yaml")
 
     #########################################################[]
