@@ -1,3 +1,6 @@
+"""
+Main DUSTrack module, including an interface to manage DeepLabCut (DLC) projects.
+"""
 from __future__ import annotations
 
 import fnmatch
@@ -12,12 +15,8 @@ import pandas as pd
 import cv2 as cv
 from pyfilemanager import FileManager
 import pysampled
-from ruamel.yaml.scanner import ScannerError
 from skimage import io
 from skimage.util import img_as_ubyte
-
-import deeplabcut
-from deeplabcut.utils.auxfun_videos import VideoWriter
 
 import matplotlib.pyplot as plt
 import datanavigator
@@ -28,22 +27,63 @@ from decord import VideoReader, cpu
 from .postprocess import lk_moving_average_filter
 from . import _config
 
+try:
+    import deeplabcut
+    from deeplabcut.utils.auxfun_videos import VideoWriter
+    from ruamel.yaml.scanner import ScannerError
+    DLC3 = deeplabcut.__version__.startswith('3.')
+    HAS_DLC = True
+except ImportError:
+    print('deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.')
+    HAS_DLC = False
+
 import re
 from pathlib import PureWindowsPath, PurePosixPath
 
 
+
 EXPERIMENTER = _config.EXPERIMENTER
-DLC3 = deeplabcut.__version__.startswith('3.')
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
     """
-    A subclass of VideoAnnotation that adds a method for applying a moving average filter to the annotations.
+    Enhanced VideoAnnotation with integrated post-processing.
+    
+    This subclass extends datanavigator.VideoAnnotation by adding the Lucas-Kanade
+    moving average filter as a default post-processing method for smoothing trajectories.
+    
+    Attributes:
+        postprocess: Function reference to lk_moving_average_filter for jitter reduction.
     """
     postprocess = lk_moving_average_filter
 
 class DUSTrack(datanavigator.VideoPointAnnotator):
     """
-    A subclass of VideoPointAnnotator that uses the DUSTrack algorithm for tracking.
+    Interactive video point annotator with DeepLabCut integration.
+    
+    DUSTrack provides a GUI for manual annotation of points in videos, with integrated
+    support for creating DeepLabCut projects, training models, and post-processing
+    results using optical flow algorithms.
+    
+    Features:
+        - Manual point annotation with event marking
+        - Real-time trajectory visualization
+        - DeepLabCut project creation and training
+        - Optical flow-based jitter reduction
+        - Multiple annotation layer management
+    
+    Attributes:
+        _dlcproject (DLCProject): Associated DeepLabCut project instance.
+        _ax_lims (dict): Stores axis limits when plot axes are frozen.
+    
+    Example:
+        >>> # Basic usage
+        >>> tracker = DUSTrack('video.mp4', "pn") # pn is the name of the annotation layer, that can be saved as {video_name}_annotations_pn.json
+        >>> 
+        >>> # With multiple annotation layers
+        >>> tracker = DUSTrack('video.mp4', {
+        ...     'manual': 'manual_labels.json',
+        ...     'dlc_iter1': 'dlc_predictions.h5'
+        ... })
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -55,10 +95,11 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
         self._add_dummy_button("dummy1")
-        self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
-        self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
-        self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-        self._add_dummy_button("dummy2")
+        if HAS_DLC:
+            self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
+            self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
+            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
+            self._add_dummy_button("dummy2")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
@@ -74,14 +115,27 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             plt.draw()
 
     def _add_dummy_button(self, name="dummy"):
-        # add a dummy button
+        """
+        Add an invisible placeholder button for GUI layout spacing.
+        
+        Args:
+            name (str): Internal name for the button. Defaults to "dummy".
+        """
         button = self.buttons.add(text=name, action_func=lambda x, ev: None)
         button.ax.patch.set_visible(False)  # Hide the rectangular patch
         button.label.set_visible(False) # Hide the text label
         button.ax.axis('off') # Optional: Turn off the axes frame
     
     def freeze_plot_axes(self, event=None):
-        """Freeze the axes limits of the trace plots."""
+        """
+        Lock the axis limits of trajectory plots to current view.
+        
+        Useful for comparing tracking quality across different frames without
+        automatic axis rescaling distracting from the comparison.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+        """
         self._ax_lims['state'] = True
         self._ax_lims['x'] = self._ax_trace_x.get_xlim()
         self._ax_lims['y_trace_x'] = self._ax_trace_x.get_ylim()
@@ -89,7 +143,12 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.update()
 
     def unfreeze_plot_axes(self, event=None):
-        """Unfreeze the axes limits of the trace plots."""
+        """
+        Restore automatic axis scaling for trajectory plots.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+        """
         self._ax_lims['state'] = False
         self._ax_lims['x'] = [None, None]
         self._ax_lims['y_trace_x'] = [None, None]
@@ -98,7 +157,27 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
 
 
     def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER) -> DLCProject:
-        """Create a new deeplabcut project with the current annotation layer as labels."""
+        """
+        Create a new DeepLabCut project using current annotations as training labels.
+        
+        This method saves the current annotation layer and initializes a new DLC project
+        with the video and labels. The project is stored in self._dlcproject for subsequent
+        training and analysis operations.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+            name (str, optional): Project name. Defaults to "{video_name}_{annotation_layer}".
+            path (str, optional): Directory for project. Defaults to video's parent directory.
+            experimenter (str, optional): Experimenter name. Defaults to config value.
+        
+        Returns:
+            DLCProject: The newly created project instance.
+        
+        Note:
+            Project names must contain an underscore for proper DLC configuration handling.
+        """
+        if not HAS_DLC:
+            raise ImportError('deeplabcut is not installed. Cannot create DLC project.')
         self.ann.save()
         if name is None:
             name = f"{self.name}_{self.ann.name}"
@@ -114,7 +193,26 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         return self._dlcproject
     
     def process_dlc_project(self, event=None, *args, **kwargs):
-        """Process the deeplabcut project."""
+        """
+        Train the DeepLabCut model and return to annotation GUI.
+        
+        This method closes the current figure, trains the DLC model, evaluates it,
+        analyzes videos, and reopens the annotation interface with DLC predictions
+        as an overlay layer.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+            *args: Additional arguments passed to DLCProject.process().
+            **kwargs: Additional keyword arguments passed to DLCProject.process().
+        
+        Returns:
+            DUSTrack: New annotation interface with DLC predictions loaded.
+        
+        Raises:
+            ValueError: If no DLCProject has been created yet.
+        """
+        if not HAS_DLC:
+            raise ImportError('deeplabcut is not installed. Cannot process DLC project.')
         assert self._dlcproject is not None, "DLCProject not created. Use create_dlc_project() to create it."
         plt.close(self.figure)
         if self._dlcproject is None:
@@ -123,6 +221,24 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         return self._dlcproject.annotate()
     
     def process_with_lk(self, event=None, *args, **kwargs) -> VideoAnnotation:
+        """
+        Apply Lucas-Kanade optical flow post-processing to reduce tracking jitter.
+        
+        This method uses the Lucas-Kanade RSTC (Reverse Sigmoid Tracking Correction)
+        algorithm to smooth trajectories. The processed annotation is saved and added
+        as a new layer, with the original set as overlay for comparison.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+            *args: Additional arguments passed to lk_moving_average_filter.
+            **kwargs: Additional keyword arguments (e.g., window_size) passed to filter.
+        
+        Returns:
+            VideoAnnotation: The smoothed annotation layer.
+        
+        See Also:
+            dustrack.postprocess.lk_moving_average_filter: The filtering algorithm.
+        """
         ann_processed = lk_moving_average_filter(self.ann, *args, **kwargs)
         ann_processed.save()
         self.add_annotation_layers(ann_processed)
@@ -132,7 +248,24 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         return ann_processed
     
     def copy_existing_annotations_from_overlay(self, event=None):
-        """When you agree with the dlc model better than your manual annotations, copy the dlc overlay to the current annotation layer."""
+        """
+        Copy overlay annotation points to the current annotation layer for selected frames.
+        
+        Useful when DLC predictions are more accurate than manual labels.
+        Typically used with manual annotations in the primary annotation layer,
+        and the model predictions in the overlay layer. Data is copied only for
+        frames that exist in the primary annotation layer. Perform this action
+        within a specified frame range by selecting an interval.
+        
+        Args:
+            event: Mouse/keyboard event (unused, for button compatibility).
+        
+        Raises:
+            ValueError: If no annotation overlay is currently selected.
+        
+        Note:
+            Only affects the current label. Other labels remain unchanged.
+        """
         overlay_name = self._current_overlay
         if overlay_name is None:
             raise ValueError('No annotation overlay selected.')
@@ -149,6 +282,12 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.update()
     
     def update(self):
+        """
+        Update the display with current frame and maintain frozen axis limits if set.
+        
+        Returns:
+            Result from parent class update() method.
+        """
         ret = super().update()
         if self._ax_lims['state']:
             if self._ax_lims['x'][0] is not None:
@@ -164,10 +303,29 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
 
 class DLCData(pysampled.Data):
     """
-    DeepLabCut sample data class to deal with DLC results (and point-trajectory data in general)
+    Data container for DeepLabCut tracking results.
+    
+    Provides convenient loading and manipulation of DLC output files (HDF5 format),
+    with automatic extraction of metadata like body part names and coordinate labels.
+    
+    Attributes:
+        signal_names (list): Names of tracked body parts (e.g., ['nose', 'left_ear']).
+        signal_coords (list): Coordinate names (typically ['x', 'y', 'likelihood']).
+    
+    Example:
+        >>> # Load from DLC output file
+        >>> data = DLCData.from_hdf('video_dlc_resnet50_model_name.h5')
+        >>> 
+        >>> # Load from video (finds associated HDF5 file)
+        >>> data = DLCData.from_video('video.mp4', iter_num=250000)
     """
     def __setstate__(self, state):
-        """For backwards compatibility."""
+        """
+        Restore object state with backwards compatibility.
+        
+        Handles legacy attribute names ('coords', 'label_names') by converting
+        them to current naming convention ('signal_coords', 'signal_names').
+        """
         super().__setstate__(state)
         if "coords" in self.meta:
             self.signal_coords = self.meta.pop("coords")
@@ -176,6 +334,19 @@ class DLCData(pysampled.Data):
     
     @classmethod
     def from_hdf(cls, file_path):
+        """
+        Load DLC data from an HDF5 file.
+        
+        Args:
+            file_path (str): Path to the DLC output HDF5 file.
+        
+        Returns:
+            DLCData: Loaded data with extracted metadata.
+        
+        Raises:
+            AssertionError: If file doesn't exist.
+            FileNotFoundError: If corresponding labeled video cannot be found.
+        """
         assert os.path.exists(file_path)
         df_h5 = pd.read_hdf(file_path)
         label_names = list(df_h5.columns.unique(level='bodyparts'))
@@ -188,6 +359,22 @@ class DLCData(pysampled.Data):
     
     @classmethod
     def from_video(cls, vid_path, iter_num=None):
+        """
+        Load DLC data associated with a video file.
+        
+        Automatically searches for HDF5 files matching the video name and
+        loads the specified training iteration (or the highest if not specified).
+        
+        Args:
+            vid_path (str): Path to the video file.
+            iter_num (int, optional): Training iteration number. If None, uses highest.
+        
+        Returns:
+            DLCData: Loaded tracking data.
+        
+        Raises:
+            AssertionError: If video file doesn't exist or requested iteration not found.
+        """
         assert os.path.exists(vid_path)
         # find the hdf file
         vid_path = Path(vid_path)
@@ -206,7 +393,7 @@ class DLCProject:
     """Interface to deeplabcut training and inference
     Current workflow:
         1. Create a project with some videos. Videos will be copied.
-            d = DLCProject(r'C:\data_opr02\004_02\ml_models\dlc', name='opr02_s004_muscles', experimenter='praneeth', videos=[<video_list>])
+            d = DLCProject(r'C:/data_opr02/004_02/ml_models/dlc', name='opr02_s004_muscles', experimenter='praneeth', videos=[<video_list>])
         2. Launch the initial annnotator for video 0, repeat if there are more videos
             d.annotate(0) 
         3. Extract frames, train network, evaluate network, analyze videos, and create labeled video
@@ -218,12 +405,30 @@ class DLCProject:
         5. Re-train network with refined labels
             d.process()
 
-        Repeat steps 4 and 5 until satisfied
+        Repeat steps 4 and 5 until satisfied with the results.
     """
     def __init__(self, path, videos=[], name='test_01', experimenter=_config.EXPERIMENTER, annotation_suffix='', internal_to_dlc_labels: dict=None):
         """
-        If there is no _ in the name, then the config file has issues when dealing with folders on the server. 
+        Initialize or load a DeepLabCut project.
+        
+        If a config.yaml exists at the path, loads the existing project.
+        Otherwise, creates a new project with the provided videos.
+        
+        Args:
+            path (str): Directory containing or for the project.
+            videos (list): List of video file paths to include.
+            name (str): Project name (must contain underscore for proper config handling).
+            experimenter (str): Experimenter identifier.
+            annotation_suffix (str): Suffix for annotation files (e.g., 'manual', 'refined').
+            internal_to_dlc_labels (dict, optional): Custom label name mapping.
+        
+        Note:
+            Videos are copied into the project folder by default.
+            Project names without underscores may cause config issues with network paths.
         """
+        if not HAS_DLC:
+            raise RuntimeError('Install deeplabcut to use DLCProject functionality.')
+        
         config_path = None
         if os.path.isfile(path):
             assert Path(path).stem == 'config' and Path(path).suffix == '.yaml'
@@ -285,7 +490,18 @@ class DLCProject:
 
     @property
     def paths(self) -> Mapping[str, Path]:
-        """Full paths to the project folder and its subfolders."""
+        """
+        Full paths to project folder and standard DLC subfolders.
+        
+        Returns:
+            dict: Mapping of folder names to Path objects with keys:
+                - 'project': Main project directory
+                - 'models': Trained model weights (dlc-models or dlc-models-pytorch)
+                - 'results': Evaluation results
+                - 'labels': Labeled frame data
+                - 'training_data': Training datasets
+                - 'videos': Video files
+        """
         project_path = Path(self.config_path).parent
         model_folder_name = 'dlc-models-pytorch' if DLC3 else 'dlc-models'
         evaluation_folder_name = 'evaluation-results-pytorch' if DLC3 else 'evaluation-results'
@@ -300,31 +516,58 @@ class DLCProject:
     
     @property
     def config(self) -> dict:
-        """Configuration file for hte project"""
+        """
+        Current project configuration dictionary.
+        
+        Returns:
+            dict: Parsed contents of config.yaml.
+        """
         return deeplabcut.auxiliaryfunctions.read_config(self.config_path)
     
     @property
     def name(self) -> str:
-        """Name of the deeplabcut project."""
+        """Project name from configuration."""
         return self.config['Task']
 
     @property
     def trackers(self) -> list:
-        """Return the names of the points being tracked."""
+        """
+        Names of tracked body parts as used internally by DLC.
+        
+        Returns:
+            list: Body part names (e.g., ['point0', 'point1']).
+        """
         return self.config['bodyparts']
 
     @property
     def label_names(self) -> list:
-        """Meaningful names for the points being tracked."""
+        """
+        Human-readable names for tracked points.
+        
+        Returns meaningful names from dlc_trackermap.txt if available,
+        otherwise returns the internal tracker names.
+        
+        Returns:
+            list: Display names for body parts.
+        """
         trackermap = self.trackermap
         return [trackermap[tracker] if tracker in trackermap else tracker for tracker in self.trackers]
 
     @property
     def trackermap(self):
-        """Load meaningful names if a dlc_trackermap.txt file exists in the project folder.
-        For convenience (e.g. assigning meaningful names after training) and generalization, 
-        points that are being tracked are called point0 - point9.
-        dlc_trackermap.txt is used to assign biologically meaningful names to these points.
+        """
+        Load meaningful label names from dlc_trackermap.txt.
+        
+        This file maps internal names (point0, point1) to biological names
+        (nose, left_ear, etc.) for better interpretability.
+        
+        Returns:
+            dict: Mapping from internal names to display names.
+        
+        Example dlc_trackermap.txt content:
+            point0 - muscle_boundary
+            point1 - fascia
+            point2 - bone
         """
         map_file = os.path.join(self.paths['project'], 'dlc_trackermap.txt')
         if os.path.exists(map_file):
@@ -335,7 +578,16 @@ class DLCProject:
             return {}
     
     def edit_config(self, config_file=None, **kwargs):
-        """Edit the configuration file."""
+        """
+        Modify project configuration parameters.
+        
+        Args:
+            config_file (str, optional): Path to config file. Defaults to main config.
+            **kwargs: Configuration parameters to update (e.g., iteration=2, snapshotindex=5).
+        
+        Returns:
+            Result of deeplabcut.auxiliaryfunctions.edit_config().
+        """
         if config_file is None:
             config_file = self.config_path
         assert os.path.exists(config_file)
@@ -343,22 +595,28 @@ class DLCProject:
 
     @property
     def video_list(self) -> list[Path]:
-        """List videos from the config file."""
+        """Full paths to videos in the project."""
         return list(self.config['video_sets'].keys())
     
     @property
     def video_names(self) -> list[str]:
-        """List of video names (not full paths) for the videos listed in the config file."""
+        """Video filenames without extensions."""
         return [Path(vname).stem for vname in self.video_list]
     
     @property
     def current_iteration(self) -> int:
-        """Model iteration number specified in the configuration file."""
+        """Model iteration number currently set in config.yaml."""
         return self.config['iteration']
     
     @current_iteration.setter
     def current_iteration(self, iteration_num: int):
-        """Edit config.yaml file to set the current model iteration."""
+        """
+        Set the active model iteration in config.yaml.
+        
+        Args:
+            iteration_num: Iteration number, or 'latest' for most recent,
+                or 'next' for latest+1 (if latest is trained).
+        """
         if isinstance(iteration_num, str):
             assert iteration_num in ('latest', 'next')
             if iteration_num == 'latest':
@@ -373,7 +631,7 @@ class DLCProject:
     
     @property
     def latest_iteration(self) -> int:
-        """Most recent model iteration, based on the sub-folders in dlc-models."""
+        """Highest iteration number in dlc-models folder."""
         all_iterations = self.all_iterations
         if not all_iterations:
             return 0
@@ -381,19 +639,25 @@ class DLCProject:
     
     @property
     def latest_trained_iteration(self) -> int:
-        """Return the most recent iteration that is trained."""
+        """Most recent iteration that has saved model snapshots."""
         return max([iteration for iteration,snapshot in self.all_snapshots.items() if len(snapshot)], default=-1)
     
     @property
     def all_iterations(self) -> list:
-        """iterations in the dlc-models folder."""
+        """All iteration numbers found in dlc-models, sorted ascending."""
         ret = [int(x.split('-')[-1]) for x in os.listdir(self.paths['models']) if x.startswith('iteration-') and os.path.isdir(self.paths['models'] / x)]
         ret.sort()
         return ret
 
     @property
     def all_snapshots(self) -> Mapping[int, list[int]]:
-        """Return a dictionary mapping from model iteration number to list of training iterations in that model iteration."""
+        """
+        Training snapshots for each model iteration.
+        
+        Returns:
+            dict: Maps iteration number to list of training iteration numbers.
+                For DLC3, identifies .pt files; for DLC2, identifies .index files.
+        """
         if DLC3:
             ext = ".pt"
         else:
@@ -410,25 +674,47 @@ class DLCProject:
         return ret
     
     def current_iteration_is_trained(self) -> bool:
-        """If the model iteration specified in the configuration file is trained."""
+        """Check if current iteration has any saved snapshots."""
         return self.iteration_is_trained(self.current_iteration)
     
     def latest_iteration_is_trained(self) -> bool:
-        """If the most recent iteration in the dlc-models folder is trained."""
+        """Check if latest iteration has any saved snapshots."""
         return self.iteration_is_trained(self.latest_iteration)
 
     def iteration_is_trained(self, iteration_num: int) -> bool:
+        """
+        Check if a specific iteration has been trained.
+        
+        Args:
+            iteration_num (int): Model iteration to check.
+        
+        Returns:
+            bool: True if snapshots exist for this iteration.
+        """
         if iteration_num not in self.all_snapshots:
             return False
         return len(self.all_snapshots[iteration_num]) > 0
     
     def increment_iteration(self):
-        """If the latest iteration is trained, increment the iteration number in the configuration file."""
+        """
+        Advance to next iteration if current one is trained.
+        
+        Returns:
+            self: For method chaining.
+        """
         self.current_iteration = 'next'
         return self
         
     def add_videos(self, videos: list[Path]):
-        """Add videos to the dlc project"""
+        """
+        Add new videos to existing project and copy their annotations.
+        
+        Args:
+            videos: List of video file paths to add.
+        
+        Returns:
+            self: For method chaining.
+        """
         if isinstance(videos, (str, Path)):
             videos = [videos]
         deeplabcut.add_new_videos(self.config_path, videos, copy_videos=True)
@@ -436,7 +722,18 @@ class DLCProject:
         return self
     
     def copy_annotations(self, video_name: Union[Path, list]):
-        """If frames were labeled using VideoPointAnnotator, then copy those files into the DLC project folder as well."""
+        """
+        Copy DUSTrack/VideoPointAnnotator JSON files into project's video folder.
+        
+        Args:
+            video_name: Single video path or list of video paths.
+        
+        Returns:
+            str or list: Path(s) to copied annotation file(s), or None if not found.
+        
+        Note:
+            Looks for files matching {video_stem}_annotations_{suffix}.json
+        """
         if isinstance(video_name, list):
             copied_files = []
             for this_video_name in video_name:
@@ -455,7 +752,28 @@ class DLCProject:
         return None
 
     def extract_frames(self, annotation_file_names=None, suffix_merged='merged', save_merged_json=False, check=False):
-        """Extract labeled data frames, and save the annotations in the labeled-data folder for each video."""
+        """
+        Extract labeled frames from videos and convert annotations to DLC format.
+        
+        This method:
+        1. Finds all annotation JSON files for each video
+        2. Merges multiple annotation files if present
+        3. Extracts the annotated frames from videos
+        4. Converts annotations to DLC's CSV/HDF5 format in labeled-data folder
+        
+        Args:
+            annotation_file_names (list, optional): Specific annotation files to use.
+                If None, automatically finds all matching files.
+            suffix_merged (str): Suffix for merged annotation file. Defaults to 'merged'.
+            save_merged_json (bool): Whether to save the merged JSON. Defaults to False.
+            check (bool): Whether to run deeplabcut.check_labels(). Defaults to False.
+        
+        Returns:
+            self: For method chaining.
+        
+        Note:
+            Automatically excludes files with '_dlccorr' suffix (correction files).
+        """
         annotation_file_names_input = annotation_file_names
         for video_file_name in self.video_list:
             coords = self.config["video_sets"][video_file_name]["crop"].split(",")
@@ -475,7 +793,7 @@ class DLCProject:
                 print()
             
             if len(annotation_file_names) == 0:
-                # there are multiple videos, but one of them doensn't have any labels
+                # there are multiple videos, but one of them does not have any labels
                 continue
             
             ann = VideoAnnotation.from_multiple_files(
@@ -505,7 +823,16 @@ class DLCProject:
         return self
     
     def get_pose_cfg_file(self, iteration_num: int=None, type_: str='train') -> Path:
-        """Return the full path to the pose_cfg.yaml in the dlc-models folder. Return the path in the train folder by defaults"""
+        """
+        Get path to pose configuration file for an iteration.
+        
+        Args:
+            iteration_num (int, optional): Iteration number. Defaults to current.
+            type_ (str): 'train' or 'test' subfolder. Defaults to 'train'.
+        
+        Returns:
+            Path: Full path to pose_cfg.yaml (DLC2) or pytorch_config (DLC3).
+        """
         if iteration_num is None:
             iteration_num = self.current_iteration
         assert type_ in ('train', 'test')
@@ -518,7 +845,19 @@ class DLCProject:
         return cfg_files[0]
     
     def get_best_snapshot(self, iteration_num: int=None) -> int:
-        """Return the training iteration number with the lowest test error for a given model iteration number iteration_num."""
+        """
+        Find training iteration with lowest test error.
+        
+        For DLC3, uses the snapshot marked as 'best' unless DLC3_USE_LAST_SNAPSHOT
+        is True in config, in which case returns the last snapshot.
+        For DLC2, parses CombinedEvaluation-results.csv.
+        
+        Args:
+            iteration_num (int, optional): Model iteration. Defaults to current.
+        
+        Returns:
+            int: Training iteration number of best snapshot.
+        """
         if iteration_num is None:
             iteration_num = self.current_iteration
         
@@ -545,7 +884,15 @@ class DLCProject:
         return best_snapshot
     
     def get_best_snapshot_test_error(self, iteration_num: int=None) -> float:
-        """Return the test error at the best snapshot."""
+        """
+        Get test error (RMSE in pixels) at best snapshot.
+        
+        Args:
+            iteration_num (int, optional): Model iteration. Defaults to latest trained.
+        
+        Returns:
+            float: Test error in pixels, or -1.0 if evaluation file doesn't exist.
+        """
         if iteration_num is None:
             iteration_num = self.latest_trained_iteration
         eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
@@ -558,27 +905,40 @@ class DLCProject:
         return -1.
     
     def get_best_snapshot_idx(self, iteration_num: int=None) -> int:
-        """Return the index (not training iteration number) of the snapshot with the lowest test error."""
+        """
+        Get snapshot index (not training iteration number) of best snapshot.
+        
+        Args:
+            iteration_num (int, optional): Model iteration. Defaults to current.
+        
+        Returns:
+            int: Index in the all_snapshots list for this iteration.
+        """
         if iteration_num is None:
             iteration_num = self.current_iteration
         best_snapshot = self.get_best_snapshot(iteration_num)
         return self.all_snapshots[iteration_num].index(best_snapshot)
 
     def initialize_weights(self, source_iteration: int=None, source_snapshot: int=None, dest_iteration: int=None):
-        """Initialize the model weights, for example, from a previous model iteration when refining the model.
-        This method edits the pose_cfg file to set the initial weights.
-
+        """
+        Initialize model weights from a previous iteration (transfer learning).
+        
+        Used when refining a model with additional labels. Edits the pose_cfg
+        file to set init_weights parameter.
+        
         Args:
-            source_iteration (int, optional): Model iteration number to copy weights from. 
-                Defaults to previous to last iteration number in the dlc-models folder.
-                If there are less than two iterations, then the this method does nothing.
-            source_snapshot (int, optional): Training iteration number from which to copy the weights. 
-                Defaults to the best snapshot in source_iteration.
-            dest_iteration (int, optional): Model iteration number to copy the weights into. 
-                Defaults to the last iteration in the dlc-models folder.
-
+            source_iteration (int, optional): Iteration to copy from. 
+                Defaults to second-to-last iteration.
+            source_snapshot (int, optional): Training iteration within source_iteration.
+                Defaults to best snapshot.
+            dest_iteration (int, optional): Iteration to initialize. 
+                Defaults to latest iteration.
+        
         Returns:
-            self: For chaining commands.
+            self: For method chaining.
+        
+        Note:
+            Does nothing if there's only one iteration (no source to copy from).
         """        
         all_iterations = self.all_iterations
         if source_iteration is None: # pick the last iteration
@@ -612,7 +972,23 @@ class DLCProject:
         return self
 
     def train(self, **kwargs):
-        """Train the model. By default, it sets a different number of iterations and max learning rate from deeplabcut."""
+        """
+        Train the neural network model.
+        
+        Sets custom learning rate schedule and trains with more iterations than
+        DLC defaults for better convergence.
+        
+        Args:
+            **kwargs: Passed to deeplabcut.train_network().
+                - maxiters (int): Total training iterations. Default: 500000 (DLC2) or 1000 (DLC3 epochs).
+                - max_snapshots_to_keep (int): Max saved checkpoints. Default: 20.
+        
+        Returns:
+            self: For method chaining.
+        
+        Note:
+            Custom learning rate schedule: [0.005@10k, 0.02@350k, 0.002@425k, 0.001@1M]
+        """
         maxiters = kwargs.pop('maxiters', 500000)
         max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
         cfg_file = self.get_pose_cfg_file()
@@ -621,7 +997,18 @@ class DLCProject:
         return self
     
     def evaluate(self, **kwargs):
-        """Evaluates all the snapshots."""
+        """
+        Evaluate all training snapshots on test set.
+        
+        Temporarily sets snapshotindex to 'all' to evaluate every checkpoint,
+        then restores original value.
+        
+        Args:
+            **kwargs: Passed to deeplabcut.evaluate_network().
+        
+        Returns:
+            self: For method chaining.
+        """
         current_snapshotindex_value = self.config['snapshotindex']
         self.edit_config(snapshotindex='all')
         deeplabcut.evaluate_network(self.config_path, **kwargs)
@@ -629,9 +1016,23 @@ class DLCProject:
         return self
 
     def analyze_videos(self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs):
-        """Predict points in the videos, and create a labeled video in the videos folder.
-        To analyze specific videos, provide the video list using the keyword argument 
-            videos: list[str] containing the full paths to the videos.
+        """
+        Run inference on videos and optionally create labeled output videos.
+        
+        Args:
+            iteration_num (int, optional): Model iteration to use. Defaults to current.
+            snapshotindex (int, optional): Snapshot index to use. 
+                Defaults to best snapshot. Negative indices supported.
+            create_video (bool): Whether to create labeled video. Defaults to True.
+            **kwargs: Additional arguments for deeplabcut.analyze_videos().
+                - videos: List of video paths or indices. If not provided, analyzes all videos.
+        
+        Returns:
+            self: For method chaining.
+        
+        Note:
+            Results saved to videos/iteration-{N}/ subfolder.
+            If videos kwarg contains integers, they're treated as indices into self.video_list.
         """
         if iteration_num is None:
             iteration_num = self.current_iteration
@@ -680,7 +1081,34 @@ class DLCProject:
         return self
 
     def process(self, iteration_num=None, maxiters=None, refine=True, create_video=True, source_snapshot=None, **kwargs):
-        """Main method that tries to take the best course of action based on the state of the project."""
+        """
+        Automated workflow: extract frames, train, evaluate, and analyze.
+        
+        This is the main method for handling the full DLC pipeline. It intelligently
+        decides what steps to run based on the current project state:
+        - If iteration already evaluated: just analyze videos
+        - If frames need extraction: extract them
+        - If not trained: train the model
+        - If refining: initialize weights from previous iteration
+        
+        Args:
+            iteration_num (int or str, optional): Iteration to process. 
+                Can be integer or 'latest'. Defaults to 'latest'.
+            maxiters (int, optional): Training iterations. 
+                Defaults: 500000 (DLC2) or 1000 epochs (DLC3).
+            refine (bool): Use transfer learning from previous iteration. Defaults to True.
+            create_video (bool): Create labeled output video. Defaults to True.
+            source_snapshot (int, optional): Specific snapshot for weight initialization.
+            **kwargs: Additional arguments.
+                - videos: List of videos to analyze (can be indices or paths).
+        
+        Returns:
+            self: For method chaining.
+        
+        Example:
+            >>> proj = DLCProject('path/to/project')
+            >>> proj.process()  # Full automated workflow
+        """
         if iteration_num is None:
             iteration_num = 'latest'
         else:
@@ -735,7 +1163,25 @@ class DLCProject:
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
     def annotate(self, video_index: int=0, new_annotation_suffix=None):
-        """Annotate a video."""
+        """
+        Launch interactive annotation GUI for a video.
+        
+        Opens DUSTrack interface with existing annotation layers loaded,
+        including any DLC predictions as line plot overlays.
+        
+        Args:
+            video_index (int): Index of video in video_list. Defaults to 0.
+                Negative indices supported.
+            new_annotation_suffix (str, optional): Suffix for new annotation layer.
+                Defaults to 'iteration-{N}' where N is the next iteration number.
+        
+        Returns:
+            DUSTrack: Interactive annotation interface.
+        
+        Note:
+            Creates a 'buffer' layer for temporary annotations.
+            Latest DLC predictions are automatically set as overlay.
+        """
         if video_index < 0:
             video_index = len(self.video_list) + video_index
         assert 0 <= video_index < len(self.video_list)
@@ -766,6 +1212,19 @@ class DLCProject:
         return ret
 
     def get_trajectories(self, videos=None, iteration=None):
+        """
+        Load tracking results as DLCData objects.
+        
+        Args:
+            videos (list or str, optional): Videos to load. Defaults to all videos.
+            iteration (int, optional): Model iteration. Defaults to current.
+        
+        Returns:
+            dict: Maps video stem to DLCData object.
+        
+        Raises:
+            ValueError: If a requested video is not in the project.
+        """
         if iteration is None:
             iteration = self.current_iteration
         if videos is None:
@@ -781,12 +1240,29 @@ class DLCProject:
         return data
     
     def open(self):
-        """Open the project folder"""
+        """Open project folder in Windows Explorer."""
         os.system(f'explorer.exe "{str(Path(self.config_path).parent)}"')
 
 
 def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coords: list):
-    """Extract a set of frames. This code is borrowed from DLC."""
+    """
+    Legacy frame extraction using DLC's VideoWriter (OpenCV-based).
+    
+    Note:
+        This function is kept for backwards compatibility but
+        _extract_frames_decord is now used by default for better
+        performance, and because of discrepancy in extracted frames (seeking
+        issues) when using OpenCV vs decord.
+    
+    Args:
+        video_file_name (str): Path to video file.
+        frame_idx (list): Frame numbers to extract (0-indexed).
+        output_path (str): Directory to save extracted frames.
+        coords (list): Crop coordinates [x, y, width, height].
+    
+    Returns:
+        list: Paths to saved image files.
+    """
     cap = VideoWriter(video_file_name)
     cap.set_bbox(*map(int, coords))
     indexlength = int(np.ceil(np.log10(len(cap))))
@@ -811,11 +1287,25 @@ def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coo
 
 def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: str, coords: list):
     """
-    Extract a set of frames using Decord (drop-in for the OpenCV/DLC version).
-    - video_file_name: path to video
-    - frame_idx: list of integer frame indices to extract (0-based)
-    - output_path: folder to write images into
-    - coords: [x, y, w, h] or [x1, y1, x2, y2] bbox in pixel units; applied to every frame
+    Extract video frames using Decord library for better performance.
+    
+    This is the default frame extraction method. It uses batch reading for
+    better I/O efficiency compared to OpenCV sequential reading.
+    
+    Args:
+        video_file_name (str): Path to video file.
+        frame_idx (list): Frame numbers to extract (0-indexed).
+        output_path (str): Directory to save extracted frames.
+        coords (list): Crop coordinates. Interpreted as:
+            - [x1, y1, x2, y2] if values look like absolute corners
+            - [x, y, width, height] otherwise
+    
+    Returns:
+        list: Paths to saved image files.
+    
+    Note:
+        Skips extraction if image file already exists.
+        Handles invalid frame indices gracefully.
     """
     # No need to set a bridge; default 'native' is fine and we use .asnumpy()
     vr = VideoReader(video_file_name, ctx=cpu(0), num_threads=1)  # HWC RGB uint8
@@ -875,21 +1365,68 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
 
 
 def get_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -> Union[str, None]:
-    """Return the full path to the annotation file if it exists give the video file name, otherwise return None."""
+    """
+    Get full path to annotation file if it exists.
+    
+    Args:
+        video_file_name (Path): Video file path.
+        annotation_suffix (str): Annotation suffix (e.g., 'manual', 'refined').
+    
+    Returns:
+        str or None: Full path if file exists, None otherwise.
+    """
     annotation_file_name = make_annotation_file_name(video_file_name, annotation_suffix)
     if os.path.exists(annotation_file_name):
         return annotation_file_name
     return None
 
 def make_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -> str:
+    """
+    Construct annotation filename from video filename and suffix.
+    
+    Args:
+        video_file_name (Path): Video file path.
+        annotation_suffix (str): Annotation suffix. Empty string means no suffix.
+    
+    Returns:
+        str: Full path to annotation file (may not exist yet).
+    
+    Example:
+        >>> make_annotation_file_name('video.mp4', 'manual')
+        'video_annotations_manual.json'
+        >>> make_annotation_file_name('video.mp4', '')
+        'video_annotations.json'
+    """
     v = Path(video_file_name)
     annotation_file_name = v.parent / f'{v.stem}_annotations{"_" if annotation_suffix else ""}{annotation_suffix}.json'
     return annotation_file_name
 
 
 class VideoFileManager(FileManager):
-    """Manage files associated with one video in a DLCProject."""
+    """
+    File manager for organizing annotation and result files for one video.
+    
+    Provides convenient access to all files associated with a video in a DLC project:
+    - Manual annotation JSON files
+    - DLC prediction HDF5 files
+    - Labeled data files for training
+    
+    Attributes:
+        project_name (str): Name of the DLC project.
+        video_stem (str): Video filename without extension.
+        video_fname (str): Full path to video file.
+    """
     def __init__(self, d: DLCProject, video_index: int):
+        """
+        Initialize file manager for a specific video.
+        
+        Args:
+            d (DLCProject): Parent DLC project.
+            video_index (int): Index of video in project's video list.
+        """
+        if not HAS_DLC:
+            raise ImportError("Install deeplabcut to use VideoFileManager.")
+        
         base_dir = d.paths['project']
         super().__init__(base_dir, exclude_hidden=True)
         self.add()
@@ -899,6 +1436,12 @@ class VideoFileManager(FileManager):
     
     @property
     def annotations(self) -> dict:
+        """
+        Map annotation names to file paths.
+        
+        Returns:
+            dict: {annotation_name: file_path} for all JSON annotation files.
+        """
         # name_to_path = {Path(x).stem: x for x in self.all_files}
         pattern = f'*{self.video_stem}*_annotations*.json'
         file_names = fnmatch.filter([Path(x).name for x in self.all_files], pattern)
@@ -909,17 +1452,24 @@ class VideoFileManager(FileManager):
     
     @property
     def annotation_files(self) -> list:
-        """Return a list of the full file paths."""
+        """List of full paths to annotation JSON files."""
         return list(self.annotations.values())
     
     @property
     def annotation_names(self) -> list:
+        """List of annotation layer names (without paths or extensions)."""
         return list(self.annotations.keys())
     
     @staticmethod
     def _get_annotation_name(fname):
-        """Return the 'name' of the annotation file *_annotations_<name>.json.
-        For example, C:\\video01_annotations_brachialis_praneeth.json will return brachialis_praneeth
+        """
+        Extract annotation name from filename.
+        
+        Args:
+            fname (str): Full path like 'video_annotations_manual.json'.
+        
+        Returns:
+            str: Name part after '_annotations_' (e.g., 'manual').
         """
         return Path(fname).stem.split('_annotations')[-1].removesuffix('.json').strip('_')
     
@@ -932,6 +1482,13 @@ class VideoFileManager(FileManager):
     
     @property
     def dlc_traces(self) -> dict:
+        """
+        Map DLC trace names to HDF5 file paths.
+        
+        Returns:
+            dict: {trace_name: file_path} for all DLC prediction files.
+                Trace names format: 'dlc_iteration-{N}_{training_iter}'
+        """
         fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
         # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
         # I want both .h5 file and json file
@@ -940,29 +1497,57 @@ class VideoFileManager(FileManager):
     
     @property
     def dlc_trace_files(self):
+        """List of full paths to DLC prediction HDF5 files."""
         return list(self.dlc_traces.values())
     
     @property
     def dlc_trace_names(self):
+        """List of DLC trace identifiers."""
         return list(self.dlc_traces.keys())
     
     @staticmethod
     def _get_dlc_trace_name(fname):
-        """Return the 'name' of the deeplabcut trace <model_iteration>_<training_iteration>.
-        For example, dlc_iteration-0_250000 
+        """
+        Extract standardized DLC trace name from filepath.
+        
+        Args:
+            fname (str): Path like 'videos/iteration-0/video_dlc_250000.h5'.
+        
+        Returns:
+            str: Name like 'dlc_iteration-0_250000'.
         """
         return 'dlc_' + Path(fname).parts[-2] + '_' + Path(fname).stem.split('_')[-1]
 
     @property
     def labeled_data(self):
-        """HDF5 file containing labels in deeplabcut format, used to train and test models."""
+        """
+        Path to HDF5 file containing training labels in DLC format.
+        
+        Returns:
+            str: Full path to CollectedData HDF5 file.
+        
+        Raises:
+            AssertionError: If file doesn't exist or multiple files found.
+        """
         fm_temp = FileManager(str(Path(self.base_dir) / "labeled-data")).add()
         ret = fm_temp[f'{self.video_stem}*CollectedData*.h5']
         assert len(ret) == 1
         return ret[0]
 
     def get_new_json(self, new_suffix) -> Path:
-        """Add a new manual labels layer after the latest trained iteration."""
+        """
+        Create path for a new annotation file with given suffix.
+        Used to generate the the filename for the next refinement iteration.
+        
+        Args:
+            new_suffix (str): Suffix for new annotation layer.
+        
+        Returns:
+            Path: Full path to new JSON file.
+        
+        Raises:
+            ValueError: If file with this suffix already exists.
+        """
         annotations_json_new = (
             Path(self.video_fname).parent / 
             f'{self.video_stem}_annotations_{new_suffix}.json'
@@ -972,6 +1557,19 @@ class VideoFileManager(FileManager):
         return annotations_json_new
     
     def get_all_annotation_layers(self, new_annotation_suffix: str=None):
+        """
+        Collect all annotation sources for loading into DUSTrack.
+        
+        Args:
+            new_annotation_suffix (str, optional): Suffix for a new layer to create.
+        
+        Returns:
+            dict: Maps layer names to file paths, including:
+                - Existing JSON annotation files
+                - New empty layer (if suffix provided)
+                - Labeled training data
+                - DLC prediction HDF5 files
+        """
         if new_annotation_suffix is None:
             new_json = {}
         else:
@@ -991,6 +1589,16 @@ class VideoFileManager(FileManager):
 
 
 def merge_annotations_in_folder(path, annotation_suffix='merged'):
+    """
+    Merge multiple annotation files for each video in a folder.
+    
+    Useful for combining annotations from multiple annotators or sessions.
+    Creates a single merged JSON file for each video.
+    
+    Args:
+        path (str): Directory containing videos and annotation JSON files.
+        annotation_suffix (str): Suffix for merged output files. Defaults to 'merged'.
+    """
     fm = FileManager(path).add_by_depth(0)
     all_names = [Path(x).name for x in fm.all_files]
     all_video_names = fnmatch.filter(all_names, '*.mp4')

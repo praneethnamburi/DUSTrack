@@ -3,17 +3,26 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "DUSTrack"
+name = "dustrack"
 authors = [{name = "Praneeth Namburi", email = "praneeth.namburi@gmail.com"}]
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.7,<=3.13"
 dynamic = ["version", "description"]
 dependencies = [
-    "numpy",
-    "opencv-contrib-python",
-    "datanavigator",
+    "numpy<2",
+    "pandas",
+    "matplotlib",
+    "portion",
+    "ffmpeg-python",
+    "tables",
     "dill",
-    "tqdm"
+    "tqdm",
+    "scikit-image",
+    "opencv-python",
+    "pysampled",
+    "decord",
+    "pyfilemanager",
+    "datanavigator>=1.1.3"
 ]
 license = {file = "LICENSE"}
 classifiers = [
@@ -27,9 +36,23 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
+]
+keywords = ["video", "tracking", "computer-vision", "motion-analysis", "point-tracking"]
+
+[project.optional-dependencies]
+docs = [
+    "sphinx==6.2.1",
+    "sphinx-rtd-theme==2.0.0",
+    "myst-parser==1.0.0",
+    "sphinxcontrib-youtube==1.4.1"
 ]
 
 [project.urls]
 Home = "https://github.com/praneethnamburi/DUSTrack"
+
+[tool.black]
+line-length = 88
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311', 'py312', 'py313']
