@@ -1079,8 +1079,8 @@ class DLCProject:
         
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
-
-    def process(self, iteration_num=None, maxiters=None, refine=True, create_video=True, source_snapshot=None, **kwargs):
+    # refine can be both bool or string, if string, it is the path of the model to initialize weights from
+    def process(self, iteration_num=None, maxiters=None, refine: Union[bool, str]=True, create_video=True, source_snapshot=None, **kwargs):
         """
         Automated workflow: extract frames, train, evaluate, and analyze.
         
@@ -1137,7 +1137,7 @@ class DLCProject:
         if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
             self.create_training_dataset()
         
-        if refine:
+        if isinstance(refine, bool) and refine:
             if not self.latest_iteration_is_trained() and self.current_iteration == self.latest_iteration:
                 if source_snapshot is not None:
                     source_iteration = self.latest_iteration - int(not self.latest_iteration_is_trained())
@@ -1148,7 +1148,10 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters)
+                    if isinstance(refine, str):
+                        self.train(epochs=maxiters, snapshot_path=refine)
+                    else:
+                        self.train(epochs=maxiters)
                 else:
                     self.train(maxiters=maxiters)
             except KeyboardInterrupt:

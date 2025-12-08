@@ -21,7 +21,8 @@ if __name__ == "__main__":
 
 
 
-    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models_general\s005\RFA\interosseous_pn24-x-2025-10-24\config.yaml"
+    dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models_general\s018\LFA\interosseous_pn24-x-2025-10-24\config.yaml"
+    source_model_path = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models_general\s018\LFA\interosseous_pn24-x-2025-10-24\dlc-models-pytorch\iteration-0\interosseous_pn24Oct24-trainset95shuffle1\train\snapshot-100.pt"
     # check if the project exists
     if not os.path.exists(dlc_project_config_path):
         print(f"Project config file {dlc_project_config_path} does not exist")
@@ -29,7 +30,7 @@ if __name__ == "__main__":
 
     dlcp = DLCProject(path = dlc_project_config_path)
     
-    dlcp.process(maxiters=100, refine=True)
+    dlcp.process(maxiters=100, refine = source_model_path)
 
     # dlcp.extract_frames()
     # dlcp.extract_frames()
