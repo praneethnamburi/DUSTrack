@@ -1427,6 +1427,19 @@ class VideoAnnotation:
             Mapping[str, pysampled.Data]: Dictionary mapping labels to pysampled.Data.
         """
         return {label: self.to_signal(label) for label in self.labels}
+    
+    def to_pysampled(self) -> pysampled.Data:
+        """Return annotations as a pysampled.Data object
+
+        Returns:
+            pysampled.Data
+        """
+        return pysampled.Data(
+            np.hstack([self.to_signal(label) for label in self.labels]),
+            sr=self.video.get_avg_fps(),
+            signal_names=self.labels,
+            signal_coords=["x", "y"],
+            )
 
     def add_label(
         self,
