@@ -16,11 +16,11 @@ if __name__ == "__main__":
 
     # dlc_project_config_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\config.yaml"
     participant_root_directory = r"\\192.168.1.104\home\piano\DLC_MODELS\participant_models_general"
-    participant_id = 's001'
+    participant_id = 's002'
     hand = 'RFA'
     # hand = 'RFA'
 
-    video_index = 2
+    video_index = 7
     dlc_project_config_path = os.path.join(participant_root_directory, participant_id, hand, "interosseous_pn24-x-2025-10-24", "config.yaml")
 
     #########################################################[]
