@@ -1188,6 +1188,9 @@ class DLCProject:
         if video_index < 0:
             video_index = len(self.video_list) + video_index
         assert 0 <= video_index < len(self.video_list)
+        # print the video name, the base name of the video
+        print(f"Video name: {Path(self.video_list[video_index]).stem}")
+
         
         if new_annotation_suffix is None:
             if self.latest_iteration_is_trained():
