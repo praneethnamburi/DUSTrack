@@ -23,16 +23,21 @@ if __name__ == "__main__":
 
     parser.add_argument("--dlc-project-config-path", type=str, default=r"/home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models/001/001_LFA-x-2025-11-07/config.yaml", help="Path to DLC project config file")
 
-    parser.add_argument("--max-iters", type=int, default=200, help="Maximum number of iterations")
+    parser.add_argument("--max-iters", type=int, default=100, help="Maximum number of iterations")
 
     # cuda device:
     parser.add_argument("--cuda-device", type=int, default=1, help="CUDA device to use")
 
     # analyse batch size:
-    parser.add_argument("--analyze-batchsize", type=int, default=128, help="Batch size for analysis")
+    parser.add_argument("--analyze-batchsize", type=int, default=16, help="Batch size for analysis")
 
     args = parser.parse_args()
 
+    source_model_path = r"/home/hwjwei/scratch/hwjwei/pia02/DLC_MODELS/participant_models_general/snapshot-best-270.pt"
+    # check if the source model path exists
+    if not os.path.exists(source_model_path):
+        print(f"Source model file {source_model_path} does not exist")
+        exit()
 
     from pathlib import Path
     import sys
@@ -54,11 +59,11 @@ if __name__ == "__main__":
 
     dlcp = DLCProject(path = dlc_project_config_path)
 
-    dlcp.process(maxiters=args.max_iters, analyse_batchsize=args.analyze_batchsize, create_video=False)
+    dlcp.process(maxiters=args.max_iters, analyse_batchsize=args.analyze_batchsize, create_video=False, refine = source_model_path)
 
-    # from dustrack import _config
-    # _config.DLC3_USE_LAST_SNAPSHOT = False
-    # dlcp.analyze_videos(create_video=False, batchsize=args.analyse_batch_size)
+    from dustrack import _config
+    _config.DLC3_USE_LAST_SNAPSHOT = False
+    dlcp.analyze_videos(create_video=False, batchsize=args.analyze_batchsize)
 
     # # print complte message
     print(f"Training completed for {dlc_project_config_path}")
