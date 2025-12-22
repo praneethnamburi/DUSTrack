@@ -6,10 +6,10 @@ import os
 
 
 if __name__ == "__main__":
-    video_folder = r"C:\Users\haowe\OneDrive\Desktop\MIT\PianoProject\Code\DUSTrack\pia02_workflow\fingor_torque"
-    video_name = "s061.MP4"
-    x = 1300
-    y = 100
+    video_folder = r"\\192.168.1.104\home\piano\data\finger_vibration\original_videos"
+    video_name = "s055.MP4"
+    x = 1100
+    y = 0
     w = 600
     h = 600
 
