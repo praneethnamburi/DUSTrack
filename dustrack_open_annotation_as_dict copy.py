@@ -36,10 +36,10 @@ if __name__ == "__main__":
     #     exit()
 
     # Define the annotation layers to load
-    vpath = r"\\192.168.1.104\home\piano\us_videos_for_tracking2\pia02_s033_004_RFA2.mp4"
+    vpath = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn23-x-2025-09-11\videos\pia02_s024_004_LFA.mp4"
 
-    old_annotation_file_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn24-x-2025-10-24\videos\iteration-0\pia02_s033_004_RFA2DLC_Resnet50_interosseous_pn24Oct24shuffle1_snapshot_300.h5"
- 
+    old_annotation_file_path = r"\\192.168.1.104\home\piano\DLC_MODELS\general\interosseous_pn23-x-2025-09-11\videos\pia02_s024_004_LFA_annotations_iteration-6.json"
+     
     annotation_layers = {
         'old_annotation': old_annotation_file_path,
         }
