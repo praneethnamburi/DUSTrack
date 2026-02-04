@@ -37,7 +37,51 @@ except ImportError:
     print('deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.')
     HAS_DLC = False
 
+import re
+from pathlib import PureWindowsPath, PurePosixPath
+
+
+
 EXPERIMENTER = _config.EXPERIMENTER
+
+
+def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, brightness=0):
+    """
+    Enhance ultrasound image for better visibility.
+
+    Args:
+        image: Input image (RGB or grayscale)
+        clahe_clip: CLAHE clip limit (higher = more contrast)
+        clahe_grid: CLAHE tile grid size
+        gamma: Gamma correction (>1 = brighter midtones, <1 = darker)
+        brightness: Brightness offset (-255 to 255)
+
+    Returns:
+        Enhanced RGB image for matplotlib display.
+    """
+    # Convert to grayscale if needed
+    if len(image.shape) == 3:
+        gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+    else:
+        gray = image
+
+    # Apply CLAHE
+    clahe = cv.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
+    enhanced = clahe.apply(gray)
+
+    # Apply gamma correction
+    if gamma != 1.0:
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+        enhanced = cv.LUT(enhanced, table)
+
+    # Apply brightness
+    if brightness != 0:
+        enhanced = np.clip(enhanced.astype(np.int16) + brightness, 0, 255).astype(np.uint8)
+
+    # Convert back to RGB for matplotlib
+    return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
+
 
 class VideoAnnotation(datanavigator.VideoAnnotation):
     """
@@ -80,13 +124,38 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         ...     'dlc_iter1': 'dlc_predictions.h5'
         ... })
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 clahe_clip=2.0, clahe_grid=8, gamma=1.2, brightness=10,
+                 dark_mode=False, enhance_enabled=True, **kwargs):
+        # Store enhancement settings
+        self._clahe_clip = clahe_clip
+        self._clahe_grid = clahe_grid
+        self._gamma = gamma
+        self._brightness = brightness
+        self._enhance_enabled = enhance_enabled
+        self._dark_mode = dark_mode
+
+        # Create image processor function
+        def image_processor(im):
+            if self._enhance_enabled:
+                return enhance_ultrasound_image(
+                    im, self._clahe_clip, self._clahe_grid,
+                    self._gamma, self._brightness
+                )
+            return im
+
+        kwargs['image_process_func'] = image_processor
         super().__init__(*args, **kwargs)
+
         for ann in self.annotations:
             ann.__class__ = VideoAnnotation
-        
+
         self._dlcproject = None
         self._ax_lims = {'state': False, 'x': [None, None], 'y_trace_x': [None, None], 'y_trace_y': [None, None]}
+
+        # Apply dark theme if enabled
+        if dark_mode:
+            self._apply_dark_theme()
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
         self._add_dummy_button("dummy1")
@@ -100,6 +169,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
         self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
+        self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
 
         self.statevariables._text._pos = datanavigator.utils._parse_pos("bottom left")
         
@@ -112,7 +182,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
     def _add_dummy_button(self, name="dummy"):
         """
         Add an invisible placeholder button for GUI layout spacing.
-        
+
         Args:
             name (str): Internal name for the button. Defaults to "dummy".
         """
@@ -120,7 +190,53 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         button.ax.patch.set_visible(False)  # Hide the rectangular patch
         button.label.set_visible(False) # Hide the text label
         button.ax.axis('off') # Optional: Turn off the axes frame
-    
+
+    def _apply_dark_theme(self):
+        """Apply dark theme to the GUI for better ultrasound visibility."""
+        bg_color = '#1a1a1a'
+        ax_color = '#2a2a2a'
+        text_color = 'white'
+
+        # Figure background
+        self.figure.patch.set_facecolor(bg_color)
+
+        # Image axis
+        self._ax_image.set_facecolor(ax_color)
+
+        # Trace axes
+        for ax in [self._ax_trace_x, self._ax_trace_y]:
+            ax.set_facecolor(ax_color)
+            ax.tick_params(colors=text_color)
+            ax.xaxis.label.set_color(text_color)
+            ax.yaxis.label.set_color(text_color)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+
+    def _toggle_enhancement(self, event=None):
+        """Toggle image enhancement on/off."""
+        self._enhance_enabled = not self._enhance_enabled
+        self.update()
+
+    def _increase_contrast(self, event=None):
+        """Increase CLAHE contrast (clip limit)."""
+        self._clahe_clip = min(self._clahe_clip + 0.5, 10.0)
+        self.update()
+
+    def _decrease_contrast(self, event=None):
+        """Decrease CLAHE contrast (clip limit)."""
+        self._clahe_clip = max(self._clahe_clip - 0.5, 1.0)
+        self.update()
+
+    def _increase_brightness(self, event=None):
+        """Increase image brightness (gamma)."""
+        self._gamma = min(self._gamma + 0.1, 3.0)
+        self.update()
+
+    def _decrease_brightness(self, event=None):
+        """Decrease image brightness (gamma)."""
+        self._gamma = max(self._gamma - 0.1, 0.3)
+        self.update()
+
     def freeze_plot_axes(self, event=None):
         """
         Lock the axis limits of trajectory plots to current view.
@@ -464,25 +580,24 @@ class DLCProject:
             if not os.path.exists(self.paths['models']):
                 os.makedirs(self.paths['models'])
 
-        def change_ip(inp_str):
-            x = inp_str.split('\\')
-            if len(x[2].split('.')) == 4:
-                x[2] = _config.NAS_IP
-                print(f"IP address changed to {_config.NAS_IP}")
-                return '\\'.join(x)
-            print("IP address was not changed")
-            return inp_str
+        # def change_ip(inp_str):
+        #     x = inp_str.split('\\')
+        #     if len(x[2].split('.')) == 4:
+        #         x[2] = _config.NAS_IP
+        #         print(f"IP address changed to {_config.NAS_IP}")
+        #         return '\\'.join(x)
+        #     print("IP address was not changed")
+        #     return inp_str
 
-        if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
-            video_sets = self.config["video_sets"]
-            new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
-            self.edit_config(video_sets=new_video_sets)
-        
-        try:
-            deeplabcut.auxiliaryfunctions.read_config(self.config_path)
-        except ScannerError as s:
-            print('Config file is corrupted. Fix it manually.')
-            print('If there is no _ in the name, then the config file has issues when dealing with folders on the server. ')
+        # if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
+        #     video_sets = self.config["video_sets"]
+        #     new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
+        #     self.edit_config(video_sets=new_video_sets)
+
+        # use self config path and each video path to create a new video_sets using rebase_to_config
+        video_sets = self.config["video_sets"]
+        new_video_sets = {rebase_to_config(self.config_path, k):v for k,v in video_sets.items()}
+        self.edit_config(video_sets=new_video_sets)
 
     @property
     def paths(self) -> Mapping[str, Path]:
@@ -952,9 +1067,13 @@ class DLCProject:
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
         ext = '.pt' if DLC3 else '.index'
-        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-{source_snapshot}{ext}']
+        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
-        self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
+
+        if DLC3:
+            self.edit_config(cfg_file, resume_training_from=init_weights_files[0].removesuffix('.index'))
+        else:
+            self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
         return self
 
     def create_training_dataset(self, **kwargs):
@@ -985,7 +1104,7 @@ class DLCProject:
         max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
         cfg_file = self.get_pose_cfg_file()
         self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, **kwargs)
+        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, pytorch_cfg_updates={"runner.eval_interval": 25},**kwargs)
         return self
     
     def evaluate(self, **kwargs):
@@ -1071,8 +1190,8 @@ class DLCProject:
         
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
-
-    def process(self, iteration_num=None, maxiters=None, refine=True, create_video=True, source_snapshot=None, **kwargs):
+    # refine can be both bool or string, if string, it is the path of the model to initialize weights from
+    def process(self, iteration_num=None, maxiters=None, refine: Union[bool, str]=True, create_video=True, source_snapshot=None, **kwargs):
         """
         Automated workflow: extract frames, train, evaluate, and analyze.
         
@@ -1129,7 +1248,7 @@ class DLCProject:
         if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
             self.create_training_dataset()
         
-        if refine:
+        if isinstance(refine, bool) and refine:
             if not self.latest_iteration_is_trained() and self.current_iteration == self.latest_iteration:
                 if source_snapshot is not None:
                     source_iteration = self.latest_iteration - int(not self.latest_iteration_is_trained())
@@ -1140,7 +1259,10 @@ class DLCProject:
         if not self.current_iteration_is_trained():
             try:
                 if DLC3:
-                    self.train(epochs=maxiters)
+                    if isinstance(refine, str):
+                        self.train(epochs=maxiters, snapshot_path=refine)
+                    else:
+                        self.train(epochs=maxiters)
                 else:
                     self.train(maxiters=maxiters)
             except KeyboardInterrupt:
@@ -1149,6 +1271,8 @@ class DLCProject:
         analyze_videos_kwargs = {}
         if "videos" in kwargs:
             analyze_videos_kwargs["videos"] = kwargs.pop("videos")
+        if "analyze_batchsize" in kwargs:
+            analyze_videos_kwargs["batchsize"] = kwargs.pop("analyze_batchsize")
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
@@ -1175,6 +1299,9 @@ class DLCProject:
         if video_index < 0:
             video_index = len(self.video_list) + video_index
         assert 0 <= video_index < len(self.video_list)
+        # print the video name, the base name of the video
+        print(f"Video name: {Path(self.video_list[video_index]).stem}")
+
         
         if new_annotation_suffix is None:
             if self.latest_iteration_is_trained():
@@ -1481,7 +1608,8 @@ class VideoFileManager(FileManager):
         """
         fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
         # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
-        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5']
+        # I want both .h5 file and json file
+        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
         return {self._get_dlc_trace_name(fname): fname for fname in fnames}
     
     @property
@@ -1609,3 +1737,51 @@ def merge_annotations_in_folder(path, annotation_suffix='merged'):
             fname_merged = make_annotation_file_name(video_file, annotation_suffix)
         )
         ann.save()
+
+
+
+def rebase_to_config(config_path: str, old_path: str) -> str:
+    """
+    Rebase 'old_path' (some file inside the project) onto the project root
+    implied by 'config_path' (points to config.yaml or the project dir).
+
+    Keeps the correct root/anchor:
+      - Posix: leading "/"
+      - Windows: drive letters (e.g., "C:\\") and UNC shares ("\\\\server\\share")
+    Returns separators inferred from 'config_path'.
+    """
+    # Choose path flavor by the config path
+    is_windows_like = ("\\" in config_path) or config_path.startswith("\\\\") or bool(re.match(r"^[A-Za-z]:", config_path))
+    PathCls = PureWindowsPath if is_windows_like else PurePosixPath
+
+    # Parse the config path *as-is* to keep its anchor
+    cfg = PathCls(config_path)
+    # Project root is the directory that contains config.yaml; if a directory is passed, use it
+    new_root = cfg.parent if cfg.name.lower() == "config.yaml" else cfg
+    if not new_root.name:
+        raise ValueError(f"Cannot infer project folder name from: {config_path!r}")
+    project_name = new_root.name
+
+    # Split helper that handles both slash types
+    split = lambda p: [x for x in re.split(r"[\\/]+", p.strip()) if x]
+
+    old_parts = split(old_path)
+
+    # Find the LAST occurrence of the project folder name (exact, then case-insensitive)
+    def find_idx(parts, name):
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i] == name:
+                return i
+        name_cf = name.casefold()
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i].casefold() == name_cf:
+                return i
+        return None
+
+    idx = find_idx(old_parts, project_name)
+    if idx is None:
+        raise ValueError(f"Project folder {project_name!r} not found in old_path: {old_path!r}")
+
+    tail = old_parts[idx + 1:]
+    rebased = new_root / PathCls(*tail) if tail else new_root
+    return str(rebased)
