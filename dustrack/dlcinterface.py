@@ -44,6 +44,45 @@ from pathlib import PureWindowsPath, PurePosixPath
 
 EXPERIMENTER = _config.EXPERIMENTER
 
+
+def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, brightness=0):
+    """
+    Enhance ultrasound image for better visibility.
+
+    Args:
+        image: Input image (RGB or grayscale)
+        clahe_clip: CLAHE clip limit (higher = more contrast)
+        clahe_grid: CLAHE tile grid size
+        gamma: Gamma correction (>1 = brighter midtones, <1 = darker)
+        brightness: Brightness offset (-255 to 255)
+
+    Returns:
+        Enhanced RGB image for matplotlib display.
+    """
+    # Convert to grayscale if needed
+    if len(image.shape) == 3:
+        gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+    else:
+        gray = image
+
+    # Apply CLAHE
+    clahe = cv.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
+    enhanced = clahe.apply(gray)
+
+    # Apply gamma correction
+    if gamma != 1.0:
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+        enhanced = cv.LUT(enhanced, table)
+
+    # Apply brightness
+    if brightness != 0:
+        enhanced = np.clip(enhanced.astype(np.int16) + brightness, 0, 255).astype(np.uint8)
+
+    # Convert back to RGB for matplotlib
+    return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
+
+
 class VideoAnnotation(datanavigator.VideoAnnotation):
     """
     Enhanced VideoAnnotation with integrated post-processing.
@@ -85,13 +124,38 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         ...     'dlc_iter1': 'dlc_predictions.h5'
         ... })
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 clahe_clip=2.0, clahe_grid=8, gamma=1.2, brightness=10,
+                 dark_mode=False, enhance_enabled=True, **kwargs):
+        # Store enhancement settings
+        self._clahe_clip = clahe_clip
+        self._clahe_grid = clahe_grid
+        self._gamma = gamma
+        self._brightness = brightness
+        self._enhance_enabled = enhance_enabled
+        self._dark_mode = dark_mode
+
+        # Create image processor function
+        def image_processor(im):
+            if self._enhance_enabled:
+                return enhance_ultrasound_image(
+                    im, self._clahe_clip, self._clahe_grid,
+                    self._gamma, self._brightness
+                )
+            return im
+
+        kwargs['image_process_func'] = image_processor
         super().__init__(*args, **kwargs)
+
         for ann in self.annotations:
             ann.__class__ = VideoAnnotation
-        
+
         self._dlcproject = None
         self._ax_lims = {'state': False, 'x': [None, None], 'y_trace_x': [None, None], 'y_trace_y': [None, None]}
+
+        # Apply dark theme if enabled
+        if dark_mode:
+            self._apply_dark_theme()
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
         self._add_dummy_button("dummy1")
@@ -105,6 +169,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
         self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
+        self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
 
         self.statevariables._text._pos = datanavigator.utils._parse_pos("bottom left")
         
@@ -117,7 +182,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
     def _add_dummy_button(self, name="dummy"):
         """
         Add an invisible placeholder button for GUI layout spacing.
-        
+
         Args:
             name (str): Internal name for the button. Defaults to "dummy".
         """
@@ -125,7 +190,53 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         button.ax.patch.set_visible(False)  # Hide the rectangular patch
         button.label.set_visible(False) # Hide the text label
         button.ax.axis('off') # Optional: Turn off the axes frame
-    
+
+    def _apply_dark_theme(self):
+        """Apply dark theme to the GUI for better ultrasound visibility."""
+        bg_color = '#1a1a1a'
+        ax_color = '#2a2a2a'
+        text_color = 'white'
+
+        # Figure background
+        self.figure.patch.set_facecolor(bg_color)
+
+        # Image axis
+        self._ax_image.set_facecolor(ax_color)
+
+        # Trace axes
+        for ax in [self._ax_trace_x, self._ax_trace_y]:
+            ax.set_facecolor(ax_color)
+            ax.tick_params(colors=text_color)
+            ax.xaxis.label.set_color(text_color)
+            ax.yaxis.label.set_color(text_color)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+
+    def _toggle_enhancement(self, event=None):
+        """Toggle image enhancement on/off."""
+        self._enhance_enabled = not self._enhance_enabled
+        self.update()
+
+    def _increase_contrast(self, event=None):
+        """Increase CLAHE contrast (clip limit)."""
+        self._clahe_clip = min(self._clahe_clip + 0.5, 10.0)
+        self.update()
+
+    def _decrease_contrast(self, event=None):
+        """Decrease CLAHE contrast (clip limit)."""
+        self._clahe_clip = max(self._clahe_clip - 0.5, 1.0)
+        self.update()
+
+    def _increase_brightness(self, event=None):
+        """Increase image brightness (gamma)."""
+        self._gamma = min(self._gamma + 0.1, 3.0)
+        self.update()
+
+    def _decrease_brightness(self, event=None):
+        """Decrease image brightness (gamma)."""
+        self._gamma = max(self._gamma - 0.1, 0.3)
+        self.update()
+
     def freeze_plot_axes(self, event=None):
         """
         Lock the axis limits of trajectory plots to current view.
