@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:aipapersacademy.com)",
+      "WebFetch(domain:debuggercafe.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:learnopencv.com)",
+      "WebFetch(domain:encord.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:wiki.camthink.ai)",
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(git -C /c/Users/mitim/Desktop/MITHIC/code/DUSTrack log --oneline -20)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(pip show:*)"
+    ]
+  }
+}
