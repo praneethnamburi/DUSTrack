@@ -24,6 +24,22 @@ MODEL_PATH = MODEL_DIR / "hand_landmarker.task"
 
 NUM_LANDMARKS = 21  # MediaPipe hand model outputs 21 landmarks per hand
 
+# MediaPipe hand skeleton connections (21-landmark topology)
+HAND_CONNECTIONS = [
+    # Thumb
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    # Index finger
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    # Middle finger
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    # Ring finger
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    # Pinky
+    (0, 17), (17, 18), (18, 19), (19, 20),
+    # Palm base chain
+    (5, 9), (9, 13), (13, 17),
+]
+
 
 def ensure_model():
     """Download the hand_landmarker.task model if it doesn't exist locally."""
@@ -115,6 +131,69 @@ def detect_hands(video_path: str) -> dict:
     }
 
 
+def save_overlay_video(video_path: str) -> Path:
+    """Save a copy of the video with detected hand landmarks overlaid.
+
+    Reads the saved .pt file from the pose/ subdirectory to get landmark data.
+
+    Args:
+        video_path: Path to the original video file.
+
+    Returns:
+        Path to the saved overlay video.
+    """
+    video = Path(video_path)
+    pt_path = video.parent / "pose" / f"{video.stem}.pt"
+    data = torch.load(pt_path, weights_only=True)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    output_path = video.parent / "pose" / f"{video.stem}_hands.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+
+    left_hand = data["left_hand"].numpy()   # (N, 21, 3)
+    right_hand = data["right_hand"].numpy()  # (N, 21, 3)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    for frame_idx in tqdm(range(total_frames), desc="Saving overlay video"):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx >= len(left_hand):
+            break
+
+        for landmarks, color in [
+            (left_hand[frame_idx], (0, 255, 0)),   # green for left
+            (right_hand[frame_idx], (255, 0, 0)),   # blue for right
+        ]:
+            if np.allclose(landmarks, 0):
+                continue
+            # Convert normalized coords to pixel coords
+            pts = np.column_stack([
+                (landmarks[:, 0] * w).astype(int),
+                (landmarks[:, 1] * h).astype(int),
+            ])
+            for start, end in HAND_CONNECTIONS:
+                cv2.line(frame, tuple(pts[start]), tuple(pts[end]), color, 2)
+            for x, y in pts:
+                cv2.circle(frame, (x, y), 4, color, -1)
+
+        writer.write(frame)
+
+    cap.release()
+    writer.release()
+    return output_path
+
+
 def save_results(data: dict, video_path: str) -> Path:
     """Save detection results as a .pt file in a pose/ subdirectory.
 
@@ -134,7 +213,7 @@ def main():
     # parser.add_argument("video_path", help="Path to an .mp4 video file")
     # args = parser.parse_args()
 
-    video_path = r"\\192.168.1.104\home\piano\data\overhead_camera\hand_tracking\videos\fx30_2_0894.MP4"
+    video_path = r"\\192.168.1.104\home\piano\data\overhead_camera\hand_tracking\videos\fx30_2_0587.MP4"
     if not os.path.isfile(video_path):
         print(f"Error: file not found: {video_path}")
         return
@@ -147,6 +226,9 @@ def main():
     print(f"  left_hand  : {data['left_hand'].shape}")
     print(f"  right_hand : {data['right_hand'].shape}")
     print(f"  Saved to   : {output_path}")
+
+    overlay_path = save_overlay_video(video_path)
+    print(f"  Overlay video: {overlay_path}")
 
 
 if __name__ == "__main__":
