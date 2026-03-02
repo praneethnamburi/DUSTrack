@@ -1,7 +1,28 @@
+import csv
 import os
 from pathlib import Path
 
 import cv2
+
+
+def extract_frame(video_path, frame_index, save_path):
+    """Extract a single frame from a video and save it as an image.
+
+    Returns True on success, False on failure.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count == 0:
+            return False
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        if not ret:
+            return False
+        cv2.imwrite(str(save_path), frame)
+        return True
+    finally:
+        cap.release()
 
 
 participant_root_dir = r"\\192.168.1.104\home\piano\data"
@@ -27,31 +48,40 @@ for participant_folder in participant_folders:
         mp4_files = sorted(overhead_camera_folder.glob("*.MP4"))
         print(f"Found {len(mp4_files)} .MP4 files")
 
-        for i, mp4_file in enumerate(mp4_files):
-            save_path = os.path.join(image_save_dir, f"{participant_folder.name}-{i}-{mp4_file.stem}.png")
-            # if already exists, skip
-            if os.path.exists(save_path):
-                print(f"  [{i}] {mp4_file.name}: already exists, skipping")
-                continue
+        participant_save_dir = os.path.join(image_save_dir, participant_folder.name)
+        os.makedirs(participant_save_dir, exist_ok=True)
 
+        for i, mp4_file in enumerate(mp4_files):
             cap = cv2.VideoCapture(str(mp4_file))
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if frame_count == 0:
-                print(f"  [{i}] {mp4_file.name}: no frames found, skipping")
-                cap.release()
-                continue
-
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 10)
-            ret, frame = cap.read()
             cap.release()
 
-            if not ret:
-                print(f"  [{i}] {mp4_file.name}: failed to read last frame")
+            if frame_count == 0:
+                print(f"  [{i}] {mp4_file.name}: no frames found, skipping")
                 continue
 
+            for frame_index in [10, frame_count - 10]:
+                save_path = os.path.join(participant_save_dir, f"{participant_folder.name}-{i}-{frame_index}-{mp4_file.stem}.png")
+                # if already exists, skip
+                if os.path.exists(save_path):
+                    print(f"  [{i}] {mp4_file.name} frame {frame_index}: already exists, skipping")
+                    continue
 
-            cv2.imwrite(save_path, frame)
-            print(f"  [{i}] {mp4_file.name} -> {save_path}")
+                success = extract_frame(mp4_file, frame_index, save_path)
+                if not success:
+                    print(f"  [{i}] {mp4_file.name} frame {frame_index}: failed to read frame")
+                    continue
+
+                print(f"  [{i}] {mp4_file.name} frame {frame_index} -> {save_path}")
+
+        # Write CSV for this participant
+        csv_path = os.path.join(participant_save_dir, f"{participant_folder.name}.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["participant_id", "video_name", "reference_image", "camera_shifted_during_trial", "note"])
+            for mp4_file in mp4_files:
+                writer.writerow([participant_folder.name, mp4_file.name, "", "", ""])
+        print(f"  CSV saved: {csv_path}")
 
     else:
         print(f"Overhead camera folder does not exist for participant {participant_folder.name}")
