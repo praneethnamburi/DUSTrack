@@ -13,7 +13,9 @@
       "Bash(find:*)",
       "Bash(git -C /c/Users/mitim/Desktop/MITHIC/code/DUSTrack log --oneline -20)",
       "WebFetch(domain:arxiv.org)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "WebFetch(domain:letmaik.github.io)",
+      "WebFetch(domain:pypi.org)"
     ]
   }
 }

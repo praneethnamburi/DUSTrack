@@ -22,8 +22,8 @@ distance = 0          # distance has no effect on geometric distortion
 # ----------------------------
 # 3. Input/output videos — USER PUTS PATHS HERE
 # ----------------------------
-input_video = 'input path'
-output_video = 'output path'
+input_video = r"\\192.168.1.104\home\piano\data\overhead_camera\lens_correction_test\fx30_2_0894.MP4"
+output_video = r"\\192.168.1.104\home\piano\data\overhead_camera\lens_correction_test\fx30_2_0894_corrected.mp4"
 
 cap = cv2.VideoCapture(input_video)
 fps = cap.get(cv2.CAP_PROP_FPS)
