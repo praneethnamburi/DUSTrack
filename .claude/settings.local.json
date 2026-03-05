@@ -15,7 +15,8 @@
       "WebFetch(domain:arxiv.org)",
       "Bash(pip show:*)",
       "WebFetch(domain:letmaik.github.io)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:lensfun.github.io)"
     ]
   }
 }
