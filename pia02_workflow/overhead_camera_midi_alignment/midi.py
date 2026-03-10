@@ -1,3 +1,6 @@
+import os
+from datetime import datetime, timedelta
+
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 import numpy as np
@@ -20,6 +23,26 @@ def ticks_to_seconds(ticks, tempo, ticks_per_beat):
     """Convert MIDI ticks to seconds based on tempo."""
     seconds_per_beat = tempo / 1_000_000  # Convert µs to seconds
     return (ticks / ticks_per_beat) * seconds_per_beat
+
+
+def format_time_range(start_dt, duration_seconds, fmt="datetime"):
+    """Return (start, end, duration) in the requested format.
+
+    Args:
+        start_dt: datetime object for the start time.
+        duration_seconds: float, duration in seconds.
+        fmt: "datetime" returns datetime objects; "unix" returns float timestamps.
+
+    Returns:
+        (start, end, duration) tuple.
+    """
+    end_dt = start_dt + timedelta(seconds=duration_seconds)
+    if fmt == "datetime":
+        return start_dt, end_dt, duration_seconds
+    elif fmt == "unix":
+        return start_dt.timestamp(), end_dt.timestamp(), duration_seconds
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}. Use 'datetime' or 'unix'.")
 
 class Event(datanavigator.Event):
     def __getitem__(self, key):
@@ -123,6 +146,41 @@ class Log(mido.MidiFile):
         note_start_times = [note.start for note in self.notes]
         note_end_times = [note.end for note in self.notes]
         return np.min(note_start_times), np.max(note_end_times)
+
+    def get_recording_time_range(self, fmt="unix"):
+        """Return (start_time, end_time, duration) for this MIDI recording.
+
+        Start time is parsed from the track_name meta message (first 15 chars
+        as YYYYMMDD_HHMMSS). Falls back to file modification time if unavailable.
+
+        Args:
+            fmt: "datetime" returns datetime objects; "unix" returns float timestamps.
+
+        Returns:
+            (start, end, duration) tuple.
+        """
+        start_dt = None
+
+        # Try to extract from track_name meta message
+        for track in self.tracks:
+            for msg in track:
+                if msg.type == 'track_name' and msg.name:
+                    try:
+                        start_dt = datetime.strptime(msg.name[:15], "%Y%m%d_%H%M%S")
+                    except (ValueError, IndexError):
+                        pass
+                    break
+            if start_dt is not None:
+                break
+
+        # Fallback: file modification time
+        if start_dt is None and self.filename is not None:
+            start_dt = datetime.fromtimestamp(os.stat(self.filename).st_mtime)
+
+        if start_dt is None:
+            raise ValueError("Cannot determine recording start time")
+
+        return format_time_range(start_dt, self.duration, fmt)
 
     def get_polytouch_times(self):
         """Extract polytouch (polyphonic aftertouch) events with timing.
