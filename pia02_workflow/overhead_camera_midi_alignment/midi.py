@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
@@ -147,7 +147,7 @@ class Log(mido.MidiFile):
         note_end_times = [note.end for note in self.notes]
         return np.min(note_start_times), np.max(note_end_times)
 
-    def get_recording_time_range(self, fmt="unix"):
+    def get_recording_time_range(self, fmt="unix", utc_offset=None):
         """Return (start_time, end_time, duration) for this MIDI recording.
 
         Start time is parsed from the track_name meta message (first 15 chars
@@ -155,6 +155,9 @@ class Log(mido.MidiFile):
 
         Args:
             fmt: "datetime" returns datetime objects; "unix" returns float timestamps.
+            utc_offset: Numeric UTC offset in hours (e.g. -5 for CDT, -4 for EDT).
+                Required to get correct unix timestamps, since MIDI timestamps
+                are naive (no timezone info).
 
         Returns:
             (start, end, duration) tuple.
@@ -179,6 +182,11 @@ class Log(mido.MidiFile):
 
         if start_dt is None:
             raise ValueError("Cannot determine recording start time")
+
+        # Attach timezone if utc_offset provided
+        if utc_offset is not None:
+            tz = timezone(timedelta(hours=utc_offset))
+            start_dt = start_dt.replace(tzinfo=tz)
 
         return format_time_range(start_dt, self.duration, fmt)
 
