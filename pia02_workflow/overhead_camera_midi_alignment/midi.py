@@ -162,31 +162,35 @@ class Log(mido.MidiFile):
         Returns:
             (start, end, duration) tuple.
         """
-        start_dt = None
+        end_dt = None
 
         # Try to extract from track_name meta message
+        # Note: the track_name timestamp is the *end* time of the recording
         for track in self.tracks:
             for msg in track:
                 if msg.type == 'track_name' and msg.name:
                     try:
-                        start_dt = datetime.strptime(msg.name[:15], "%Y%m%d_%H%M%S")
+                        end_dt = datetime.strptime(msg.name[:15], "%Y%m%d_%H%M%S")
                     except (ValueError, IndexError):
                         pass
                     break
-            if start_dt is not None:
+            if end_dt is not None:
                 break
 
         # Fallback: file modification time
-        if start_dt is None and self.filename is not None:
-            start_dt = datetime.fromtimestamp(os.stat(self.filename).st_mtime)
+        if end_dt is None and self.filename is not None:
+            end_dt = datetime.fromtimestamp(os.stat(self.filename).st_mtime)
 
-        if start_dt is None:
-            raise ValueError("Cannot determine recording start time")
+        if end_dt is None:
+            raise ValueError("Cannot determine recording time")
 
         # Attach timezone if utc_offset provided
         if utc_offset is not None:
             tz = timezone(timedelta(hours=utc_offset))
-            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+
+        # Derive start time by subtracting duration from end time
+        start_dt = end_dt - timedelta(seconds=self.duration)
 
         return format_time_range(start_dt, self.duration, fmt)
 
