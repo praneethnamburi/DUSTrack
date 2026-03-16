@@ -16,7 +16,9 @@
       "Bash(pip show:*)",
       "WebFetch(domain:letmaik.github.io)",
       "WebFetch(domain:pypi.org)",
-      "WebFetch(domain:lensfun.github.io)"
+      "WebFetch(domain:lensfun.github.io)",
+      "Bash(wc -l /c/Users/mitim/Desktop/MITHIC/code/DUSTrack/pia02_workflow/overhead_camera_midi_alignment/*.py)",
+      "Bash(pip install:*)"
     ]
   }
 }

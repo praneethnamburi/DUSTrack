@@ -135,11 +135,11 @@ class Log(mido.MidiFile):
             
         return Event.from_data(event_data, pick_action="append")
 
-    def to_signals(self):
+    def to_signals(self, pedal_threshold=None):
         """Convert the notes to signals."""
         signal_names = [MIDI_TO_NOTE.get(x, f"m{x}") for x in range(128)]
         signal_coords = ["velocity"]
-        return PianoRoll(self.pm.get_piano_roll(fs=self.sr).T, sr=self.sr, signal_names=signal_names, signal_coords=signal_coords)
+        return PianoRoll(self.pm.get_piano_roll(fs=self.sr, pedal_threshold=pedal_threshold).T, sr=self.sr, signal_names=signal_names, signal_coords=signal_coords)
     
     def get_note_limits(self):
         """Return the start time of the first note and the end time of the last note in this MIDI file."""
@@ -317,9 +317,9 @@ class Log(mido.MidiFile):
         aftertouch_events.sort(key=lambda x: x[0])
         return aftertouch_events
     
-    def show_roll(self, velocity_lim="auto"):
+    def show_roll(self, velocity_lim="auto", pedal_threshold=None):
         """Show the piano roll."""
-        piano_roll = self.to_signals() #self.pm.get_piano_roll(fs=self.sr)
+        piano_roll = self.to_signals(pedal_threshold=pedal_threshold) #self.pm.get_piano_roll(fs=self.sr)
 
         if velocity_lim == "auto":
             vel = [x.velocity for x in self.notes]
