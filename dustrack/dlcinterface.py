@@ -580,24 +580,23 @@ class DLCProject:
             if not os.path.exists(self.paths['models']):
                 os.makedirs(self.paths['models'])
 
-        # def change_ip(inp_str):
-        #     x = inp_str.split('\\')
-        #     if len(x[2].split('.')) == 4:
-        #         x[2] = _config.NAS_IP
-        #         print(f"IP address changed to {_config.NAS_IP}")
-        #         return '\\'.join(x)
-        #     print("IP address was not changed")
-        #     return inp_str
-
-        # if hasattr(_config, "NAS_IP") and _config.NAS_IP is not None:
-        #     video_sets = self.config["video_sets"]
-        #     new_video_sets = {change_ip(k):v for k,v in video_sets.items()}
-        #     self.edit_config(video_sets=new_video_sets)
-
-        # use self config path and each video path to create a new video_sets using rebase_to_config
-        video_sets = self.config["video_sets"]
-        new_video_sets = {rebase_to_config(self.config_path, k):v for k,v in video_sets.items()}
+        # Re-anchor each video path so it shares config.yaml's root, regardless
+        # of which NIC / drive letter / OS was used when the project was created.
+        new_video_sets = {}
+        for k, v in self.config["video_sets"].items():
+            try:
+                new_video_sets[rebase_to_config(self.config_path, k)] = v
+            except ValueError as e:
+                print(f"rebase_to_config: leaving path unchanged ({e})")
+                new_video_sets[k] = v
         self.edit_config(video_sets=new_video_sets)
+
+        try:
+            deeplabcut.auxiliaryfunctions.read_config(self.config_path)
+        except ScannerError:
+            print("Config file is corrupted. Fix it manually.")
+            print("If there is no _ in the name, then the config file has issues "
+                  "when dealing with folders on the server.")
 
     @property
     def paths(self) -> Mapping[str, Path]:
