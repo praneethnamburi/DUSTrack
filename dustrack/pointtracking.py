@@ -1389,11 +1389,17 @@ class VideoAnnotation:
             annotation_label_dlc = internal_to_dlc_labels[annotation_label_internal]
             for frame, xy in annotation_dict.items():
                 for coord_name, coord_val in zip(("x", "y"), xy):
+                    # Single-call df.loc[row, col] = val — the previous
+                    # chained-assignment df.loc[row][col] = val will silently
+                    # no-op under pandas 3.0 Copy-on-Write.
                     df.loc[
-                        "labeled-data",
-                        self.video.name,
-                        f"{img_prefix}{frame:0{index_length}}{img_suffix}",
-                    ][scorer, annotation_label_dlc, coord_name] = coord_val
+                        (
+                            "labeled-data",
+                            self.video.name,
+                            f"{img_prefix}{frame:0{index_length}}{img_suffix}",
+                        ),
+                        (scorer, annotation_label_dlc, coord_name),
+                    ] = coord_val
         df = df.apply(lambda col: pd.to_numeric(col, errors="coerce"))
 
         if file_prefix is None:

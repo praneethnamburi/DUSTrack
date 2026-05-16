@@ -388,6 +388,92 @@ def test_video_annotation_to_dlc_options(ann_object, tmp_path):
     assert "point0" not in df_mapped.columns.get_level_values("bodyparts")
 
 
+def test_video_annotation_to_dlc_populates_values(ann_object):
+    """Regression guard: to_dlc must populate values for every annotation.
+
+    Catches the pandas 3.0 Copy-on-Write failure mode where the old
+    chained-assignment ``df.loc[row][col] = val`` silently no-ops and
+    leaves the dataframe full of NaN. With the single-call ``df.loc[row, col]``
+    fix shipped in 1.2.0, every annotated (label, frame) must surface as
+    finite x and y values in the DataFrame.
+    """
+    df = ann_object.to_dlc(save=False)
+    scorer = df.columns.levels[0].values[0]
+    index_length = ann_object._n_digits_in_frame_num()
+    for label in ann_object.labels:
+        for frame, xy in ann_object.data[label].items():
+            img_stem = f"img{frame:0{index_length}}.png"
+            x_val = df.loc[
+                ("labeled-data", ann_object.video.name, img_stem),
+                (scorer, f"point{label}", "x"),
+            ]
+            y_val = df.loc[
+                ("labeled-data", ann_object.video.name, img_stem),
+                (scorer, f"point{label}", "y"),
+            ]
+            assert not np.isnan(x_val), f"label={label} frame={frame} x was NaN"
+            assert not np.isnan(y_val), f"label={label} frame={frame} y was NaN"
+            assert x_val == xy[0]
+            assert y_val == xy[1]
+
+
+REAL_DLC_H5 = Path(
+    r"S:\2201000537 - Operator\data_opr02\005_02\ml_models\dlc"
+    r"\bi_4pt_t009-pnlk-2024-03-27\labeled-data\opr02_s005_t009_us_b_007"
+    r"\CollectedData_pnlk.h5"
+)
+REAL_DLC_VIDEO = Path(
+    r"S:\2201000537 - Operator\data_opr02\005_02\ml_models\dlc"
+    r"\bi_4pt_t009-pnlk-2024-03-27\videos\opr02_s005_t009_us_b_007.mp4"
+)
+
+
+@pytest.mark.skipif(
+    not (REAL_DLC_H5.exists() and REAL_DLC_VIDEO.exists()),
+    reason="Real DLC fixture from the OPR02 study is not reachable on this host",
+)
+def test_video_annotation_to_dlc_real_data_roundtrip(tmp_path):
+    """Real-data DLC h5 round-trip: load -> to_dlc -> reload -> compare.
+
+    Uses the OPR02 4-point DLC project as a load-bearing real-world
+    fixture (438 frames × 4 labels = 1752 annotations). Skipped on
+    hosts without S: drive access; meaningful only locally + on
+    Praneeth's machine, but it pins the 1.2.0 to_dlc fix against a
+    real-shape DLC labeled-data file (multi-bodypart, full coverage)
+    that the synthetic fixture above can't replicate.
+    """
+    ann_orig = datanavigator.VideoAnnotation(
+        fname=str(REAL_DLC_H5), vname=str(REAL_DLC_VIDEO)
+    )
+    n_orig = sum(len(ann_orig.data[lbl]) for lbl in ann_orig.labels)
+    assert n_orig > 0, "real DLC fixture loaded zero annotations"
+    df_orig = ann_orig.to_dlc(save=False)
+    # Spot-check: no NaN where the source dict has values.
+    scorer = df_orig.columns.levels[0].values[0]
+    index_length = ann_orig._n_digits_in_frame_num()
+    for label in ann_orig.labels:
+        for frame in ann_orig.data[label]:
+            img_stem = f"img{frame:0{index_length}}.png"
+            x_val = df_orig.loc[
+                ("labeled-data", ann_orig.video.name, img_stem),
+                (scorer, f"point{label}", "x"),
+            ]
+            assert not np.isnan(x_val), f"chained-assignment regression: ({label}, {frame}) is NaN"
+    # Full round-trip via a temporary h5.
+    out_dir = tmp_path / "roundtrip"
+    out_dir.mkdir()
+    ann_orig.to_dlc(output_path=str(out_dir), file_prefix="roundtrip", save=True)
+    ann_back = datanavigator.VideoAnnotation(
+        fname=str(out_dir / "roundtrip.h5"), vname=str(REAL_DLC_VIDEO)
+    )
+    n_back = sum(len(ann_back.data[lbl]) for lbl in ann_back.labels)
+    assert n_back == n_orig, f"round-trip lost annotations: {n_orig} -> {n_back}"
+    for label in ann_orig.labels:
+        assert label in ann_back.data
+        for frame, xy in ann_orig.data[label].items():
+            np.testing.assert_allclose(ann_back.data[label][frame], xy)
+
+
 def test_video_annotation_to_traces(ann_object):
     traces = ann_object.to_traces()
     assert isinstance(traces, dict)
