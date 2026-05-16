@@ -1045,7 +1045,14 @@ class VideoAnnotation:
         return fname, vname
 
     def load(self, n_annotations: int = 10, **h5_kwargs) -> dict:
-        """Load annotations from a json file, dlc h5 file, or initialize an annotation dictionary if a file doesn't exist."""
+        """Load annotations from a json file, dlc h5 file, or initialize an annotation dictionary if a file doesn't exist.
+
+        DUSTrack-shaped: the DeepLabCut ``.h5`` branch exists in the
+        generic class because datanavigator and DUSTrack co-developed.
+        The DLC paths will migrate to ``dustrack.VideoAnnotation`` in
+        1.3.0 alongside the ``pointtracking.py`` split; the JSON path
+        stays here.
+        """
         if (self.fname is None) or (not os.path.exists(self.fname)):
             return {str(label): {} for label in range(n_annotations)}
 
@@ -1064,6 +1071,11 @@ class VideoAnnotation:
             return ret
 
     def _load_dlc(self, dlc_fname: str, **kwargs) -> dict:
+        """Dispatch a DLC ``.h5`` file (path or already-loaded DataFrame) to the labeled-data or predicted-trace parser.
+
+        DUSTrack-shaped: see :py:meth:`load` — slated to migrate to
+        ``dustrack.VideoAnnotation`` in 1.3.0.
+        """
         if isinstance(dlc_fname, (str, Path)):
             assert os.path.exists(dlc_fname)
             assert Path(dlc_fname).suffix == ".h5"
@@ -1084,7 +1096,12 @@ class VideoAnnotation:
         img_prefix: str = "img",
         img_suffix: str = ".png",
     ) -> dict:
-        """Convert dlc labeled data dataframe to an annotation dictionary"""
+        """Convert dlc labeled data dataframe to an annotation dictionary.
+
+        DUSTrack-shaped: parses the DeepLabCut labeled-data MultiIndex
+        format; slated to migrate to ``dustrack.VideoAnnotation`` in
+        1.3.0.
+        """
         if False in [
             utils.removeprefix(x, remove_label_prefix).isdigit()
             for x in df.columns.levels[1]
@@ -1126,7 +1143,11 @@ class VideoAnnotation:
     def _dlc_trace_to_annotation_dict(
         df: pd.DataFrame, remove_label_prefix: str = "point"
     ) -> dict:
-        """Convert dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary."""
+        """Convert dlc labeled trace dataframe (result of analyze_videos) to an annotation dictionary.
+
+        DUSTrack-shaped: parses the DeepLabCut predicted-trace format;
+        slated to migrate to ``dustrack.VideoAnnotation`` in 1.3.0.
+        """
         if False in [
             utils.removeprefix(x, remove_label_prefix).isdigit()
             for x in df.columns.levels[1]
@@ -1330,7 +1351,13 @@ class VideoAnnotation:
         save: bool = True,
         internal_to_dlc_labels: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
-        """Save annotations in deeplabcut format."""
+        """Save annotations in deeplabcut format.
+
+        DUSTrack-shaped: emits a DeepLabCut-shaped DataFrame (and writes
+        an ``.h5`` if ``save=True``); slated to migrate to
+        ``dustrack.VideoAnnotation`` in 1.3.0 alongside the
+        ``pointtracking.py`` split.
+        """
         if (
             internal_to_dlc_labels is not None
         ):  # label_prefix is ignored if internal_to_dlc_labels are provided
