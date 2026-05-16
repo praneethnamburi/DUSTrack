@@ -1,3 +1,11 @@
+"""
+Point-tracking UI, annotation containers, and DeepLabCut HDF5 interop.
+
+The DLC-specific paths in :py:class:`VideoAnnotation` are tagged
+``DUSTrack-shaped`` in their docstrings and are slated to migrate to
+``dustrack.VideoAnnotation`` in 1.3.0 alongside the ``pointtracking.py``
+split.
+"""
 from __future__ import annotations
 
 import functools
@@ -239,7 +247,6 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.add_key_binding("m", self.toggle_frame_of_interest)
         self.add_key_binding("c", self.copy_current_annotation_from_overlay)
-        # self.add_key_binding('ctrl+alt+c', self.copy_annotations_from_overlay)
         self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay)
         self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay)
 
@@ -301,7 +308,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.add_key_binding("w", self.increment_label_range)
         self.add_key_binding("q", self.decrement_label_range)
 
-        self.remove_key_binding("e") # remove the "Extract clip feature from VideoBrowser
+        self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
 
     def add_events(self) -> None:
         """Add an event to specify time intervals for interpolating with lucas-kanade."""
@@ -388,8 +395,6 @@ class VideoPointAnnotator(VideoBrowser):
     def update(self) -> None:
         """Update elements in the UI."""
         self.update_annotation_visibility(draw=False)
-        # self.ann.update_display(self._current_idx, draw=False)
-        # self.ann.show_one_trace(self._current_label, draw=False)
         self.statevariables.update_display(draw=False)
         self.update_frame_marker(draw=False)
         super().update()
@@ -446,8 +451,6 @@ class VideoPointAnnotator(VideoBrowser):
         self._plot_frames_of_interest_y.set_data(
             *utils.ticks_from_times(self.frames_of_interest, yl)
         )
-        # self._ax_trace_x.set_xlim((0, n_frames))
-        # if len(self.ann.data[self._current_label]) > 0:
         if not np.any(np.isnan(xl)):
             self._ax_trace_x.set_ylim(xl)
             self._ax_trace_y.set_ylim(yl)
@@ -1137,7 +1140,6 @@ class VideoAnnotation:
                 for x in df.columns.levels[1].tolist()
             }
         frames = df.index.values
-        print(label_orig_to_internal)
 
         data = {label: {} for label in label_orig_to_internal.values()}
         scorer = df.columns.levels[0].values[0]
