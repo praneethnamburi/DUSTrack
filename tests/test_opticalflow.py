@@ -44,5 +44,5 @@ def test_lucas_kanade_rstc():
         video, end_frame, start_frame, end_points, mode="direct"
     )
     assert direct_prediction.shape == (1, n_points, 2)
-
-    return forward_path, reverse_path, rstc_path
+    assert reverse_path.shape == (n_frames, n_points, 2)
+    assert rstc_path.shape == (n_frames, n_points, 2)
