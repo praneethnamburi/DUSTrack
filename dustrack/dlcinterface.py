@@ -158,12 +158,12 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             self._apply_dark_theme()
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
-        self._add_dummy_button("dummy1")
+        self.buttons.add_separator()
         if HAS_DLC:
             self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
             self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
             self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-            self._add_dummy_button("dummy2")
+            self.buttons.add_separator()
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
@@ -178,18 +178,6 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             self.update()
             plt.setp(self._ax_trace_x.get_xticklabels(), visible=False)
             plt.draw()
-
-    def _add_dummy_button(self, name="dummy"):
-        """
-        Add an invisible placeholder button for GUI layout spacing.
-
-        Args:
-            name (str): Internal name for the button. Defaults to "dummy".
-        """
-        button = self.buttons.add(text=name, action_func=lambda x, ev: None)
-        button.ax.patch.set_visible(False)  # Hide the rectangular patch
-        button.label.set_visible(False) # Hide the text label
-        button.ax.axis('off') # Optional: Turn off the axes frame
 
     def _apply_dark_theme(self):
         """Apply dark theme to the GUI for better ultrasound visibility."""
