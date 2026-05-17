@@ -17,7 +17,7 @@ from typing import Union
 
 import cv2 as cv
 import numpy as np
-from decord import VideoReader
+from .video_reader import VideoReader
 
 from . import utils
 
@@ -57,7 +57,7 @@ def lucas_kanade(
         Returns:
             np.ndarray: Grayscale frame.
         """
-        return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_BGR2GRAY)
+        return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_RGB2GRAY)
 
     # input validation
     if isinstance(video, (str, Path)):
