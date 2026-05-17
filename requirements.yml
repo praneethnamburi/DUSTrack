@@ -17,6 +17,5 @@ dependencies:
   - pip:
     - opencv-python
     - pysampled
-    - decord
     - pyfilemanager
-    - datanavigator>=1.1.3
+    - datanavigator>=1.3.0

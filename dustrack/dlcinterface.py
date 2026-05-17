@@ -20,9 +20,9 @@ from skimage.util import img_as_ubyte
 
 import matplotlib.pyplot as plt
 import datanavigator
+from datanavigator import VideoReader, cpu
 
 from skimage import io, img_as_ubyte
-from decord import VideoReader, cpu
 
 from .postprocess import lk_moving_average_filter
 from . import _config
