@@ -1,8 +1,6 @@
 import numpy as np
-from datanavigator import lucas_kanade, lucas_kanade_rstc
-from decord import VideoReader
+from datanavigator import VideoReader, get_example_video, lucas_kanade, lucas_kanade_rstc
 from matplotlib import pyplot as plt
-from datanavigator import get_example_video
 
 
 def test_lucas_kanade_rstc():
