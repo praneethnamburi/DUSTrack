@@ -1037,8 +1037,8 @@ class VideoPointAnnotator(VideoBrowser):
                 for frame_count, frame_num in enumerate(
                     range(start_frame, end_frame + 1)
                 ):
-                    target_ann.data[label][frame_num] = list(
-                        rstc_path[frame_count, 0, :]
+                    target_ann.add(
+                        list(rstc_path[frame_count, 0, :]), label, frame_num
                     )
                 rstc_paths[label][start_frame : end_frame + 1, :] = np.squeeze(
                     rstc_path
