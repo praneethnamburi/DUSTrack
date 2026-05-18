@@ -440,6 +440,16 @@ class DUSTrack(dnav.VideoPointAnnotator):
         ...     'dlc_iter1': 'dlc_predictions.h5'
         ... })
     """
+
+    # Name of the spliced-corrections layer produced by
+    # :meth:`apply_manual_corrections`. Parallels the magic ``"buffer"``
+    # layer name :meth:`DLCProject.annotate` creates. The string matches
+    # the ``_dlccorr`` substring filter in :func:`_extract_frames` so any
+    # file written under this name is automatically excluded from DLC
+    # training input -- this is a terminal output, not a refinement
+    # source.
+    CORRECTIONS_LAYER_NAME = "dlccorr"
+
     def __init__(self, *args,
                  clahe_clip=2.0, clahe_grid=8, gamma=1.2, brightness=10,
                  dark_mode=False, enhance_enabled=True, **kwargs):
@@ -489,6 +499,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
             self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
             self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
+            self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections)
             self.buttons.add_separator(style="double")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
@@ -1190,7 +1201,117 @@ class DUSTrack(dnav.VideoPointAnnotator):
             if event_start <= frame_num <= event_end:
                 self.ann.add(overlay_ann.data[current_label][frame_num], current_label, frame_num)
         self.update()
-    
+
+    @staticmethod
+    def _merge_overlay_with_patch(source_data, patch_data):
+        """Merge two annotation ``data`` dicts -- patch overrides source.
+
+        Both inputs are nested dicts in :class:`VideoAnnotation` shape:
+        ``{label: {frame_num: [x, y]}}``. The result starts from
+        ``source_data`` (the baseline, typically dense DLC predictions),
+        then layers ``patch_data`` on top: at any (label, frame) present
+        in patch, the patch value wins. Labels that appear in only one
+        of the two inputs are carried through with their full contents.
+
+        Pure function so the splicing logic can be exercised from
+        synthetic inputs without instantiating the GUI; consumed by
+        :meth:`apply_manual_corrections`.
+        """
+        all_labels = sorted(set(source_data) | set(patch_data))
+        merged = {}
+        for label in all_labels:
+            merged[label] = {}
+            if label in source_data:
+                merged[label].update(source_data[label])
+            if label in patch_data:
+                merged[label].update(patch_data[label])
+        return merged
+
+    def apply_manual_corrections(self, event=None):
+        """Splice the active layer's manual entries into the overlay to produce/refresh the ``dlccorr`` layer.
+
+        **Workflow context** (step 4 of the DUSTrack pipeline):
+        after iterating DLC training (steps 2-3), you flip into a
+        manual-correction mode. The active annotation layer holds
+        sparse hand-edits (a few frames where DLC was wrong); the
+        annotation overlay points at the DLC trace you want to
+        correct. Clicking this button produces a layer named
+        :attr:`CORRECTIONS_LAYER_NAME` (``"dlccorr"``) that is the
+        overlay's data with your manual entries spliced in wherever
+        they exist. The file lives next to the video as
+        ``<video>_annotations_dlccorr.json`` and is automatically
+        excluded from DLC training input (the ``_dlccorr`` filter in
+        :func:`_extract_frames`) -- this is a terminal output.
+
+        **Post-apply state.** The corrections layer becomes the
+        active annotation layer and the manual layer (previously
+        active) becomes the overlay so you can see where your hand
+        was. To iterate, switch the active layer back to your manual
+        layer, set the overlay back to the DLC trace, add more
+        points, click again. Each click regenerates the corrections
+        layer from the current ``(overlay, active)`` pair, so adding
+        annotations directly to the corrections layer is not
+        recommended -- they'll be discarded on the next apply.
+
+        **Idempotency.** If a ``dlccorr`` layer is already present in
+        the session, its in-memory data is replaced wholesale (with
+        a ``_revision`` bump so the trace cache invalidates) and the
+        file overwritten. Otherwise a fresh :class:`VideoAnnotation`
+        is built, saved, and adopted under the canonical machinery.
+
+        Args:
+            event: Mouse/keyboard event (unused, for button compat).
+
+        Raises:
+            ValueError: If no annotation overlay is currently set, or
+                if the active annotation layer is already the
+                corrections layer (would create a circular splice).
+        """
+        overlay_name = self._current_overlay
+        if overlay_name is None:
+            raise ValueError(
+                "No annotation overlay selected. Set the layer you want to "
+                "correct (typically a dlc_* trace) as the overlay before "
+                "applying."
+            )
+        patch = self.ann
+        patch_name = patch.name
+        if patch_name == self.CORRECTIONS_LAYER_NAME:
+            raise ValueError(
+                f"The active annotation layer is already {self.CORRECTIONS_LAYER_NAME!r}. "
+                "Switch the active layer to your manual annotations layer first; "
+                "the corrections layer is a derived output and shouldn't be the "
+                "splice input."
+            )
+        source = self.annotations[overlay_name]
+
+        merged_data = self._merge_overlay_with_patch(source.data, patch.data)
+
+        if self.CORRECTIONS_LAYER_NAME in self.annotations.names:
+            # Refresh in place: replace the layer's data wholesale so the
+            # file on disk and the in-memory layer agree. Bumping
+            # _revision invalidates the per-label trace cache (the
+            # caches keyed on (label, plot_type, _revision) -- see the
+            # revision-counter pattern note).
+            layer = self.annotations[self.CORRECTIONS_LAYER_NAME]
+            layer.data = merged_data
+            layer._revision += 1
+            layer.save()
+        else:
+            # First-time creation: build a fresh VideoAnnotation pointing
+            # at the canonical filename, populate its data, save, and
+            # adopt under the same machinery used for any other layer.
+            fname = make_annotation_file_name(self.fname, self.CORRECTIONS_LAYER_NAME)
+            new_ann = VideoAnnotation(fname=str(fname), vname=self.fname)
+            new_ann.data = merged_data
+            new_ann._revision += 1
+            new_ann.save()
+            self._adopt_layer(new_ann)
+
+        self.statevariables["annotation_layer"].set_state(self.CORRECTIONS_LAYER_NAME)
+        self.statevariables["annotation_overlay"].set_state(patch_name)
+        self.update()
+
     def update(self):
         """
         Update the display with current frame and maintain frozen axis limits if set.
