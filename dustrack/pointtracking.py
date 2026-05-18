@@ -80,12 +80,17 @@ class VideoPointAnnotator(VideoBrowser):
             self._ax_trace_y = figure_handle.add_subplot(gs[1, 0])
         else:
             figure_handle = plt.figure(constrained_layout=True, figsize=(12, 8))
+            # rc2 (Commit 2): state-variables moved out of the figure
+            # into the QDockWidget left column, so the gridspec drops
+            # its dedicated left column. Image now spans full width.
+            # mpl fallback (non-Qt backend, e.g. Agg in tests) gets the
+            # state-variables text overlay floating on the figure.
             gs = figure_handle.add_gridspec(
-                3, 2, width_ratios=[1, 4], height_ratios=list(height_ratios)
+                3, 1, height_ratios=list(height_ratios)
             )
-            self._ax_image = figure_handle.add_subplot(gs[0, 1])
-            self._ax_trace_x = figure_handle.add_subplot(gs[1, :])
-            self._ax_trace_y = figure_handle.add_subplot(gs[2, :])
+            self._ax_image = figure_handle.add_subplot(gs[0, 0])
+            self._ax_trace_x = figure_handle.add_subplot(gs[1, 0])
+            self._ax_trace_y = figure_handle.add_subplot(gs[2, 0])
         self._ax_trace_x.sharex(self._ax_trace_y)
         (self._frame_marker_x,) = self._ax_trace_x.plot(
             [], [], color="black", linewidth=1
@@ -123,36 +128,36 @@ class VideoPointAnnotator(VideoBrowser):
             [], [], color="gray", linewidth=1, alpha=0.5
         )
 
-        # State variables
-        self.statevariables.add("annotation_layer", self.annotations.names)
-        self.statevariables.add("annotation_overlay", [None] + self.annotations.names)
-        self.statevariables.add("annotation_label", self.ann.labels)
-        self.statevariables.add("label_range", [f"{x*10}-{x*10+9}" for x in range(100)]) # up to 1000 labels
+        # State variables. rc2: each variable advertises a control
+        # surface via the `widget=` kwarg, read by the Qt sidebar to
+        # render QComboBox / QButtonGroup / QLabel. Hint is ignored on
+        # non-Qt backends (Agg falls back to TextView).
+        self.statevariables.add(
+            "annotation_layer", self.annotations.names, widget="dropdown",
+        )
+        self.statevariables.add(
+            "annotation_overlay", [None] + self.annotations.names,
+            widget="dropdown",
+        )
+        self.statevariables.add(
+            "annotation_label", self.ann.labels, widget="dropdown",
+        )
+        self.statevariables.add(
+            "label_range",
+            [f"{x*10}-{x*10+9}" for x in range(100)],  # up to 1000 labels
+            widget="dropdown",
+        )
         first_label = self.ann.labels[0]
         self.statevariables["label_range"].set_state(int(first_label) // 10)
         self.update_annotation_label_states()
-        self.statevariables.add("number_keys", ["select", "place"])
-        if self._fast_render:
-            # Tier 2: bypass the canvas-overlay TextView entirely --
-            # route directly into the layout-managed sidebar QLabel on
-            # the image pane. The sidebar's width auto-grows with
-            # content (setSizePolicy(Fixed, Preferred)), so a long
-            # annotation-layer name reflows the layout and shrinks
-            # the canvas instead of drawing over the trace plots.
-            from datanavigator._qt import make_sidebar_text_sink
-            self._ax_statevar = None
-            sink = make_sidebar_text_sink(self._image_pane)
-            if sink is not None:
-                self.statevariables._text = sink
-                self.statevariables.update_display(draw=False)
-            else:
-                # Sidebar missing (pane built by older make_image_pane)
-                # -- fall back to canvas-overlay path so we still show
-                # something rather than crashing on _text=None.
-                self.statevariables.show(pos="middle left", fax=figure_handle)
-        else:
-            self._ax_statevar = figure_handle.add_subplot(gs[0, 0])
-            self.statevariables.show(pos="middle left", fax=self._ax_statevar)
+        self.statevariables.add("number_keys", ["select", "place"], widget="toggle")
+        # rc2: single show() call regardless of fast_render. Inside,
+        # StateVariables.show() tries the Qt-native dock widget first
+        # (mounts under the buttons column for both tiers) and falls
+        # back to TextView on non-Qt backends. The pre-rc2
+        # _ax_statevar gridspec slot is gone.
+        self._ax_statevar = None
+        self.statevariables.show(pos="bottom left")
 
         self.add_events()
 
