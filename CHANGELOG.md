@@ -5,8 +5,15 @@ All notable changes to this project will be documented in this file.
 
 Second release candidate for the smoother-interaction band. rc1 was
 backend-perf-oriented (datanavigator 1.4.0rc1 cache + revision-counter
-fixes); rc2 turns to the user-facing rough edges, starting with the
-DLC training round-trip.
+fixes); rc2 turns to the user-facing rough edges of the DLC pipeline:
+**all three DLC-pipeline buttons** (Train DLC model, Reduce jitter,
+Create DLC project) now run on a background thread under a shared
+modal `ProgressOverlay` instead of freezing the GUI; a unified
+**Done** button on the overlay lets the user review the final stdout
+(or read the error) before the underlying UI becomes interactive
+again. The training overlay no longer auto-dismisses, and the
+pre-rc2 `QMessageBox` failure dialogs are folded into the overlay
+itself.
 
 ### Changed
 - `dustrack/dlcinterface.py`: button-column separators promoted from
@@ -19,27 +26,50 @@ DLC training round-trip.
   for free via dnav's `_QtStatevarsWidget`. Visual rhythm matches
   what the rc2 stacked statevars layout introduced; users no longer
   have to scan for group boundaries in a long flat list of buttons.
-- `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project` no longer
-  closes the figure and re-opens it after training. On a Qt backend
-  (the default for `DUSTrack(..., fast_render=True)`, which is the
-  default), training now runs on a background thread under a modal
-  "Training in progress" overlay parented to the QMainWindow. The
-  overlay shows the current pipeline phase (extract / train / evaluate
-  / analyze / labeled-video), a progress bar driven by parsed
-  `Epoch X/Y` and iteration markers in DLC's stdout, and a scrolling
-  tail of the last few hundred log lines. On successful completion,
-  the overlay dismisses and the newly-produced DLC trace layers are
-  added to the live DUSTrack via `add_annotation_layers` -- no
+- `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project`
+  (**Train DLC model**) no longer closes the figure and re-opens it
+  after training. On a Qt backend (the default for
+  `DUSTrack(..., fast_render=True)`, which is the default), training
+  now runs on a background thread under a modal "Training in
+  progress" overlay parented to the QMainWindow. The overlay shows
+  the current pipeline phase (extract / train / evaluate / analyze
+  / labeled-video), a progress bar driven by parsed `Epoch X/Y` and
+  iteration markers in DLC's stdout, and a scrolling tail of the
+  last few hundred log lines. The newly-produced DLC trace layers
+  are added to the live DUSTrack via `add_annotation_layers` -- no
   relaunch -- with the freshest `dlc_*` layer set as the annotation
-  overlay and drawn as a line plot. The pre-rc2 close-and-reopen path
-  is retained as the fallback when no QMainWindow can be located
-  (non-Qt backend, headless run, etc.).
-- `dustrack/dlcinterface.py`: DLC's stdout/stderr during training are
-  now teed to `sys.__stdout__` (the original terminal file descriptor)
-  rather than the possibly-wrapped `sys.stdout`, so launching from a
-  shell now reliably shows training progress in the terminal even when
-  the call is initiated from the GUI button handler. Output also feeds
-  the in-app overlay log in real time.
+  overlay and drawn as a line plot. The pre-rc2 close-and-reopen
+  path is retained as the fallback when no QMainWindow can be
+  located (non-Qt backend, headless run, etc.).
+- `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk`
+  (**Reduce jitter**) joins the overlay path on a Qt backend (no
+  more UI freeze during long LK-RSTC passes). The overlay log
+  shows the tqdm output and the progress bar is driven by parsing
+  tqdm's `N/M` markers; phase label flips between "Submitting
+  tracking jobs" and "Processing tracking results". On non-Qt
+  backends the pre-existing synchronous behavior is retained,
+  including the `VideoAnnotation` return value. On the Qt path the
+  smoothed layer is added (and selected) when the user clicks Done.
+- `dustrack/dlcinterface.py`: `DUSTrack.create_dlc_project`
+  (**Create DLC Project**) joins the overlay path on a Qt backend
+  with `show_progress_bar=False` (it's a quick op with no
+  determinate progress). DLC's create-project chatter is teed to
+  the overlay log + the launching terminal; the Done button
+  confirms the project location before the user moves on. Sync
+  return on non-Qt backends is unchanged.
+- `dustrack/dlcinterface.py`: training-overlay failure path no
+  longer pops a separate `QMessageBox.critical` /
+  `QMessageBox.warning` dialog. The error is shown in the overlay
+  itself (title flips to "Failed", exception in the phase label,
+  traceback in the log); the same Done button dismisses cleanly.
+  Same folding applies to the rare "training succeeded but layer
+  refresh failed" path.
+- `dustrack/dlcinterface.py`: DLC's stdout/stderr during overlay
+  work are teed to `sys.__stdout__` (the original terminal file
+  descriptor) rather than the possibly-wrapped `sys.stdout`, so
+  launching from a shell reliably shows progress in the terminal
+  even when the call is initiated from a GUI button handler.
+  Output also feeds the in-app overlay log in real time.
 
 ### Added
 - `dustrack/dlcinterface.py`: `DUSTrack._refresh_dlc_layers(video_index=0)`
@@ -52,11 +82,52 @@ DLC training round-trip.
   still set as the annotation overlay. Falls back gracefully (no
   raise) if the new-iteration JSON already exists on disk from a
   prior refresh. Idempotent; safe to call more than once.
-- `dustrack/dlcinterface.py`: module-level `_Tee`, `_QueueWriter`, and
-  lazily-built `_make_training_overlay_class()` -- the plumbing for the
-  off-thread training run + overlay. The Qt class builder mirrors
-  datanavigator's `_make_qt_text_overlay_class` pattern so importing
-  dustrack on a no-Qt-binding machine doesn't touch qtpy.
+- `dustrack/dlcinterface.py`: module-level `_Tee`, `_QueueWriter`,
+  and lazily-built `_make_progress_overlay_class()` -- the plumbing
+  for off-thread DLC-pipeline work + modal overlay. The Qt class
+  builder mirrors datanavigator's `_make_qt_text_overlay_class`
+  pattern so importing dustrack on a no-Qt-binding machine doesn't
+  touch qtpy. The overlay is parameterized by title / initial phase
+  / hint / progress-bar visibility, and exposes a
+  `mark_done(success, summary)` method that swaps in a styled
+  **Done** `QPushButton` wired to dismiss the overlay and fire a
+  post-completion callback; the title flips to "Complete" (green)
+  or "Failed" (red).
+- `dustrack/dlcinterface.py`: `DUSTrack._run_with_overlay(qt_window,
+  *, work_fn, on_success, title, hint, ...)` -- the generic
+  worker-thread + QTimer + queue plumbing shared by all three
+  DLC-pipeline buttons. Future buttons (e.g. re-train from a
+  snapshot, post-hoc evaluation) plug in by passing a `work_fn` +
+  `on_success` pair. `DUSTrack._find_qt_window` factored out as a
+  small helper for the Qt-vs-headless dispatch.
+- `dustrack/dlcinterface.py`: overlay log drainer now feeds
+  `\r`-separated tqdm redraws through the phase + progress
+  matchers (so the progress bar updates live during tqdm bars) but
+  only appends `\n`-terminated lines to the visible log, so the
+  log doesn't flood with partial redraws.
+- `dustrack/dlcinterface.py`: `_TRAINING_PHASES` joined by
+  `_JITTER_PHASES` (matches tqdm `desc=` prefixes for the LK loop)
+  and `_CREATE_PROJECT_PHASES` (matches DLC's create-project
+  stdout chatter).
+- `dustrack/dlcinterface.py` + `dustrack/__init__.py`: new
+  `dustrack.open(path, layer_name=None, **dustrack_kwargs)` unified
+  entry point. Pass a video to start fresh (layer_name required), a
+  DLC project root (or its `config.yaml`, or a video inside one) to
+  resume in place. Dispatch helpers: `_is_dlc_project_root`,
+  `_find_dlc_config`, `_find_video_index`. Tests at
+  `tests/test_open.py` cover the dispatch error branches + the
+  path-classification helpers with synthetic filesystem inputs;
+  the Phase 1 / Phase 2 happy paths require the GUI / a real DLC
+  project and stay on manual / integration testing.
+
+### Notes
+- Programmatic callers that need the return value
+  (`tracker.process_with_lk()` in a notebook,
+  `tracker.create_dlc_project()` in a script) should run on a
+  non-Qt backend, or — if running in Qt — read
+  `tracker.annotations[...]` / `tracker._dlcproject` after the
+  Done button is clicked. The Qt async path returns ``None`` (or
+  ``self`` for Train DLC) by design.
 
 ## [1.0.0] - 2026-05-17
 

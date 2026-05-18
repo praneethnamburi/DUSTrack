@@ -110,6 +110,24 @@ _TRAINING_PHASES = [
     (re.compile(r"analyze_videos|analyzing video", re.IGNORECASE), "Analyzing videos"),
     (re.compile(r"create_labeled_video|labeled video", re.IGNORECASE), "Creating labeled video"),
 ]
+# LK-RSTC jitter reduction emits tqdm bars whose desc= strings are the
+# only stable signal for which half of the loop we're in (submit vs.
+# collect). Match the desc prefix so we don't depend on tqdm's exact
+# bar / spinner glyphs.
+_JITTER_PHASES = [
+    (re.compile(r"Submitting jobs", re.IGNORECASE), "Submitting tracking jobs"),
+    (re.compile(r"Processing results", re.IGNORECASE), "Processing tracking results"),
+    (re.compile(r"Processing sequentially", re.IGNORECASE), "Processing sequentially"),
+]
+# DLC project creation chatters about copying videos and writing the
+# config; useful as phase labels even when the operation completes in
+# under a second.
+_CREATE_PROJECT_PHASES = [
+    (re.compile(r"Created.*\bproject\b|new project", re.IGNORECASE), "Project skeleton created"),
+    (re.compile(r"adding.*video|copying.*video", re.IGNORECASE), "Copying video"),
+    (re.compile(r"config.*yaml|writing.*config", re.IGNORECASE), "Writing config"),
+    (re.compile(r"labeled-data|extract", re.IGNORECASE), "Preparing labeled-data folders"),
+]
 _PROGRESS_PATTERNS = [
     re.compile(r"[Ee]poch\s+(\d+)\s*/\s*(\d+)"),
     re.compile(r"iteration[:\s=]+(\d+)\s*/\s*(\d+)", re.IGNORECASE),
@@ -174,25 +192,30 @@ class _QueueWriter:
         return False
 
 
-def _make_training_overlay_class():
-    """Build :class:`TrainingOverlay` lazily so importing ``dustrack``
+def _make_progress_overlay_class():
+    """Build :class:`ProgressOverlay` lazily so importing ``dustrack``
     never touches qtpy (and therefore never fails on a no-Qt-binding
     machine). Mirrors :func:`datanavigator._qt._make_qt_text_overlay_class`.
     """
     from qtpy.QtCore import QEvent, QObject, Qt
     from qtpy.QtWidgets import (
         QFrame,
+        QHBoxLayout,
         QLabel,
         QPlainTextEdit,
         QProgressBar,
+        QPushButton,
         QVBoxLayout,
     )
 
-    class TrainingOverlay(QObject):
+    class ProgressOverlay(QObject):
         """Semi-transparent modal-feeling overlay parented to the DUSTrack
-        QMainWindow. Shows a title, phase / status line, a progress bar
-        (indeterminate until we parse a known progress format), and a
-        scrolling tail of training stdout.
+        QMainWindow. Shows a title, phase / status line, an optional
+        progress bar (indeterminate until we parse a known progress
+        format), and a scrolling tail of stdout. On completion the
+        overlay transitions to a "done" state with a Done button so the
+        user can review the final output before the underlying UI
+        becomes interactive again.
 
         The overlay is a child ``QFrame`` of the main window, sized to
         cover it, and re-positioned on resize via an event filter. The
@@ -201,14 +224,24 @@ def _make_training_overlay_class():
         without us having to disable them individually.
         """
 
-        def __init__(self, main_window):
+        def __init__(
+            self,
+            main_window,
+            *,
+            title: str = "Working",
+            initial_phase: str = "Starting up",
+            hint: str = "",
+            show_progress_bar: bool = True,
+        ):
             super().__init__(main_window)
             self._mw = main_window
+            self._show_progress_bar = show_progress_bar
+            self._done_callback = None
 
             self._frame = QFrame(main_window)
-            self._frame.setObjectName("dustrack_training_overlay")
+            self._frame.setObjectName("dustrack_progress_overlay")
             self._frame.setStyleSheet(
-                "#dustrack_training_overlay { background-color: rgba(0, 0, 0, 200); }"
+                "#dustrack_progress_overlay { background-color: rgba(0, 0, 0, 200); }"
                 "QLabel { color: white; }"
                 "QPlainTextEdit { "
                 "  background-color: rgba(0, 0, 0, 220); "
@@ -222,21 +255,26 @@ def _make_training_overlay_class():
                 "  color: white; text-align: center; height: 18px; "
                 "}"
                 "QProgressBar::chunk { background-color: #3a86ff; }"
+                "QPushButton { "
+                "  background-color: #3a86ff; color: white; "
+                "  border: 1px solid #2a76ef; padding: 6px 24px; "
+                "  font-size: 11pt; font-weight: bold; "
+                "}"
+                "QPushButton:hover { background-color: #4a96ff; }"
+                "QPushButton:pressed { background-color: #2a76ef; }"
             )
-            # Accept mouse events so they don't fall through to widgets
-            # beneath. focus-policy keeps clicks from changing focus.
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
             layout = QVBoxLayout(self._frame)
             layout.setAlignment(Qt.AlignCenter)
             layout.addStretch(1)
 
-            self._title = QLabel("Training in progress")
+            self._title = QLabel(title)
             self._title.setAlignment(Qt.AlignCenter)
             self._title.setStyleSheet("font-size: 22pt; font-weight: bold;")
             layout.addWidget(self._title)
 
-            self._phase = QLabel("Starting up")
+            self._phase = QLabel(initial_phase)
             self._phase.setAlignment(Qt.AlignCenter)
             self._phase.setStyleSheet("font-size: 12pt;")
             layout.addWidget(self._phase)
@@ -245,12 +283,13 @@ def _make_training_overlay_class():
             self._progress.setRange(0, 0)  # indeterminate (busy) until we parse
             self._progress.setFixedWidth(480)
             self._progress.setAlignment(Qt.AlignCenter)
-            # Center the progress bar horizontally
             self._progress.setSizePolicy(self._progress.sizePolicy())
             row = QVBoxLayout()
             row.setAlignment(Qt.AlignCenter)
             row.addWidget(self._progress, alignment=Qt.AlignCenter)
             layout.addLayout(row)
+            if not show_progress_bar:
+                self._progress.hide()
 
             self._log = QPlainTextEdit()
             self._log.setReadOnly(True)
@@ -260,12 +299,23 @@ def _make_training_overlay_class():
             layout.addWidget(self._log, alignment=Qt.AlignCenter)
 
             self._hint = QLabel(
-                "Output is also streamed to the launching terminal. "
-                "This window will refresh with DLC predictions when training completes."
+                hint
+                or "Output is also streamed to the launching terminal."
             )
             self._hint.setAlignment(Qt.AlignCenter)
             self._hint.setStyleSheet("color: #aaaaaa; font-size: 9pt;")
             layout.addWidget(self._hint)
+
+            # Done button is created up front but hidden until mark_done()
+            # so the layout doesn't shift when the work completes.
+            button_row = QHBoxLayout()
+            button_row.setAlignment(Qt.AlignCenter)
+            self._done_button = QPushButton("Done")
+            self._done_button.setFixedWidth(160)
+            self._done_button.clicked.connect(self._on_done_clicked)
+            self._done_button.hide()
+            button_row.addWidget(self._done_button)
+            layout.addLayout(button_row)
 
             layout.addStretch(1)
 
@@ -294,6 +344,8 @@ def _make_training_overlay_class():
             self._phase.setText(text)
 
         def set_progress(self, current: int, total: int):
+            if not self._show_progress_bar:
+                return
             if total > 0:
                 if self._progress.maximum() == 0:
                     self._progress.setRange(0, total)
@@ -301,6 +353,51 @@ def _make_training_overlay_class():
                     self._progress.setRange(0, total)
                 self._progress.setValue(min(current, total))
                 self._progress.setFormat(f"{current} / {total} (%p%)")
+
+        def mark_done(self, success: bool, summary: str, on_done=None):
+            """Switch to the "complete" state: update title + phase to the
+            given ``summary`` and reveal the Done button. ``on_done`` runs
+            on the GUI thread when the user clicks Done (after the overlay
+            dismisses itself). Safe to call from the GUI thread only.
+            """
+            self._done_callback = on_done
+            self._title.setText("Complete" if success else "Failed")
+            self._title.setStyleSheet(
+                "font-size: 22pt; font-weight: bold; "
+                f"color: {'#7cdb7c' if success else '#ff7c7c'};"
+            )
+            self._phase.setText(summary)
+            if self._show_progress_bar:
+                if success:
+                    # Fill the bar to convey "complete". If we never had
+                    # a determinate range, set a 1/1 so the chunk paints.
+                    if self._progress.maximum() == 0:
+                        self._progress.setRange(0, 1)
+                        self._progress.setValue(1)
+                    else:
+                        self._progress.setValue(self._progress.maximum())
+                    self._progress.setFormat("Complete")
+                else:
+                    self._progress.setRange(0, 1)
+                    self._progress.setValue(0)
+                    self._progress.setFormat("Failed")
+            self._hint.setText(
+                "Review the output above, then click Done to continue."
+            )
+            self._done_button.show()
+            self._done_button.setFocus()
+
+        def _on_done_clicked(self):
+            cb = self._done_callback
+            self._done_callback = None
+            self.dismiss()
+            if cb is not None:
+                try:
+                    cb()
+                except Exception as exc:  # noqa: BLE001
+                    sys.__stderr__.write(
+                        f"Post-overlay callback raised: {exc}\n"
+                    )
 
         def dismiss(self):
             try:
@@ -310,7 +407,7 @@ def _make_training_overlay_class():
             self._frame.hide()
             self._frame.deleteLater()
 
-    return TrainingOverlay
+    return ProgressOverlay
 
 
 class DUSTrack(dnav.VideoPointAnnotator):
@@ -488,20 +585,25 @@ class DUSTrack(dnav.VideoPointAnnotator):
     def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER) -> DLCProject:
         """
         Create a new DeepLabCut project using current annotations as training labels.
-        
-        This method saves the current annotation layer and initializes a new DLC project
-        with the video and labels. The project is stored in self._dlcproject for subsequent
-        training and analysis operations.
-        
+
+        rc2 (1.1.0rc2): on a Qt backend, project creation runs off the
+        GUI thread under a modal overlay (no progress bar -- it's a
+        fast op, but the overlay surfaces DLC's stdout and a Done
+        button so the user can confirm the project location and any
+        warnings before continuing). On non-Qt backends the call runs
+        synchronously and returns the new :class:`DLCProject`.
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
             name (str, optional): Project name. Defaults to "{video_name}_{annotation_layer}".
             path (str, optional): Directory for project. Defaults to video's parent directory.
             experimenter (str, optional): Experimenter name. Defaults to config value.
-        
+
         Returns:
-            DLCProject: The newly created project instance.
-        
+            DLCProject: The newly created project instance on the sync
+            path. ``None`` on the Qt async path -- read
+            ``self._dlcproject`` after the Done button is clicked.
+
         Note:
             Project names must contain an underscore for proper DLC configuration handling.
         """
@@ -512,15 +614,37 @@ class DUSTrack(dnav.VideoPointAnnotator):
             name = f"{self.name}_{self.ann.name}"
         if path is None:
             path = str(Path(self.fname).parent)
-        self._dlcproject = DLCProject(
-            path=path,
-            videos=[self.fname],
-            name=name,
-            experimenter=experimenter,
-            annotation_suffix=self.ann.name,
+
+        def _build_project():
+            return DLCProject(
+                path=path,
+                videos=[self.fname],
+                name=name,
+                experimenter=experimenter,
+                annotation_suffix=self.ann.name,
+            )
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            self._dlcproject = _build_project()
+            return self._dlcproject
+
+        def _on_success(project: DLCProject):
+            self._dlcproject = project
+
+        self._run_with_overlay(
+            qt_window,
+            work_fn=_build_project,
+            on_success=_on_success,
+            title="Creating DLC project",
+            initial_phase="Saving annotations and scaffolding project",
+            hint="Output is also streamed to the launching terminal.",
+            show_progress_bar=False,
+            phase_patterns=_CREATE_PROJECT_PHASES,
+            success_summary=f"Project '{name}' created.",
         )
-        return self._dlcproject
-    
+        return None
+
     def process_dlc_project(self, event=None, *args, **kwargs):
         """
         Train the DeepLabCut model without leaving the annotation UI.
@@ -529,7 +653,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
         window stays open under a "Training in progress" overlay
         (progress bar + scrolling stdout tail), and on success the new
         DLC prediction layers are added to the live session via
-        :meth:`add_annotation_layers` -- no relaunch.
+        :meth:`add_annotation_layers` -- no relaunch. The overlay
+        transitions to a "Complete" / "Failed" state with a Done
+        button so the user can review the final stdout before the
+        predictions swap in (or read the error before retrying);
+        failure paths fold into the overlay rather than popping a
+        separate :class:`QMessageBox`.
 
         DLC's stdout/stderr are also teed to the launching terminal
         (``sys.__stdout__``) so callers who launched from a shell can
@@ -549,8 +678,8 @@ class DUSTrack(dnav.VideoPointAnnotator):
 
         Returns:
             DUSTrack: ``self`` on the Qt path (training is asynchronous;
-            the same DUSTrack will refresh in place when training
-            finishes). On the fallback path, the freshly-launched
+            the same DUSTrack will refresh in place when the user
+            clicks Done). On the fallback path, the freshly-launched
             DUSTrack from :meth:`DLCProject.annotate`.
 
         Raises:
@@ -562,41 +691,95 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
 
-        # Try to find the QMainWindow hosting our figure. If unavailable,
-        # fall back to the legacy synchronous path.
-        qt_window = None
-        try:
-            from datanavigator._qt import find_qt_window
-            qt_window = find_qt_window(self.figure)
-        except Exception:
-            qt_window = None
-
+        qt_window = self._find_qt_window()
         if qt_window is None:
             plt.close(self.figure)
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
 
-        self._run_training_async(qt_window, *args, **kwargs)
+        def _train():
+            self._dlcproject.process(*args, **kwargs)
+
+        def _on_success(_unused):
+            # Refresh layers BEFORE the user clicks Done so the new
+            # predictions are already loaded when the overlay
+            # dismisses. If the refresh raises, the helper folds the
+            # exception into the Done overlay (mark_done success=False
+            # with the refresh error -- training itself succeeded).
+            self._refresh_dlc_layers()
+
+        self._run_with_overlay(
+            qt_window,
+            work_fn=_train,
+            on_success=_on_success,
+            title="Training in progress",
+            initial_phase="Starting up",
+            hint=(
+                "Output is also streamed to the launching terminal. "
+                "Predictions will load when you click Done."
+            ),
+            show_progress_bar=True,
+            phase_patterns=_TRAINING_PHASES,
+            success_summary="Training complete. Predictions loaded.",
+        )
         return self
 
-    def _run_training_async(self, qt_window, *args, **kwargs):
-        """Drive ``self._dlcproject.process`` on a worker thread under a
-        training overlay; refresh layers in place on success.
+    def _find_qt_window(self):
+        """Return the QMainWindow hosting ``self.figure``, or ``None``
+        if we can't locate it (non-Qt backend, headless run, etc.).
+        Wraps :func:`datanavigator._qt.find_qt_window` with the
+        try/except shape that callers want.
+        """
+        try:
+            from datanavigator._qt import find_qt_window
+            return find_qt_window(self.figure)
+        except Exception:
+            return None
 
-        Split out of :meth:`process_dlc_project` to keep the button
-        handler small and to make the orchestration easier to test
-        (the thread + QTimer plumbing is the bit that's hard to unit
-        test, but a future test can call this directly with a mocked
-        ``_dlcproject``).
+    def _run_with_overlay(
+        self,
+        qt_window,
+        *,
+        work_fn,
+        on_success=None,
+        title: str = "Working",
+        initial_phase: str = "Starting up",
+        hint: str = "",
+        show_progress_bar: bool = True,
+        phase_patterns=None,
+        success_summary: str = "Done.",
+    ):
+        """Drive ``work_fn`` on a worker thread under a progress
+        overlay, tee its stdout/stderr to both the launching terminal
+        and the overlay log, and on completion transition the overlay
+        to a "Done" state. The user clicks Done to dismiss the overlay
+        and (on success) fire ``on_success(result)`` on the GUI
+        thread; ``result`` is the return value of ``work_fn``.
+
+        Failure paths fold into the overlay (title flips to "Failed",
+        progress bar reads "Failed", phase becomes the exception
+        message); the Done button still dismisses cleanly. If
+        ``on_success`` itself raises after a successful ``work_fn``,
+        the overlay shows that as a separate failure mode -- the work
+        succeeded, but the follow-up didn't.
+
+        Pure GUI plumbing: the heavy thread/queue/QTimer machinery is
+        all in here so the button handlers stay small.
         """
         from qtpy.QtCore import QTimer
-        from qtpy.QtWidgets import QMessageBox
 
-        TrainingOverlay = _make_training_overlay_class()
-        overlay = TrainingOverlay(qt_window)
+        ProgressOverlay = _make_progress_overlay_class()
+        overlay = ProgressOverlay(
+            qt_window,
+            title=title,
+            initial_phase=initial_phase,
+            hint=hint,
+            show_progress_bar=show_progress_bar,
+        )
 
         log_queue: "queue.Queue[str]" = queue.Queue()
-        result_state = {"exc": None, "done": False}
+        result_state: dict = {"exc": None, "done": False, "value": None}
+        phase_patterns = phase_patterns or []
 
         def _worker():
             sink = _Tee(sys.__stdout__, _QueueWriter(log_queue))
@@ -604,7 +787,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
             sys.stdout = sink
             sys.stderr = sink
             try:
-                self._dlcproject.process(*args, **kwargs)
+                result_state["value"] = work_fn()
             except BaseException as e:  # noqa: BLE001 (re-raised on GUI thread)
                 result_state["exc"] = e
             finally:
@@ -612,20 +795,38 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 result_state["done"] = True
 
         thread = threading.Thread(
-            target=_worker, name="dustrack-dlc-training", daemon=True,
+            target=_worker, name="dustrack-overlay-worker", daemon=True,
         )
 
         timer = QTimer(qt_window)
         timer.setInterval(200)
 
         # Per-tick state lives in a dict so the inner closure can mutate
-        # without nonlocal gymnastics.
+        # without nonlocal gymnastics. ``line_buf`` is the unterminated
+        # tail (no \n yet); ``last_cr_match`` lets us short-circuit
+        # repeated tqdm redraws.
         tick_state = {"line_buf": ""}
 
+        def _scan_segment(seg: str):
+            """Feed a single fragment (may be \\r-terminated tqdm
+            redraw or a full line) through phase + progress matchers.
+            Does not append to the visible log.
+            """
+            if not seg.strip():
+                return
+            for pat, label in phase_patterns:
+                if pat.search(seg):
+                    overlay.set_phase(label)
+                    break
+            for pat in _PROGRESS_PATTERNS:
+                m = pat.search(seg)
+                if m:
+                    cur, tot = int(m.group(1)), int(m.group(2))
+                    if tot > 0 and cur <= tot:
+                        overlay.set_progress(cur, tot)
+                    break
+
         def _drain_and_update():
-            # Pull everything currently in the queue into a single
-            # string, then split into lines (keeping a remainder for
-            # partial lines split across writes).
             chunks = []
             try:
                 while True:
@@ -634,52 +835,66 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 pass
             if chunks:
                 tick_state["line_buf"] += "".join(chunks)
-                *lines, tick_state["line_buf"] = tick_state["line_buf"].split("\n")
-                for line in lines:
-                    overlay.append_log(line)
-                    for pat, label in _TRAINING_PHASES:
-                        if pat.search(line):
-                            overlay.set_phase(label)
-                            break
-                    for pat in _PROGRESS_PATTERNS:
-                        m = pat.search(line)
-                        if m:
-                            cur, tot = int(m.group(1)), int(m.group(2))
-                            if tot > 0 and cur <= tot:
-                                overlay.set_progress(cur, tot)
-                            break
+                # Split into \n-terminated lines + unterminated tail.
+                *full_lines, tick_state["line_buf"] = tick_state["line_buf"].split("\n")
+                for line in full_lines:
+                    # tqdm redraws use \r to overwrite the previous
+                    # frame within a single logical line. Run each
+                    # \r-segment through the matchers (so the
+                    # progress bar updates), but only show the final
+                    # segment in the log (the latest frame).
+                    segments = line.split("\r") if "\r" in line else [line]
+                    for seg in segments:
+                        _scan_segment(seg)
+                    visible = segments[-1] if segments else line
+                    overlay.append_log(visible)
+                # Drive progress detection off the still-unterminated
+                # tail too, so tqdm's "in flight" redraws update the
+                # bar between newlines.
+                if "\r" in tick_state["line_buf"]:
+                    for seg in tick_state["line_buf"].split("\r"):
+                        _scan_segment(seg)
 
-            if result_state["done"]:
-                timer.stop()
-                # Flush any trailing partial line
-                if tick_state["line_buf"].strip():
-                    overlay.append_log(tick_state["line_buf"])
-                overlay.dismiss()
-                if result_state["exc"] is not None:
-                    exc = result_state["exc"]
-                    sys.__stderr__.write(f"DLC training failed: {exc}\n")
-                    QMessageBox.critical(
-                        qt_window,
-                        "DLC training failed",
-                        f"{type(exc).__name__}: {exc}\n\n"
-                        "The DUSTrack window is still open; see the launching "
-                        "terminal for the full traceback.",
-                    )
-                    return
+            if not result_state["done"]:
+                return
+
+            timer.stop()
+            # Flush any trailing partial line into the log so the user
+            # can read it.
+            if tick_state["line_buf"].strip():
+                overlay.append_log(tick_state["line_buf"].split("\r")[-1])
+
+            exc = result_state["exc"]
+            if exc is not None:
+                sys.__stderr__.write(f"{title} failed: {exc}\n")
+                overlay.mark_done(
+                    success=False,
+                    summary=f"{type(exc).__name__}: {exc}",
+                )
+                return
+
+            # work_fn succeeded -- run on_success (e.g. layer refresh)
+            # on the GUI thread BEFORE showing Done, so a follow-up
+            # error is surfaced in the overlay instead of after it
+            # dismisses.
+            value = result_state["value"]
+            if on_success is not None:
                 try:
-                    self._refresh_dlc_layers()
+                    on_success(value)
                 except Exception as e:  # noqa: BLE001
                     sys.__stderr__.write(
-                        f"DLC training succeeded but layer refresh failed: {e}\n"
+                        f"{title} succeeded but follow-up failed: {e}\n"
                     )
-                    QMessageBox.warning(
-                        qt_window,
-                        "Layer refresh failed",
-                        f"Training succeeded but DUSTrack couldn't load the new "
-                        f"layers in place:\n\n{type(e).__name__}: {e}\n\n"
-                        "You can relaunch DUSTrack via "
-                        "`tracker._dlcproject.annotate()` to see the predictions.",
+                    overlay.mark_done(
+                        success=False,
+                        summary=(
+                            f"Work succeeded, but follow-up step raised "
+                            f"{type(e).__name__}: {e}"
+                        ),
                     )
+                    return
+
+            overlay.mark_done(success=True, summary=success_summary)
 
         timer.timeout.connect(_drain_and_update)
         thread.start()
@@ -738,41 +953,113 @@ class DUSTrack(dnav.VideoPointAnnotator):
             return
 
         self.add_annotation_layers(new_layers)
-        new_dlc = [n for n in new_layers if n.startswith("dlc_")]
-        for name in new_dlc:
-            self.annotations[name].set_plot_type("line")
-        if new_dlc:
-            self.statevariables["annotation_overlay"].set_state(new_dlc[-1])
+        # Limit scope to newly-added layers so an in-place refresh that
+        # adds zero new dlc_ layers preserves whatever overlay the user
+        # had selected. On a fresh DUSTrack (DLCProject.annotate path),
+        # the same helper is called with scope=None so it operates on
+        # all current dlc_ layers.
+        self._normalize_dlc_layer_display(scope=new_layers.keys())
         if new_suffix in self.annotations.names:
             self.statevariables["annotation_layer"].set_state(new_suffix)
         self.update()
+
+    def _normalize_dlc_layer_display(self, scope=None):
+        """Apply the post-load display convention for DLC trace layers:
+        every ``dlc_*`` layer renders as a line plot, and the latest
+        ``dlc_*`` layer is set as the ``annotation_overlay``.
+
+        ``scope`` selects which layer names participate in the overlay
+        decision (the line-plot conversion is always applied to that
+        same scope -- ``set_plot_type`` is idempotent):
+
+        - ``None`` -- fresh-construction path: scope = all current
+          ``dlc_*`` layers in the session. Always (re-)points the
+          overlay if at least one exists.
+        - iterable of names -- in-place refresh path: scope = the
+          freshly-added layers only. If none of them are ``dlc_*``,
+          the overlay isn't touched (preserves prior selection).
+
+        Single source of truth shared by :meth:`DLCProject.annotate` and
+        :meth:`_refresh_dlc_layers` so the on-screen state is identical
+        regardless of how the user entered the session.
+        """
+        if scope is None:
+            dlc_names = [a.name for a in self.annotations if a.name.startswith("dlc_")]
+        else:
+            dlc_names = [n for n in scope if n.startswith("dlc_")]
+        for name in dlc_names:
+            self.annotations[name].set_plot_type("line")
+        if dlc_names:
+            self.statevariables["annotation_overlay"].set_state(dlc_names[-1])
     
-    def process_with_lk(self, event=None, *args, **kwargs) -> VideoAnnotation:
+    def process_with_lk(self, event=None, *args, **kwargs):
         """
         Apply Lucas-Kanade optical flow post-processing to reduce tracking jitter.
-        
-        This method uses the Lucas-Kanade RSTC (Reverse Sigmoid Tracking Correction)
-        algorithm to smooth trajectories. The processed annotation is saved and added
-        as a new layer, with the original set as overlay for comparison.
-        
+
+        rc2 (1.1.0rc2): on a Qt backend, the LK-RSTC pass runs off the
+        GUI thread under a progress overlay that mirrors the Train DLC
+        flow (tqdm bars drive the progress widget; phase label
+        reflects "Submitting" vs "Processing"; Done button lets the
+        user confirm before the smoothed layer swaps in). On non-Qt
+        backends the call runs synchronously and returns the new
+        :class:`VideoAnnotation`.
+
+        Uses the Lucas-Kanade RSTC (Reverse Sigmoid Tracking
+        Correction) algorithm to smooth trajectories. The processed
+        annotation is saved and added as a new layer, with the
+        original set as overlay for comparison.
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
             *args: Additional arguments passed to lk_moving_average_filter.
             **kwargs: Additional keyword arguments (e.g., window_size) passed to filter.
-        
+
         Returns:
-            VideoAnnotation: The smoothed annotation layer.
-        
+            VideoAnnotation: The smoothed annotation layer on the sync
+            path. ``None`` on the Qt async path -- the new layer is
+            added to ``self.annotations`` when the Done button is
+            clicked.
+
         See Also:
             dustrack.postprocess.lk_moving_average_filter: The filtering algorithm.
         """
-        ann_processed = lk_moving_average_filter(self.ann, *args, **kwargs)
-        ann_processed.save()
-        self.add_annotation_layers(ann_processed)
-        self.statevariables["annotation_overlay"].set_state(self.ann.name)
-        self.statevariables["annotation_layer"].set_state(ann_processed.name)
-        self.update()
-        return ann_processed
+        source_ann = self.ann
+
+        def _smooth():
+            ann_processed = lk_moving_average_filter(source_ann, *args, **kwargs)
+            ann_processed.save()
+            return ann_processed
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            ann_processed = _smooth()
+            self.add_annotation_layers(ann_processed)
+            self.statevariables["annotation_overlay"].set_state(source_ann.name)
+            self.statevariables["annotation_layer"].set_state(ann_processed.name)
+            self.update()
+            return ann_processed
+
+        def _on_success(ann_processed):
+            self.add_annotation_layers(ann_processed)
+            self.statevariables["annotation_overlay"].set_state(source_ann.name)
+            self.statevariables["annotation_layer"].set_state(ann_processed.name)
+            self.update()
+
+        self._run_with_overlay(
+            qt_window,
+            work_fn=_smooth,
+            on_success=_on_success,
+            title="Reducing jitter",
+            initial_phase="Preparing LK-RSTC pass",
+            hint=(
+                "Output is also streamed to the launching terminal. "
+                "The smoothed layer will load when you click Done."
+            ),
+            show_progress_bar=True,
+            phase_patterns=_JITTER_PHASES,
+            success_summary="Jitter reduction complete. Smoothed layer loaded.",
+        )
+        return None
     
     def copy_existing_annotations_from_overlay(self, event=None):
         """
@@ -1094,10 +1381,13 @@ class DLCProject:
             point1 - fascia
             point2 - bone
         """
-        map_file = os.path.join(self.paths['project'], 'dlc_trackermap.txt')
-        if os.path.exists(map_file):
-            with open(map_file, 'r', encoding='utf-8-sig') as f:
-                trackermap = [x.split(' - ') for x in f.read().splitlines() if x]
+        map_file = Path(self.paths['project']) / 'dlc_trackermap.txt'
+        # Path.read_text rather than builtin open() because the module
+        # defines a top-level `open` (the workflow entry point) that
+        # shadows builtins.open inside this module.
+        if map_file.is_file():
+            text = map_file.read_text(encoding='utf-8-sig')
+            trackermap = [x.split(' - ') for x in text.splitlines() if x]
             return {x[0]: x[1] for x in trackermap}
         else:
             return {}
@@ -1740,18 +2030,12 @@ class DLCProject:
         # stays at its `__init__` default of None and "Train DLC model"
         # raises "DLCProject not created."
         ret._dlcproject = self
-
-        # change dlc inference annotations to line plots
-        for ann in ret.annotations:
-            if 'dlc_' in ann.name:
-                ann.set_plot_type('line')
-
-        # set the overlay to the latest dlc inference annotations
-        ann_names = [x.name for x in ret.annotations if 'dlc_' in x.name]
-        if ann_names:
-            ret.statevariables['annotation_overlay'].set_state(ann_names[-1])
+        # Single helper drives the post-load display state for both
+        # the fresh-construction path (this method) and the in-place
+        # refresh path (DUSTrack._refresh_dlc_layers).
+        ret._normalize_dlc_layer_display()
         ret.update()
-        
+
         return ret
 
     def get_trajectories(self, videos=None, iteration=None):
@@ -1785,6 +2069,180 @@ class DLCProject:
     def open(self):
         """Open project folder in Windows Explorer."""
         os.system(f'explorer.exe "{str(Path(self.config_path).parent)}"')
+
+
+def _is_dlc_project_root(folder) -> bool:
+    """Cheap structural check for a DLC project folder.
+
+    DLC's ``create_new_project`` always lays down ``config.yaml`` next to
+    ``videos/`` and ``labeled-data/``; requiring all three avoids matching
+    a stray ``config.yaml`` that belongs to something else. No YAML
+    parsing -- pure filesystem.
+    """
+    f = Path(folder)
+    return (
+        (f / 'config.yaml').is_file()
+        and (f / 'videos').is_dir()
+        and (f / 'labeled-data').is_dir()
+    )
+
+
+def _find_dlc_config(path):
+    """Resolve ``path`` to the DLC ``config.yaml`` that contains it, or None.
+
+    Resolves four input shapes:
+
+    - ``config.yaml`` file -> that path (only if the sibling project structure exists)
+    - DLC project folder -> ``folder / 'config.yaml'``
+    - Any file inside a project (notably a video under ``videos/``) -> walks up
+      ancestors until a DLC-root is found
+    - Anything else (a bare video outside any project, a non-existent path) -> None
+
+    Returning None signals Phase 1 to :func:`open`. Note the walk-up stops
+    at the filesystem root; in practice DLC's layout means it terminates
+    after one step.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+
+    if p.is_file() and p.name.lower() == 'config.yaml':
+        return p if _is_dlc_project_root(p.parent) else None
+
+    if p.is_dir() and _is_dlc_project_root(p):
+        return p / 'config.yaml'
+
+    if p.is_file():
+        for ancestor in p.parents:
+            if _is_dlc_project_root(ancestor):
+                return ancestor / 'config.yaml'
+
+    return None
+
+
+def _find_video_index(project, video_path):
+    """Look up a video's index in ``project.video_list`` by filename stem.
+
+    Stem matching (rather than full-path equality) is robust to the
+    drive-letter / UNC / posix shuffling that :func:`rebase_to_config`
+    already handles inside ``DLCProject``. Returns None if the video
+    isn't part of the project.
+    """
+    target_stem = Path(video_path).stem
+    for i, name in enumerate(project.video_names):
+        if name == target_stem:
+            return i
+    return None
+
+
+def open(path, layer_name=None, **dustrack_kwargs):
+    """Open a DUSTrack annotation session; auto-resolves Phase 1 vs Phase 2 from ``path``.
+
+    The unified entry point for the DUSTrack workflow. Users hand it a
+    path and DUSTrack figures out whether they're starting fresh on a
+    standalone video or resuming inside a DLC project.
+
+    **Phase 1 -- bare video, no DLC project context.**
+        Equivalent to ``DUSTrack(path, layer_name, **kwargs)``. Works
+        without ``deeplabcut`` installed -- the GUI plus the LK-RSTC
+        post-processing run standalone, which is the "Option 1"
+        install path from the paper.
+
+    **Phase 2 -- DLC project context.**
+        Accepts a video inside a project's ``videos/`` folder, a
+        ``config.yaml``, or a project folder. Resolves the
+        :class:`DLCProject` and dispatches to :meth:`DLCProject.annotate`
+        so a fresh DUSTrack opens with all existing annotation layers,
+        DLC trace overlays, and a new iteration layer wired up.
+
+    The two-phase split mirrors DUSTrack's deliberate copy-on-project-
+    creation design: once a DLC project exists, the project folder is
+    the workspace and the original video becomes a frozen "rewind point"
+    (delete the folder to start over). ``open()`` honors that boundary
+    -- pointing at the original video gives you Phase 1, pointing at
+    the in-project copy gives you Phase 2.
+
+    Args:
+        path: Video file, ``config.yaml``, or DLC project folder.
+        layer_name: Annotation layer name. **Required** for Phase 1
+            (e.g. ``'manual'``). Optional for Phase 2; defaults to
+            ``iteration-{N+1}`` (next-iteration suffix) when omitted.
+        **dustrack_kwargs: Forwarded to the underlying :class:`DUSTrack`
+            constructor (``dark_mode``, ``fast_render``, ``clahe_clip``,
+            ``gamma``, ``brightness``, etc.).
+
+    Returns:
+        DUSTrack: Live annotation UI, ready to use.
+
+    Raises:
+        FileNotFoundError: If ``path`` doesn't exist.
+        ValueError: Phase 1 entry without ``layer_name``, or a
+            directory that isn't a DLC project.
+        ImportError: Phase 2 entry on a system without ``deeplabcut``
+            installed.
+
+    Examples:
+        Fresh annotation::
+
+            import dustrack
+            tracker = dustrack.open('video.mp4', 'manual')
+
+        Resume after closing the UI mid-workflow (any of these work)::
+
+            tracker = dustrack.open('S:/path/to/project/videos/video.mp4')
+            tracker = dustrack.open('S:/path/to/project/config.yaml')
+            tracker = dustrack.open('S:/path/to/project/')
+
+        With UI options::
+
+            tracker = dustrack.open('video.mp4', 'manual', dark_mode=True)
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"dustrack.open: path does not exist: {path}")
+
+    config_path = _find_dlc_config(p)
+
+    if config_path is None:
+        # Phase 1: no DLC project context.
+        if not p.is_file():
+            raise ValueError(
+                f"dustrack.open: {path!s} is a directory but doesn't look like "
+                "a DLC project (no config.yaml + videos/ + labeled-data/). "
+                "Pass a video file or a DLC project folder."
+            )
+        if layer_name is None:
+            raise ValueError(
+                "dustrack.open: layer_name is required when opening a video "
+                "outside a DLC project. Example: "
+                "dustrack.open('video.mp4', 'manual')."
+            )
+        return DUSTrack(str(p), layer_name, **dustrack_kwargs)
+
+    # Phase 2: project found.
+    if not HAS_DLC:
+        raise ImportError(
+            f"dustrack.open: detected a DLC project at {config_path.parent}, "
+            "but deeplabcut is not installed. Install deeplabcut to resume "
+            "the project, or point at a video outside the project to use "
+            "DUSTrack standalone."
+        )
+    project = DLCProject(str(config_path))
+
+    # If the caller pointed at a specific video inside the project,
+    # respect that; otherwise default to the first video (matches
+    # DLCProject.annotate's own default).
+    video_index = 0
+    if p.is_file():
+        match = _find_video_index(project, p)
+        if match is not None:
+            video_index = match
+
+    return project.annotate(
+        video_index=video_index,
+        new_annotation_suffix=layer_name,
+        **dustrack_kwargs,
+    )
 
 
 def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coords: list):
