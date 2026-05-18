@@ -105,6 +105,32 @@ itself.
   matchers (so the progress bar updates live during tqdm bars) but
   only appends `\n`-terminated lines to the visible log, so the
   log doesn't flood with partial redraws.
+- `dustrack/dlcinterface.py`: overlay worker captures and surfaces
+  the full traceback on failure. The traceback is pushed through
+  the teed sink so it lands in both the overlay log + the
+  launching terminal; the overlay summary line uses
+  `"{ExcType}: {str(exc)}"` so single-character `KeyError` / `IndexError`
+  arguments (e.g. `KeyError(0)`) read as `"KeyError: 0"` instead of
+  just `"0"`.
+- `dustrack/postprocess.py`: `lk_moving_average_filter` now filters
+  the input layer's labels to those with complete frame coverage
+  before entering the LK-RSTC loop. Sparse labels (e.g. a
+  freshly-clicked manual refinement point that exists at only one
+  frame) are skipped with a one-line `[reduce_jitter] layer={name}:
+  skipping N/M label(s)` warning that names the source layer and
+  the skipped labels with their per-label coverage. If *no* labels
+  have complete coverage the function raises a clear `ValueError`
+  naming the layer and listing per-label coverage instead of
+  crashing later with a useless `KeyError(0)` from the inner loop.
+  Pre-existing bug: the inner loop did
+  `[ann.data[label][start_frame] for label in label_list]`
+  unconditionally, so any sparse label made Reduce jitter fail
+  silently (when called from a button handler) or noisily
+  (when called from the new rc2 overlay).
+- `dustrack/dlcinterface.py`: **Reduce jitter** overlay title /
+  initial phase / success summary now name the source layer
+  (`"Reducing jitter (dlc_iteration-2_150)"`, etc.) so the user can
+  see at a glance which layer is being smoothed.
 - `dustrack/dlcinterface.py`: `_TRAINING_PHASES` joined by
   `_JITTER_PHASES` (matches tqdm `desc=` prefixes for the LK loop)
   and `_CREATE_PROJECT_PHASES` (matches DLC's create-project

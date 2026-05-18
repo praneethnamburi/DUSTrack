@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import threading
+import traceback
 import warnings
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from typing import Mapping, Union
@@ -778,7 +779,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         )
 
         log_queue: "queue.Queue[str]" = queue.Queue()
-        result_state: dict = {"exc": None, "done": False, "value": None}
+        result_state: dict = {"exc": None, "tb": "", "done": False, "value": None}
         phase_patterns = phase_patterns or []
 
         def _worker():
@@ -790,6 +791,17 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 result_state["value"] = work_fn()
             except BaseException as e:  # noqa: BLE001 (re-raised on GUI thread)
                 result_state["exc"] = e
+                # Capture the traceback now (on the worker thread) so
+                # the GUI thread doesn't have to walk a stale stack.
+                result_state["tb"] = traceback.format_exc()
+                # Push the traceback through the same teed sink so it
+                # lands in the overlay log + the launching terminal
+                # without us having to wire a second channel.
+                try:
+                    sys.stdout.write(result_state["tb"])
+                    sys.stdout.flush()
+                except Exception:
+                    pass
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
                 result_state["done"] = True
@@ -866,10 +878,17 @@ class DUSTrack(dnav.VideoPointAnnotator):
 
             exc = result_state["exc"]
             if exc is not None:
-                sys.__stderr__.write(f"{title} failed: {exc}\n")
+                # Stringified KeyError / IndexError / etc. is often just
+                # the offending key ("0"), which is useless on its own.
+                # Pair it with the type name + repr fallback so the
+                # summary is always self-describing; the traceback was
+                # already streamed into the overlay log on the worker
+                # side.
+                exc_str = str(exc) or repr(exc)
+                sys.__stderr__.write(f"{title} failed: {type(exc).__name__}: {exc_str}\n")
                 overlay.mark_done(
                     success=False,
-                    summary=f"{type(exc).__name__}: {exc}",
+                    summary=f"{type(exc).__name__}: {exc_str}",
                 )
                 return
 
@@ -1024,6 +1043,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
             dustrack.postprocess.lk_moving_average_filter: The filtering algorithm.
         """
         source_ann = self.ann
+        source_layer_name = source_ann.name
 
         def _smooth():
             ann_processed = lk_moving_average_filter(source_ann, *args, **kwargs)
@@ -1034,14 +1054,14 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if qt_window is None:
             ann_processed = _smooth()
             self.add_annotation_layers(ann_processed)
-            self.statevariables["annotation_overlay"].set_state(source_ann.name)
+            self.statevariables["annotation_overlay"].set_state(source_layer_name)
             self.statevariables["annotation_layer"].set_state(ann_processed.name)
             self.update()
             return ann_processed
 
         def _on_success(ann_processed):
             self.add_annotation_layers(ann_processed)
-            self.statevariables["annotation_overlay"].set_state(source_ann.name)
+            self.statevariables["annotation_overlay"].set_state(source_layer_name)
             self.statevariables["annotation_layer"].set_state(ann_processed.name)
             self.update()
 
@@ -1049,15 +1069,18 @@ class DUSTrack(dnav.VideoPointAnnotator):
             qt_window,
             work_fn=_smooth,
             on_success=_on_success,
-            title="Reducing jitter",
-            initial_phase="Preparing LK-RSTC pass",
+            title=f"Reducing jitter ({source_layer_name})",
+            initial_phase=f"Preparing LK-RSTC pass on layer {source_layer_name!r}",
             hint=(
                 "Output is also streamed to the launching terminal. "
                 "The smoothed layer will load when you click Done."
             ),
             show_progress_bar=True,
             phase_patterns=_JITTER_PHASES,
-            success_summary="Jitter reduction complete. Smoothed layer loaded.",
+            success_summary=(
+                f"Jitter reduction complete on layer {source_layer_name!r}. "
+                f"Smoothed layer loaded."
+            ),
         )
         return None
     

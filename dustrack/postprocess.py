@@ -345,8 +345,38 @@ def lk_moving_average_filter(
     suffix = f"lkmovavg_{window_size:.3f}"
     fname_rawlk = str(postprocess_path / f"{ann.fstem}_{suffix}.pkl")
 
-    label_list = ann.labels
+    layer_name = getattr(ann, "name", ann.fstem)
+    # Only smooth labels with data at every frame in the video. A
+    # freshly-clicked refinement label only has one frame's worth of
+    # data; iterating ``ann.data[label][start_frame]`` would KeyError
+    # at start_frame=0 (or anywhere else the label hasn't been
+    # populated). Skip + warn rather than crash; the user can still
+    # see the manual point in the source layer.
+    all_labels = ann.labels
     frame_list = list(range(ann.n_frames))
+    label_list = [
+        label for label in all_labels
+        if all(frame in ann.data[label] for frame in frame_list)
+    ]
+    skipped = [label for label in all_labels if label not in label_list]
+    if skipped:
+        skip_summary = ", ".join(
+            f"{label!r} ({len(ann.data[label])}/{ann.n_frames} frames)"
+            for label in skipped
+        )
+        print(
+            f"[reduce_jitter] layer={layer_name!r}: skipping "
+            f"{len(skipped)}/{len(all_labels)} label(s) with incomplete "
+            f"frame coverage: {skip_summary}"
+        )
+    if not label_list:
+        raise ValueError(
+            f"Layer {layer_name!r} has no labels with complete frame "
+            f"coverage ({ann.n_frames} frames). Nothing to smooth. "
+            f"Per-label coverage: " + ", ".join(
+                f"{label!r}={len(ann.data[label])}" for label in all_labels
+            )
+        )
     if not os.path.exists(fname_rawlk):
         video = ann.video
         n_window_frames = round(window_size * video.get_avg_fps())
