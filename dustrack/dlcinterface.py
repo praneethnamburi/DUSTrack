@@ -1734,7 +1734,13 @@ class DLCProject:
         # duplicate here. Callers can pass ``fast_render=False`` via
         # ``dustrack_kwargs`` to opt out.
         ret = DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1), **dustrack_kwargs)
-        
+        # Wire the DUSTrack back to this project so the Train / Reduce
+        # jitter buttons (and `_refresh_dlc_layers`) work on a
+        # re-entered session — without this the GUI's `_dlcproject`
+        # stays at its `__init__` default of None and "Train DLC model"
+        # raises "DLCProject not created."
+        ret._dlcproject = self
+
         # change dlc inference annotations to line plots
         for ann in ret.annotations:
             if 'dlc_' in ann.name:
