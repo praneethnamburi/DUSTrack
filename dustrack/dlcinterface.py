@@ -145,6 +145,12 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
             return im
 
         kwargs['image_process_func'] = image_processor
+        # DUSTrack defaults to datanavigator 1.5.0+ Tier 2 (Qt-native
+        # video pane, ~3x speedup on real videos). Override with
+        # ``DUSTrack(..., fast_render=False)`` only if a subclass needs
+        # matplotlib Axes on the image region (no in-tree subclass
+        # does today; this is forward-looking).
+        kwargs.setdefault('fast_render', True)
         super().__init__(*args, **kwargs)
 
         for ann in self.annotations:
@@ -188,8 +194,9 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         # Figure background
         self.figure.patch.set_facecolor(bg_color)
 
-        # Image axis
-        self._ax_image.set_facecolor(ax_color)
+        # Image axis (routes to either mpl set_facecolor (Tier 1) or
+        # the Qt image pane background brush (Tier 2 / fast_render)).
+        self.set_image_background_color(ax_color)
 
         # Trace axes
         for ax in [self._ax_trace_x, self._ax_trace_y]:
@@ -1263,22 +1270,27 @@ class DLCProject:
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
 
-    def annotate(self, video_index: int=0, new_annotation_suffix=None):
+    def annotate(self, video_index: int=0, new_annotation_suffix=None, **dustrack_kwargs):
         """
         Launch interactive annotation GUI for a video.
-        
+
         Opens DUSTrack interface with existing annotation layers loaded,
         including any DLC predictions as line plot overlays.
-        
+
         Args:
             video_index (int): Index of video in video_list. Defaults to 0.
                 Negative indices supported.
             new_annotation_suffix (str, optional): Suffix for new annotation layer.
                 Defaults to 'iteration-{N}' where N is the next iteration number.
-        
+            **dustrack_kwargs: Forwarded to the DUSTrack constructor. Notable
+                pass-through options: ``fast_render=True`` (datanavigator
+                1.5.0+ Tier 2 Qt-native video pane, ~3x speedup on the
+                interosseous_pn24-x benchmark), ``dark_mode=True``,
+                ``clahe_clip``, ``clahe_grid``, ``gamma``, ``brightness``.
+
         Returns:
             DUSTrack: Interactive annotation interface.
-        
+
         Note:
             Creates a 'buffer' layer for temporary annotations.
             Latest DLC predictions are automatically set as overlay.
@@ -1289,18 +1301,21 @@ class DLCProject:
         # print the video name, the base name of the video
         print(f"Video name: {Path(self.video_list[video_index]).stem}")
 
-        
+
         if new_annotation_suffix is None:
             if self.latest_iteration_is_trained():
                 new_iteration_num = self.latest_iteration + 1
             else:
                 new_iteration_num = self.latest_iteration
             new_annotation_suffix = f'iteration-{new_iteration_num}'
-        
+
         fm_annotations = VideoFileManager(self, video_index)
         annotation_names = fm_annotations.get_all_annotation_layers(new_annotation_suffix)
         annotation_names['buffer'] = fm_annotations.get_new_json('buffer')
-        ret = DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1))
+        # fast_render default is set by DUSTrack.__init__; no need to
+        # duplicate here. Callers can pass ``fast_render=False`` via
+        # ``dustrack_kwargs`` to opt out.
+        ret = DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1), **dustrack_kwargs)
         
         # change dlc inference annotations to line plots
         for ann in ret.annotations:
