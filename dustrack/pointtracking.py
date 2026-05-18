@@ -381,6 +381,23 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
 
+        if self._fast_render:
+            # Overwrite the inherited 'r' binding (GenericBrowser.reset_axes)
+            # so a single keystroke resets BOTH the trace axes AND the
+            # Tier-2 image-pane zoom/pan, matching the pre-1.5.0
+            # matplotlib UX where 'r' was the catch-all "give me my view
+            # back" key. Tier 1 keeps the inherited binding (no image
+            # zoom to reset).
+            self.add_key_binding(
+                "r", self._reset_view_all, "Reset image zoom + trace axes"
+            )
+
+    def _reset_view_all(self, event: Any | None = None) -> None:
+        """Reset both the Qt image pane (zoom/pan -> fit) and the
+        matplotlib trace axes (`reset_axes("both")`)."""
+        self._image_pane.reset_view()
+        self.reset_axes(axis="both", event=event)
+
     def add_events(self) -> None:
         """Add an event to specify time intervals for interpolating with lucas-kanade."""
         event_name = "interp_with_lk"
