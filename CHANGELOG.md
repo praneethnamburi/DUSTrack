@@ -146,6 +146,14 @@ itself.
   the Phase 1 / Phase 2 happy paths require the GUI / a real DLC
   project and stay on manual / integration testing.
 
+### Fixed
+- Ctrl+C (Copy to clipboard) on the DUSTrack figure window now
+  copies the entire window — sidebar + image pane + trace canvas —
+  instead of only the matplotlib portion. Fix lives in
+  datanavigator 1.4.0rc2's `GenericBrowser.copy_to_clipboard`
+  (switched to `QMainWindow.grab()` from `figure.savefig`); DUSTrack
+  picks it up by version pin.
+
 ### Notes
 - Programmatic callers that need the return value
   (`tracker.process_with_lk()` in a notebook,
