@@ -381,7 +381,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # if an event is specified, nudge data only in the selected interval
         for frame_num in self.ann.frames:
             if event_start <= frame_num <= event_end:
-                self.ann.data[current_label][frame_num] = overlay_ann.data[current_label][frame_num]
+                self.ann.add(overlay_ann.data[current_label][frame_num], current_label, frame_num)
         self.update()
     
     def update(self):
