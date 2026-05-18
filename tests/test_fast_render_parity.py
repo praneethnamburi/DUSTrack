@@ -212,6 +212,61 @@ def test_tier2_pick_adapter_hit_test_selects_nearest_marker():
 
 
 @pytest.mark.skipif(not _qt_available(), reason="No Qt binding available")
+def test_tier2_resize_refits_until_user_adjusts():
+    """resizeEvent re-fits the scene on window resize, but stops once
+    the user has wheel-zoomed or pan-dragged. Regression: 1.4.0rc1 gated
+    re-fit on ``transform().isIdentity()``, which is False after the
+    first auto-fit -- so resize never re-fit anything in practice.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    from datanavigator._qt import _make_qt_image_pane_class
+
+    app = QApplication.instance() or QApplication([])
+
+    pane = _make_qt_image_pane_class()()
+    pane.set_image(np.zeros((256, 256, 3), dtype=np.uint8))
+    pane.show()
+    pane.resize(400, 400)
+    app.processEvents()
+    app.processEvents()
+    small_scale = pane._view.transform().m11()
+    assert small_scale > 0, "expected a real fit transform after show+resize"
+
+    # Resize larger; the view should re-fit so the scale grows.
+    pane.resize(800, 800)
+    app.processEvents()
+    big_scale = pane._view.transform().m11()
+    assert big_scale > small_scale * 1.5, (
+        f"expected auto-re-fit on resize: scale stuck at {big_scale} "
+        f"(was {small_scale} at the smaller viewport)"
+    )
+
+    # Simulate user zoom (e.g. mouse wheel) -- set the flag the view
+    # would set itself, then resize. The view should now hold its zoom.
+    pane._view.user_adjusted = True
+    held_scale = pane._view.transform().m11()
+    pane.resize(400, 400)
+    app.processEvents()
+    after_resize_scale = pane._view.transform().m11()
+    assert after_resize_scale == held_scale, (
+        f"expected user-adjusted view to be preserved on resize: "
+        f"{held_scale} -> {after_resize_scale}"
+    )
+
+    # reset_view clears the flag and re-fits to the current viewport.
+    pane.reset_view()
+    app.processEvents()
+    assert pane._view.user_adjusted is False
+    assert pane._view.transform().m11() != held_scale, (
+        "reset_view should re-fit to the current viewport, not keep "
+        "the user-adjusted scale"
+    )
+
+    pane.hide()
+
+
+@pytest.mark.skipif(not _qt_available(), reason="No Qt binding available")
 def test_tier2_pick_adapter_misses_outside_radius():
     """A click far from any marker fires button_press but not pick."""
     from qtpy.QtCore import QEvent, QPoint, Qt
