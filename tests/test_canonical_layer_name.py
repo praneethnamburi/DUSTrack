@@ -64,7 +64,7 @@ class TestDLCTraceNames:
         assert canonical(fname) == "dlc_iteration-1_250000"
 
     def test_lkmovavg_on_dlc_source(self):
-        # The motivating bug: pre-rc3 this layer was named "noname" in-session
+        # The motivating bug: pre-fix this layer was named "noname" in-session
         # but "dlc_iteration-2_0.500" on reload. The canonical name is the
         # reload-shaped one.
         fname = (

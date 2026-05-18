@@ -1088,11 +1088,11 @@ class DUSTrack(dnav.VideoPointAnnotator):
         annotation is saved and added as a new layer, with the
         original set as overlay for comparison.
 
-        rc3 (1.1.0rc3): the new layer is adopted via
+        rc2 layer-naming harmonisation: the new layer is adopted via
         :meth:`_adopt_layer`, which derives its name from the output
         filepath via :meth:`VideoFileManager.canonical_layer_name` --
         identical to what a close + reopen would show. Replaces the
-        pre-rc3 behaviour where the in-session layer briefly carried
+        earlier behaviour where the in-session layer briefly carried
         the ``"noname"`` fallback until reload. When the source layer
         is a DLC trace, the smoothed output is also plot-type-normalised
         to ``"line"`` so it looks identical to other ``dlc_*`` layers.
