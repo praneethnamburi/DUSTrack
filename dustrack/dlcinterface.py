@@ -6,8 +6,11 @@ from __future__ import annotations
 import fnmatch
 import functools
 import os
+import queue
 import re
 import shutil
+import sys
+import threading
 import warnings
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from typing import Mapping, Union
@@ -87,11 +90,228 @@ class VideoAnnotation(dnav.VideoAnnotation):
 
     This subclass extends dnav.VideoAnnotation by adding the Lucas-Kanade
     moving average filter as a default post-processing method for smoothing trajectories.
-    
+
     Attributes:
         postprocess: Function reference to lk_moving_average_filter for jitter reduction.
     """
     postprocess = lk_moving_average_filter
+
+
+# Phase / progress detection on DLC's stdout. We don't depend on any
+# single DLC version's exact format -- if nothing matches, the overlay
+# stays in indeterminate-busy mode and the status label shows the last
+# recognised phase. Patterns ordered most-specific first.
+_TRAINING_PHASES = [
+    (re.compile(r"extract_frames|extracting frame", re.IGNORECASE), "Extracting frames"),
+    (re.compile(r"create_training_dataset|creating training", re.IGNORECASE), "Creating training dataset"),
+    (re.compile(r"initialize.*weights|loading.*snapshot", re.IGNORECASE), "Initializing weights"),
+    (re.compile(r"started training|train_network|begin training", re.IGNORECASE), "Training network"),
+    (re.compile(r"evaluate_network|evaluating", re.IGNORECASE), "Evaluating snapshots"),
+    (re.compile(r"analyze_videos|analyzing video", re.IGNORECASE), "Analyzing videos"),
+    (re.compile(r"create_labeled_video|labeled video", re.IGNORECASE), "Creating labeled video"),
+]
+_PROGRESS_PATTERNS = [
+    re.compile(r"[Ee]poch\s+(\d+)\s*/\s*(\d+)"),
+    re.compile(r"iteration[:\s=]+(\d+)\s*/\s*(\d+)", re.IGNORECASE),
+    re.compile(r"\b(\d+)\s*/\s*(\d+)\s*\[", re.IGNORECASE),  # tqdm-style "  3/100 ["
+]
+
+
+class _Tee:
+    """Fan-out writer: forwards every write+flush to multiple sinks.
+
+    Used to route DLC's stdout/stderr during training to (1)
+    ``sys.__stdout__`` so the user sees output in the launching terminal
+    even when the button-click handler is running inside the Qt event
+    loop, and (2) a thread-safe queue drained by the GUI to update the
+    in-app overlay log.
+
+    Why ``sys.__stdout__`` rather than the current ``sys.stdout``: in
+    some launch contexts (IPython, certain IDE consoles) ``sys.stdout``
+    is a buffered proxy that delays flushes until the event loop yields;
+    ``sys.__stdout__`` is the original file descriptor and prints
+    immediately.
+    """
+
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, s):
+        for st in self._streams:
+            try:
+                st.write(s)
+                st.flush()
+            except Exception:
+                pass
+        return len(s) if isinstance(s, str) else 0
+
+    def flush(self):
+        for st in self._streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+
+class _QueueWriter:
+    """File-like sink that pushes each write into a queue (non-blocking)."""
+
+    def __init__(self, q: queue.Queue):
+        self._q = q
+
+    def write(self, s):
+        if s:
+            self._q.put(s)
+        return len(s) if isinstance(s, str) else 0
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
+def _make_training_overlay_class():
+    """Build :class:`TrainingOverlay` lazily so importing ``dustrack``
+    never touches qtpy (and therefore never fails on a no-Qt-binding
+    machine). Mirrors :func:`datanavigator._qt._make_qt_text_overlay_class`.
+    """
+    from qtpy.QtCore import QEvent, QObject, Qt
+    from qtpy.QtWidgets import (
+        QFrame,
+        QLabel,
+        QPlainTextEdit,
+        QProgressBar,
+        QVBoxLayout,
+    )
+
+    class TrainingOverlay(QObject):
+        """Semi-transparent modal-feeling overlay parented to the DUSTrack
+        QMainWindow. Shows a title, phase / status line, a progress bar
+        (indeterminate until we parse a known progress format), and a
+        scrolling tail of training stdout.
+
+        The overlay is a child ``QFrame`` of the main window, sized to
+        cover it, and re-positioned on resize via an event filter. The
+        ``QFrame`` itself accepts focus and swallows mouse events,
+        preventing clicks from reaching the underlying buttons / canvas
+        without us having to disable them individually.
+        """
+
+        def __init__(self, main_window):
+            super().__init__(main_window)
+            self._mw = main_window
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_training_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_training_overlay { background-color: rgba(0, 0, 0, 200); }"
+                "QLabel { color: white; }"
+                "QPlainTextEdit { "
+                "  background-color: rgba(0, 0, 0, 220); "
+                "  color: #cccccc; "
+                "  font-family: 'Consolas', 'Courier New', monospace; "
+                "  font-size: 10pt; "
+                "  border: 1px solid #555555; "
+                "}"
+                "QProgressBar { "
+                "  border: 1px solid #888888; background-color: #1a1a1a; "
+                "  color: white; text-align: center; height: 18px; "
+                "}"
+                "QProgressBar::chunk { background-color: #3a86ff; }"
+            )
+            # Accept mouse events so they don't fall through to widgets
+            # beneath. focus-policy keeps clicks from changing focus.
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            layout = QVBoxLayout(self._frame)
+            layout.setAlignment(Qt.AlignCenter)
+            layout.addStretch(1)
+
+            self._title = QLabel("Training in progress")
+            self._title.setAlignment(Qt.AlignCenter)
+            self._title.setStyleSheet("font-size: 22pt; font-weight: bold;")
+            layout.addWidget(self._title)
+
+            self._phase = QLabel("Starting up")
+            self._phase.setAlignment(Qt.AlignCenter)
+            self._phase.setStyleSheet("font-size: 12pt;")
+            layout.addWidget(self._phase)
+
+            self._progress = QProgressBar()
+            self._progress.setRange(0, 0)  # indeterminate (busy) until we parse
+            self._progress.setFixedWidth(480)
+            self._progress.setAlignment(Qt.AlignCenter)
+            # Center the progress bar horizontally
+            self._progress.setSizePolicy(self._progress.sizePolicy())
+            row = QVBoxLayout()
+            row.setAlignment(Qt.AlignCenter)
+            row.addWidget(self._progress, alignment=Qt.AlignCenter)
+            layout.addLayout(row)
+
+            self._log = QPlainTextEdit()
+            self._log.setReadOnly(True)
+            self._log.setMaximumBlockCount(400)
+            self._log.setFixedWidth(720)
+            self._log.setFixedHeight(220)
+            layout.addWidget(self._log, alignment=Qt.AlignCenter)
+
+            self._hint = QLabel(
+                "Output is also streamed to the launching terminal. "
+                "This window will refresh with DLC predictions when training completes."
+            )
+            self._hint.setAlignment(Qt.AlignCenter)
+            self._hint.setStyleSheet("color: #aaaaaa; font-size: 9pt;")
+            layout.addWidget(self._hint)
+
+            layout.addStretch(1)
+
+            main_window.installEventFilter(self)
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._frame.setFocus()
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def append_log(self, line: str):
+            line = line.rstrip("\r\n")
+            if line:
+                self._log.appendPlainText(line)
+
+        def set_phase(self, text: str):
+            self._phase.setText(text)
+
+        def set_progress(self, current: int, total: int):
+            if total > 0:
+                if self._progress.maximum() == 0:
+                    self._progress.setRange(0, total)
+                elif self._progress.maximum() != total:
+                    self._progress.setRange(0, total)
+                self._progress.setValue(min(current, total))
+                self._progress.setFormat(f"{current} / {total} (%p%)")
+
+        def dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+    return TrainingOverlay
+
 
 class DUSTrack(dnav.VideoPointAnnotator):
     """
@@ -298,30 +518,193 @@ class DUSTrack(dnav.VideoPointAnnotator):
     
     def process_dlc_project(self, event=None, *args, **kwargs):
         """
-        Train the DeepLabCut model and return to annotation GUI.
-        
-        This method closes the current figure, trains the DLC model, evaluates it,
-        analyzes videos, and reopens the annotation interface with DLC predictions
-        as an overlay layer.
-        
+        Train the DeepLabCut model without leaving the annotation UI.
+
+        rc2 (1.1.0rc2): training runs off the GUI thread, the DUSTrack
+        window stays open under a "Training in progress" overlay
+        (progress bar + scrolling stdout tail), and on success the new
+        DLC prediction layers are added to the live session via
+        :meth:`add_annotation_layers` -- no relaunch.
+
+        DLC's stdout/stderr are also teed to the launching terminal
+        (``sys.__stdout__``) so callers who launched from a shell can
+        watch progress there as before.
+
+        On non-Qt backends (or if the QMainWindow can't be located), the
+        method falls back to the pre-rc2 behavior: close the figure,
+        run training synchronously on the calling thread, and return a
+        fresh DUSTrack via :meth:`DLCProject.annotate`.
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
-            *args: Additional arguments passed to DLCProject.process().
-            **kwargs: Additional keyword arguments passed to DLCProject.process().
-        
+            *args: Additional positional arguments forwarded to
+                :meth:`DLCProject.process`.
+            **kwargs: Additional keyword arguments forwarded to
+                :meth:`DLCProject.process`.
+
         Returns:
-            DUSTrack: New annotation interface with DLC predictions loaded.
-        
+            DUSTrack: ``self`` on the Qt path (training is asynchronous;
+            the same DUSTrack will refresh in place when training
+            finishes). On the fallback path, the freshly-launched
+            DUSTrack from :meth:`DLCProject.annotate`.
+
         Raises:
+            ImportError: If ``deeplabcut`` isn't installed.
             ValueError: If no DLCProject has been created yet.
         """
         if not HAS_DLC:
             raise ImportError('deeplabcut is not installed. Cannot process DLC project.')
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
-        plt.close(self.figure)
-        self._dlcproject.process(*args, **kwargs)
-        return self._dlcproject.annotate()
+
+        # Try to find the QMainWindow hosting our figure. If unavailable,
+        # fall back to the legacy synchronous path.
+        qt_window = None
+        try:
+            from datanavigator._qt import find_qt_window
+            qt_window = find_qt_window(self.figure)
+        except Exception:
+            qt_window = None
+
+        if qt_window is None:
+            plt.close(self.figure)
+            self._dlcproject.process(*args, **kwargs)
+            return self._dlcproject.annotate()
+
+        self._run_training_async(qt_window, *args, **kwargs)
+        return self
+
+    def _run_training_async(self, qt_window, *args, **kwargs):
+        """Drive ``self._dlcproject.process`` on a worker thread under a
+        training overlay; refresh layers in place on success.
+
+        Split out of :meth:`process_dlc_project` to keep the button
+        handler small and to make the orchestration easier to test
+        (the thread + QTimer plumbing is the bit that's hard to unit
+        test, but a future test can call this directly with a mocked
+        ``_dlcproject``).
+        """
+        from qtpy.QtCore import QTimer
+        from qtpy.QtWidgets import QMessageBox
+
+        TrainingOverlay = _make_training_overlay_class()
+        overlay = TrainingOverlay(qt_window)
+
+        log_queue: "queue.Queue[str]" = queue.Queue()
+        result_state = {"exc": None, "done": False}
+
+        def _worker():
+            sink = _Tee(sys.__stdout__, _QueueWriter(log_queue))
+            old_out, old_err = sys.stdout, sys.stderr
+            sys.stdout = sink
+            sys.stderr = sink
+            try:
+                self._dlcproject.process(*args, **kwargs)
+            except BaseException as e:  # noqa: BLE001 (re-raised on GUI thread)
+                result_state["exc"] = e
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+                result_state["done"] = True
+
+        thread = threading.Thread(
+            target=_worker, name="dustrack-dlc-training", daemon=True,
+        )
+
+        timer = QTimer(qt_window)
+        timer.setInterval(200)
+
+        # Per-tick state lives in a dict so the inner closure can mutate
+        # without nonlocal gymnastics.
+        tick_state = {"line_buf": ""}
+
+        def _drain_and_update():
+            # Pull everything currently in the queue into a single
+            # string, then split into lines (keeping a remainder for
+            # partial lines split across writes).
+            chunks = []
+            try:
+                while True:
+                    chunks.append(log_queue.get_nowait())
+            except queue.Empty:
+                pass
+            if chunks:
+                tick_state["line_buf"] += "".join(chunks)
+                *lines, tick_state["line_buf"] = tick_state["line_buf"].split("\n")
+                for line in lines:
+                    overlay.append_log(line)
+                    for pat, label in _TRAINING_PHASES:
+                        if pat.search(line):
+                            overlay.set_phase(label)
+                            break
+                    for pat in _PROGRESS_PATTERNS:
+                        m = pat.search(line)
+                        if m:
+                            cur, tot = int(m.group(1)), int(m.group(2))
+                            if tot > 0 and cur <= tot:
+                                overlay.set_progress(cur, tot)
+                            break
+
+            if result_state["done"]:
+                timer.stop()
+                # Flush any trailing partial line
+                if tick_state["line_buf"].strip():
+                    overlay.append_log(tick_state["line_buf"])
+                overlay.dismiss()
+                if result_state["exc"] is not None:
+                    exc = result_state["exc"]
+                    sys.__stderr__.write(f"DLC training failed: {exc}\n")
+                    QMessageBox.critical(
+                        qt_window,
+                        "DLC training failed",
+                        f"{type(exc).__name__}: {exc}\n\n"
+                        "The DUSTrack window is still open; see the launching "
+                        "terminal for the full traceback.",
+                    )
+                    return
+                try:
+                    self._refresh_dlc_layers()
+                except Exception as e:  # noqa: BLE001
+                    sys.__stderr__.write(
+                        f"DLC training succeeded but layer refresh failed: {e}\n"
+                    )
+                    QMessageBox.warning(
+                        qt_window,
+                        "Layer refresh failed",
+                        f"Training succeeded but DUSTrack couldn't load the new "
+                        f"layers in place:\n\n{type(e).__name__}: {e}\n\n"
+                        "You can relaunch DUSTrack via "
+                        "`tracker._dlcproject.annotate()` to see the predictions.",
+                    )
+
+        timer.timeout.connect(_drain_and_update)
+        thread.start()
+        timer.start()
+
+    def _refresh_dlc_layers(self, video_index: int = 0):
+        """Load any annotation files produced by DLC training into the
+        live DUSTrack session, set newly-added ``dlc_*`` layers to a
+        line plot, and point the overlay statevar at the freshest one.
+
+        Mirrors the loading logic in :meth:`DLCProject.annotate` but
+        operates on the existing ``self`` rather than spawning a new
+        DUSTrack window. Idempotent: layers already present in
+        ``self.annotations`` are skipped.
+        """
+        fm = VideoFileManager(self._dlcproject, video_index)
+        all_layers = fm.get_all_annotation_layers()
+        existing = set(self.annotations.names)
+        new_layers = {
+            name: path for name, path in all_layers.items() if name not in existing
+        }
+        if not new_layers:
+            return
+        self.add_annotation_layers(new_layers)
+        new_dlc = [n for n in new_layers if n.startswith("dlc_")]
+        for name in new_dlc:
+            self.annotations[name].set_plot_type("line")
+        if new_dlc:
+            self.statevariables["annotation_overlay"].set_state(new_dlc[-1])
+        self.update()
     
     def process_with_lk(self, event=None, *args, **kwargs) -> VideoAnnotation:
         """
@@ -1216,7 +1599,11 @@ class DLCProject:
 
         if maxiters is None:
             if DLC3:
-                maxiters = 1000 # epochs
+                # TEMPORARY: dropped from 1000 → 50 to speed up the
+                # datanavigator/DUSTrack test-bed iteration loop
+                # (S:\_corpus\dustrack\). REVERT to 1000 before 1.1.0rc2
+                # ships.
+                maxiters = 50 # epochs
             else:
                 maxiters = 500000
 

@@ -1,6 +1,47 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.1.0rc2] - 2026-05-18 (unreleased)
+
+Second release candidate for the smoother-interaction band. rc1 was
+backend-perf-oriented (datanavigator 1.4.0rc1 cache + revision-counter
+fixes); rc2 turns to the user-facing rough edges, starting with the
+DLC training round-trip.
+
+### Changed
+- `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project` no longer
+  closes the figure and re-opens it after training. On a Qt backend
+  (the default for `DUSTrack(..., fast_render=True)`, which is the
+  default), training now runs on a background thread under a modal
+  "Training in progress" overlay parented to the QMainWindow. The
+  overlay shows the current pipeline phase (extract / train / evaluate
+  / analyze / labeled-video), a progress bar driven by parsed
+  `Epoch X/Y` and iteration markers in DLC's stdout, and a scrolling
+  tail of the last few hundred log lines. On successful completion,
+  the overlay dismisses and the newly-produced DLC trace layers are
+  added to the live DUSTrack via `add_annotation_layers` -- no
+  relaunch -- with the freshest `dlc_*` layer set as the annotation
+  overlay and drawn as a line plot. The pre-rc2 close-and-reopen path
+  is retained as the fallback when no QMainWindow can be located
+  (non-Qt backend, headless run, etc.).
+- `dustrack/dlcinterface.py`: DLC's stdout/stderr during training are
+  now teed to `sys.__stdout__` (the original terminal file descriptor)
+  rather than the possibly-wrapped `sys.stdout`, so launching from a
+  shell now reliably shows training progress in the terminal even when
+  the call is initiated from the GUI button handler. Output also feeds
+  the in-app overlay log in real time.
+
+### Added
+- `dustrack/dlcinterface.py`: `DUSTrack._refresh_dlc_layers(video_index=0)`
+  helper -- factors the "load trained outputs from disk into the live
+  session" step out of `DLCProject.annotate`. Idempotent; safe to call
+  more than once.
+- `dustrack/dlcinterface.py`: module-level `_Tee`, `_QueueWriter`, and
+  lazily-built `_make_training_overlay_class()` -- the plumbing for the
+  off-thread training run + overlay. The Qt class builder mirrors
+  datanavigator's `_make_qt_text_overlay_class` pattern so importing
+  dustrack on a no-Qt-binding machine doesn't touch qtpy.
+
 ## [1.0.0] - 2026-05-17
 
 Audit-and-polish release. No public API changes. Drops the alpha tag,
