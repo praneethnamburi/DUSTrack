@@ -572,6 +572,47 @@ def test_video_annotation_remove(ann_object):
         ann_object.remove("nonexistent", 0)
 
 
+def test_video_annotation_revision_bumps_on_mutation(video_fname):
+    """``_revision`` must bump on every operation that changes data.
+
+    VideoPointAnnotator.update_frame_marker /
+    VideoAnnotation.update_display_trace key per-frame caches on this
+    counter; an under-counted mutation would cause the cache to serve
+    stale arrays. Test each public mutation method explicitly.
+    """
+    ann = datanavigator.VideoAnnotation(vname=video_fname)
+    ann.add_label("0")
+    ann.add_label("1")
+    base = ann._revision
+
+    ann.add(location=[10.0, 20.0], label="0", frame_number=5)
+    assert ann._revision > base, "add() must bump _revision"
+    r1 = ann._revision
+
+    ann.remove(label="0", frame_number=5)
+    assert ann._revision > r1, "remove() must bump _revision"
+    r2 = ann._revision
+
+    ann.add(location=[1.0, 1.0], label="0", frame_number=1)
+    ann.add(location=[1.0, 1.0], label="1", frame_number=1)
+    r3 = ann._revision
+
+    ann.sort_labels()
+    assert ann._revision > r3, "sort_labels() must bump _revision"
+    r4 = ann._revision
+
+    ann.sort_data()
+    assert ann._revision > r4, "sort_data() must bump _revision"
+    r5 = ann._revision
+
+    ann.add_at_frame(2, np.full((ann.n_annotations, 2), 3.0))
+    assert ann._revision > r5, "add_at_frame() must bump _revision"
+    r6 = ann._revision
+
+    ann.clip_labels(start_frame=0, end_frame=10)
+    assert ann._revision > r6, "clip_labels() must bump _revision"
+
+
 def test_video_annotation_clip_labels(ann_object_overlapping):
     # Original frames: [5, 6, 7, 8, 9]
     ann_object_overlapping.clip_labels(start_frame=6, end_frame=8)

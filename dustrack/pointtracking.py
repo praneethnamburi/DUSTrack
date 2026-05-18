@@ -416,7 +416,15 @@ class VideoPointAnnotator(VideoBrowser):
                 ann.hide(draw=draw)
 
     def update_frame_marker(self, draw: bool = False) -> None:
-        """Update the current frame location in the trace plots."""
+        """Update the current frame location in the trace plots.
+
+        The trace ylim / FOI tick positions are a pure function of the
+        active label + per-annotation contents + frames_of_interest, none
+        of which change when only ``_current_idx`` moves. Cache them
+        keyed on a cheap tuple of (label, annotation revisions,
+        frames_of_interest) so per-frame navigation only does the
+        frame-marker set_data calls.
+        """
 
         def nanlim(x, default):
             if np.all(np.isnan(x)):
@@ -432,26 +440,38 @@ class VideoPointAnnotator(VideoBrowser):
             m = (nmin + nmax) / 2
             return [(nmin - m) * scale + m, (nmax - m) * scale + m]
 
-        trace_data_x, trace_data_y = np.hstack(
-            [ann.to_trace(self._current_label).T for ann in self.annotations._list]
+        cache_key = (
+            self._current_label,
+            tuple(ann._revision for ann in self.annotations._list),
+            tuple(self.frames_of_interest),
         )
+        cached = getattr(self, "_frame_marker_cache", None)
+        if cached is None or cached[0] != cache_key:
+            trace_data_x, trace_data_y = np.hstack(
+                [ann.to_trace(self._current_label).T for ann in self.annotations._list]
+            )
 
-        default_x, default_y = self._ax_trace_x.get_ylim(), self._ax_trace_y.get_ylim()
-        xl, yl = nanlim(trace_data_x, default_x), nanlim(trace_data_y, default_y)
-        xls, yls = nanlim_small(trace_data_x, default_x), nanlim_small(trace_data_y, default_y)
+            default_x, default_y = self._ax_trace_x.get_ylim(), self._ax_trace_y.get_ylim()
+            xl, yl = nanlim(trace_data_x, default_x), nanlim(trace_data_y, default_y)
+            xls, yls = nanlim_small(trace_data_x, default_x), nanlim_small(trace_data_y, default_y)
+
+            self._plot_frames_of_interest_x.set_data(
+                *utils.ticks_from_times(self.frames_of_interest, xl)
+            )
+            self._plot_frames_of_interest_y.set_data(
+                *utils.ticks_from_times(self.frames_of_interest, yl)
+            )
+            if not np.any(np.isnan(xl)):
+                self._ax_trace_x.set_ylim(xl)
+                self._ax_trace_y.set_ylim(yl)
+
+            self._frame_marker_cache = (cache_key, xls, yls)
+        else:
+            _, xls, yls = cached
 
         self._frame_marker_x.set_data([self._current_idx] * 2, xls)
         self._frame_marker_y.set_data([self._current_idx] * 2, yls)
 
-        self._plot_frames_of_interest_x.set_data(
-            *utils.ticks_from_times(self.frames_of_interest, xl)
-        )
-        self._plot_frames_of_interest_y.set_data(
-            *utils.ticks_from_times(self.frames_of_interest, yl)
-        )
-        if not np.any(np.isnan(xl)):
-            self._ax_trace_x.set_ylim(xl)
-            self._ax_trace_y.set_ylim(yl)
         if draw:
             plt.draw()
 
@@ -981,6 +1001,12 @@ class VideoAnnotation:
             "ax_list_trace_y": kwargs.pop("ax_list_trace_y", []),
         }
         self._plot_type = "dot" # line or dot
+        # Bumped on every mutation of self.data. Consumers (e.g.
+        # VideoPointAnnotator.update_frame_marker) read this to invalidate
+        # caches keyed on per-label trace contents. Over-invalidates on
+        # ordering-only changes (sort_labels / sort_data); under-invalidates
+        # would be a correctness bug.
+        self._revision = 0
         self.setup_display()
 
     @classmethod
@@ -1269,13 +1295,15 @@ class VideoAnnotation:
     def sort_labels(self) -> None:
         """Sort labels in the data dictionary."""
         self.data = dict(sorted(self.data.items(), key=lambda item: int(item[0])))
+        self._revision += 1
 
     def sort_data(self) -> None:
         """Sort annotations by the frame numbers."""
         self.data = {
             label: dict(sorted(self.data[label].items())) for label in self.labels
         }
-    
+        self._revision += 1
+
     def clip_trailing_empty_labels(self) -> None:
         """Remove trailing empty labels from the annotation dictionary."""
         n_labeled_frames = [len(self.data[label]) for label in self.labels]
@@ -1285,14 +1313,16 @@ class VideoAnnotation:
                 if lst[i] != 0:
                     return i
             return 0  # or raise an exception if needed
-        
+
         last_index = last_nonzero_index(n_labeled_frames)
 
         self.data = {label: self.data[label] for idx, label in enumerate(self.labels) if idx <= last_index}
-    
+        self._revision += 1
+
     def remove_empty_labels(self) -> None:
         """Remove empty labels from the annotation dictionary."""
         self.data = {label: self.data[label] for label in self.labels if len(self.data[label]) > 0}
+        self._revision += 1
 
     def get_values_cv(self, frame_num: int) -> np.ndarray:
         """Return annotations at frame_num in a format for openCV's optical flow algorithms"""
@@ -1317,6 +1347,7 @@ class VideoAnnotation:
         assert values.shape == (self.n_annotations, 2)
         for label, value in zip(self.labels, values):
             self.data[label][frame_num] = list(value)
+        self._revision += 1
 
     def get_at_frame(self, frame_num: int) -> list[list[float]]:
         """Retrieve annotations at a given frame number. If an annotation is not present, nan values will be used."""
@@ -1496,7 +1527,7 @@ class VideoAnnotation:
         assert all([0 <= x <= 1 for x in color])
 
         self.data[label] = {}
-        self.sort_labels()
+        self.sort_labels()  # bumps _revision
 
         self.re_setup_display()
 
@@ -1506,11 +1537,13 @@ class VideoAnnotation:
         """Add a point annotation (location) of a given label at a frame number."""
         assert len(location) == 2
         self.data[label][frame_number] = list(location)
+        self._revision += 1
 
     def remove(self, label: str, frame_number: int) -> None:
         """Remove a point annotation of a given label at a frame number."""
         assert label in self.labels
         self.data[label].pop(frame_number, None)
+        self._revision += 1
 
     # display management
     def _process_ax_list(
@@ -1603,6 +1636,10 @@ class VideoAnnotation:
             ax_list_trace_x=self.plot_handles["ax_list_trace_x"],
             ax_list_trace_y=self.plot_handles["ax_list_trace_y"],
         )
+        # Fresh plot_handles -> the cache key from the prior handles is
+        # stale. Invalidate so the next update_display_trace populates
+        # the new artists with their ydata.
+        self._trace_display_cache_key = None
 
     def update_display_scatter(self, frame_number: int, draw: bool = False) -> None:
         """Update scatter plot display."""
@@ -1617,19 +1654,28 @@ class VideoAnnotation:
     def update_display_trace(
         self, label: str | None = None, draw: bool = False
     ) -> None:
-        """Update trace plot display."""
+        """Update trace plot display.
+
+        Trace contents are a pure function of (label_list, self.data);
+        none of that changes when only the parent's ``_current_idx``
+        moves. Cache on (label_list, self._revision) so per-frame
+        navigation skips the to_trace / set_ydata sweep entirely.
+        """
         if label is None:
             label_list = self.labels
         else:
             assert label in self.labels
             label_list = [label]
 
-        for ax_cnt in range(len(self.plot_handles["ax_list_trace_x"])):
-            for label in label_list:
-                trace = self.to_trace(label)
-                for coord_cnt, coord in enumerate(("x", "y")):
-                    handle_name = f"trace_in_ax{coord}{ax_cnt}_label{label}"
-                    self.plot_handles[handle_name].set_ydata(trace[:, coord_cnt])
+        cache_key = (tuple(label_list), self._revision)
+        if getattr(self, "_trace_display_cache_key", None) != cache_key:
+            for ax_cnt in range(len(self.plot_handles["ax_list_trace_x"])):
+                for label in label_list:
+                    trace = self.to_trace(label)
+                    for coord_cnt, coord in enumerate(("x", "y")):
+                        handle_name = f"trace_in_ax{coord}{ax_cnt}_label{label}"
+                        self.plot_handles[handle_name].set_ydata(trace[:, coord_cnt])
+            self._trace_display_cache_key = cache_key
 
         if draw:
             plt.draw()
@@ -1743,6 +1789,7 @@ class VideoAnnotation:
                 for k, v in self.data[label].items()
                 if start_frame <= k <= end_frame
             }
+        self._revision += 1
 
     def keep_overlapping_continuous_frames(self) -> None:
         """Keep data from consecutive frames that have all labels."""
@@ -1759,6 +1806,7 @@ class VideoAnnotation:
             self.data[label] = {
                 k: v for k, v in self.data[label].items() if k in frames_to_keep
             }
+        self._revision += 1
 
     def get_area(
         self, labels: list[str] | str, lowpass: float | None = None
