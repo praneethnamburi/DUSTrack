@@ -34,8 +34,14 @@ DLC training round-trip.
 ### Added
 - `dustrack/dlcinterface.py`: `DUSTrack._refresh_dlc_layers(video_index=0)`
   helper -- factors the "load trained outputs from disk into the live
-  session" step out of `DLCProject.annotate`. Idempotent; safe to call
-  more than once.
+  session" step out of `DLCProject.annotate`. Now mirrors `annotate()`
+  more completely: also creates an empty
+  `iteration-{latest+1}` layer to capture next-round manual
+  refinements, and activates it as the current annotation layer so the
+  user can immediately start labeling. The freshest `dlc_*` layer is
+  still set as the annotation overlay. Falls back gracefully (no
+  raise) if the new-iteration JSON already exists on disk from a
+  prior refresh. Idempotent; safe to call more than once.
 - `dustrack/dlcinterface.py`: module-level `_Tee`, `_QueueWriter`, and
   lazily-built `_make_training_overlay_class()` -- the plumbing for the
   off-thread training run + overlay. The Qt class builder mirrors

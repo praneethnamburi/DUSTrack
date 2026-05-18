@@ -682,28 +682,64 @@ class DUSTrack(dnav.VideoPointAnnotator):
 
     def _refresh_dlc_layers(self, video_index: int = 0):
         """Load any annotation files produced by DLC training into the
-        live DUSTrack session, set newly-added ``dlc_*`` layers to a
-        line plot, and point the overlay statevar at the freshest one.
+        live DUSTrack session, plus a fresh empty ``iteration-{N+1}``
+        layer to capture next-round manual refinements, set newly-added
+        ``dlc_*`` layers to a line plot, point the overlay statevar at
+        the freshest DLC trace, and activate the new iteration layer
+        so the user can immediately start annotating.
 
-        Mirrors the loading logic in :meth:`DLCProject.annotate` but
-        operates on the existing ``self`` rather than spawning a new
-        DUSTrack window. Idempotent: layers already present in
-        ``self.annotations`` are skipped.
+        Mirrors the loading + new-layer logic in
+        :meth:`DLCProject.annotate` but operates on the existing
+        ``self`` rather than spawning a new DUSTrack window. Idempotent:
+        layers already present in ``self.annotations`` are skipped, and
+        the new-iteration layer is only requested if the iteration
+        suffix isn't already in the session.
         """
+        # Mirror annotate()'s suffix logic: after a successful training,
+        # latest_iteration_is_trained() is True so we want N+1; if
+        # training is partial / not yet done, fall back to the current
+        # iteration number (matches annotate() exactly).
+        if self._dlcproject.latest_iteration_is_trained():
+            new_iter = self._dlcproject.latest_iteration + 1
+        else:
+            new_iter = self._dlcproject.latest_iteration
+        new_suffix = f"iteration-{new_iter}"
+
         fm = VideoFileManager(self._dlcproject, video_index)
-        all_layers = fm.get_all_annotation_layers()
+        # get_new_json (called inside get_all_annotation_layers when a
+        # suffix is passed) raises ValueError if the file already exists
+        # on disk -- e.g. user trained, refined + saved, then re-trained
+        # without restarting. Fall back to the no-suffix call in that
+        # case; the layer is already known to the session via the
+        # original annotate() / earlier _refresh_dlc_layers run.
+        try:
+            all_layers = fm.get_all_annotation_layers(new_suffix)
+            requested_new_iter = True
+        except ValueError:
+            all_layers = fm.get_all_annotation_layers()
+            requested_new_iter = False
+
         existing = set(self.annotations.names)
         new_layers = {
             name: path for name, path in all_layers.items() if name not in existing
         }
         if not new_layers:
+            # Even with nothing to load, point the active layer at the
+            # next-iteration layer if it's already present -- keeps the
+            # post-training UX consistent across first-run vs re-run.
+            if requested_new_iter and new_suffix in self.annotations.names:
+                self.statevariables["annotation_layer"].set_state(new_suffix)
+                self.update()
             return
+
         self.add_annotation_layers(new_layers)
         new_dlc = [n for n in new_layers if n.startswith("dlc_")]
         for name in new_dlc:
             self.annotations[name].set_plot_type("line")
         if new_dlc:
             self.statevariables["annotation_overlay"].set_state(new_dlc[-1])
+        if new_suffix in self.annotations.names:
+            self.statevariables["annotation_layer"].set_state(new_suffix)
         self.update()
     
     def process_with_lk(self, event=None, *args, **kwargs) -> VideoAnnotation:
