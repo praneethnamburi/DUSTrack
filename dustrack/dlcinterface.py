@@ -498,8 +498,8 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if HAS_DLC:
             self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
             self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
-            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
             self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections)
+            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
             self.buttons.add_separator(style="double")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
@@ -507,7 +507,9 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
         self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
+        self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as)
         self.buttons.add_separator(style="double")
+        self.buttons.add(text="Swap layers", action_func=self.swap_active_and_overlay)
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
         
@@ -639,10 +641,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
         qt_window = self._find_qt_window()
         if qt_window is None:
             self._dlcproject = _build_project()
+            self._rewire_to_in_project_paths()
             return self._dlcproject
 
         def _on_success(project: DLCProject):
             self._dlcproject = project
+            self._rewire_to_in_project_paths()
 
         self._run_with_overlay(
             qt_window,
@@ -656,6 +660,59 @@ class DUSTrack(dnav.VideoPointAnnotator):
             success_summary=f"Project '{name}' created.",
         )
         return None
+
+    def _rewire_to_in_project_paths(self):
+        """Repoint the live session's video + annotation paths to the
+        in-project copies so subsequent writes (apply_manual_corrections,
+        process_with_lk, save_annotation_as) land inside the project
+        rather than next to the original video.
+
+        Invoked once, on the GUI thread, immediately after
+        :meth:`create_dlc_project` succeeds. DLC has already copied the
+        video and the active layer's annotations into ``<project>/videos/``;
+        this method takes care of the in-memory rewiring:
+
+        - ``self.fname`` -> the in-project video copy. Downstream helpers
+          like :func:`make_annotation_file_name` and
+          ``Path(self.fname).parent`` then naturally write inside the
+          project.
+        - Each annotation layer whose ``.fname`` lives outside the
+          project tree is migrated: ``.fname`` and ``.fstem`` are
+          rewritten to the project's ``videos/`` folder; if the layer
+          has in-memory data, it's saved at the new path so future
+          ``save()`` calls have a destination on disk.
+        - ``self.data`` (the video reader) is intentionally left
+          pointing at the original file. The DLC-side ``copy_videos``
+          guarantees byte-identical content, so frame seeking continues
+          to work; rebuilding the reader mid-session would invalidate
+          the Qt image pane handle.
+        """
+        assert self._dlcproject is not None
+        in_project_video = str(self._dlcproject.video_list[0])
+        videos_dir = Path(in_project_video).parent
+        project_root = Path(self._dlcproject.path)
+
+        self.fname = in_project_video
+
+        for ann in self.annotations:
+            if ann.fname is None:
+                continue
+            ann_path = Path(ann.fname)
+            try:
+                ann_path.relative_to(project_root)
+                continue  # already inside project tree
+            except ValueError:
+                pass
+            # DLC h5 traces only ever exist inside a project, so any
+            # JSON outside the project (manual, dlccorr, buffer, an
+            # iteration-N stub) is what we want to migrate.
+            if ann_path.suffix.lower() != ".json":
+                continue
+            new_path = videos_dir / ann_path.name
+            ann.fname = str(new_path)
+            ann.fstem = new_path.stem
+            if any(ann.data.values()):
+                ann.save()
 
     def process_dlc_project(self, event=None, *args, **kwargs):
         """
@@ -1066,21 +1123,37 @@ class DUSTrack(dnav.VideoPointAnnotator):
             The canonical layer name on success, or ``None`` if the layer
             was already loaded.
         """
-        if isinstance(ann_or_fname, VideoAnnotation):
+        # NOTE: `dnav.VideoAnnotation`, not the dustrack subclass.
+        # ``lk_moving_average_filter`` returns the parent class (the
+        # subclass adds the ``postprocess`` hook only), so the narrower
+        # ``isinstance`` was silently falling through to ``str(obj)`` --
+        # producing layer names like ``"<datanavigator.pointtracking"``
+        # and an empty data dict (load() of a non-existent path).
+        if isinstance(ann_or_fname, dnav.VideoAnnotation):
             fname = ann_or_fname.fname
         else:
             fname = str(ann_or_fname)
         name = VideoFileManager.canonical_layer_name(fname)
-        if name in self.annotations.names:
-            return None
-        self.add_annotation_layers({name: fname})
-        if name.startswith("dlc_"):
-            self._normalize_dlc_layer_display(scope=[name])
+        already_loaded = name in self.annotations.names
+        if not already_loaded:
+            self.add_annotation_layers({name: fname})
+            # Promote the freshly-added layer to the dustrack subclass so
+            # ``ann.postprocess`` is available in-session (matches the
+            # __init__-time promotion done after the bulk add).
+            new_layer = self.annotations[name]
+            if not isinstance(new_layer, VideoAnnotation):
+                new_layer.__class__ = VideoAnnotation
+            if name.startswith("dlc_"):
+                self._normalize_dlc_layer_display(scope=[name])
+        # Apply the requested overlay / active state even if the layer
+        # was already present -- e.g. Reduce jitter on a layer whose
+        # cached output is already loaded should still swap the UI to
+        # the smoothed layer with the source pinned as overlay.
         if set_overlay is not None:
             self.statevariables["annotation_overlay"].set_state(set_overlay)
         if set_active:
             self.statevariables["annotation_layer"].set_state(name)
-        return name
+        return None if already_loaded else name
 
     def process_with_lk(self, event=None, *args, **kwargs):
         """
@@ -1310,6 +1383,55 @@ class DUSTrack(dnav.VideoPointAnnotator):
 
         self.statevariables["annotation_layer"].set_state(self.CORRECTIONS_LAYER_NAME)
         self.statevariables["annotation_overlay"].set_state(patch_name)
+        self.update()
+
+    def save_annotation_as(self, event=None):
+        """Save the active annotation layer to a user-chosen path.
+
+        Opens a Qt save-file dialog seeded with the video's folder and a
+        suggested filename of ``<video_stem>_annotations_<layer>.json``.
+        Falls back to ``self.ann.save()`` (which writes to the layer's
+        existing ``.fname``) when no Qt window is available -- e.g.
+        headless / Agg backend.
+        """
+        layer = self.ann
+        suggested_dir = str(Path(self.fname).parent)
+        layer_name = self._current_layer or ""
+        suggested_name = Path(
+            make_annotation_file_name(self.fname, layer_name)
+        ).name
+        suggested_path = str(Path(suggested_dir) / suggested_name)
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            layer.save()
+            return
+
+        from qtpy.QtWidgets import QFileDialog
+
+        fname, _ = QFileDialog.getSaveFileName(
+            qt_window,
+            "Save annotation layer as...",
+            suggested_path,
+            "Annotation JSON (*.json);;All files (*)",
+        )
+        if not fname:
+            return
+        if not fname.lower().endswith(".json"):
+            fname += ".json"
+        layer.save(fname)
+
+    def swap_active_and_overlay(self, event=None):
+        """Swap the active annotation layer with the overlay layer.
+
+        No-op if no overlay is currently selected.
+        """
+        active = self._current_layer
+        overlay = self._current_overlay
+        if overlay is None:
+            return
+        self.statevariables["annotation_layer"].set_state(overlay)
+        self.statevariables["annotation_overlay"].set_state(active)
         self.update()
 
     def update(self):

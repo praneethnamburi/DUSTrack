@@ -96,6 +96,31 @@ itself.
   + the dlc-overlay re-pointing convention via
   `_normalize_dlc_layer_display`, which previously only ran on the
   cold-open / post-train paths.
+- `dustrack/dlcinterface.py`: DLC-pipeline button row reordered so
+  **Apply manual corrections** sits above **Reduce jitter** -- the
+  workflow runs corrections, *then* smooths the corrected layer, so
+  the buttons now read top-to-bottom in the order they're clicked.
+- `dustrack/dlcinterface.py`: `create_dlc_project` (sync + Qt-async
+  paths) now calls a new `_rewire_to_in_project_paths()` helper on
+  success. `self.fname` is repointed to the in-project video copy,
+  and every annotation layer whose `.fname` lives outside the
+  project tree is migrated to the project's `videos/` folder
+  (path-only for empty layers; layers with in-memory data also
+  `save()` at the new path so subsequent reloads find the file).
+  Subsequent writes (`apply_manual_corrections`, `process_with_lk`,
+  `save_annotation_as`) now land inside the project rather than
+  next to the original video -- which was the root cause of
+  Phase-1 → Phase-2 relaunches not seeing previously-produced
+  outputs. `self.data` (the video reader) is intentionally left
+  pointing at the original file: DLC's `copy_videos` guarantees
+  byte-identical content, and rebuilding the reader mid-session
+  would invalidate the Qt image pane handle.
+- `dustrack/dlcinterface.py`: `_adopt_layer` no longer short-circuits
+  on `set_active` / `set_overlay` when the requested layer is already
+  loaded. Reduce jitter on a layer whose cached LK output is already
+  in the session now still swaps the UI to the smoothed layer with
+  the source pinned as overlay (previously the early `return None`
+  left the UI on the source layer).
 
 ### Added
 - `dustrack/dlcinterface.py`: `DUSTrack._refresh_dlc_layers(video_index=0)`
@@ -185,6 +210,25 @@ itself.
   (incl. multi-token suffix, iteration suffix, buffer suffix,
   LK-on-manual), DLC traces (`.h5`, `.json`, LK-on-dlc), bare-file
   fallback, `str` / `Path` argument acceptance. 12 tests.
+- `dustrack/dlcinterface.py`: **Save annotation as...** button +
+  `DUSTrack.save_annotation_as` method. Opens a Qt `QFileDialog`
+  seeded with the video's folder and a suggested filename of
+  `<video_stem>_annotations_<layer>.json` for the active layer.
+  Falls back to `self.ann.save()` (writes to the layer's existing
+  `.fname`) on non-Qt backends.
+- `dustrack/dlcinterface.py`: **Swap layers** button +
+  `DUSTrack.swap_active_and_overlay` method. Swaps the
+  `annotation_layer` (foreground) with `annotation_overlay`
+  (background); no-op when no overlay is selected. Positioned as
+  the last sidebar button so it sits immediately above the state
+  variables widget it manipulates.
+- `tests/test_rewire_to_in_project_paths.py` -- 6 tests covering the
+  rewire dispatch matrix: `self.fname` switches to the in-project
+  video; JSON outside project tree → migrate (`.fname` / `.fstem`
+  rewritten, in-memory data persisted); paths already inside the
+  project → no-op; `.h5` outside project → skipped (DLC traces only
+  live inside projects); empty layers → migrate path-only without
+  preemptive `save()`; layers with `.fname == None` → skipped.
 
 ### Fixed
 - Ctrl+C (Copy to clipboard) on the DUSTrack figure window now
@@ -193,6 +237,18 @@ itself.
   datanavigator 1.4.0rc2's `GenericBrowser.copy_to_clipboard`
   (switched to `QMainWindow.grab()` from `figure.savefig`); DUSTrack
   picks it up by version pin.
+- `dustrack/dlcinterface.py`: Reduce jitter was producing a layer
+  named `'<datanavigator.pointtracking'` with empty `.data` whenever
+  it was clicked (worked example: cached LK output already present
+  in the session, re-clicked from the in-project video). Root cause:
+  `_adopt_layer` did `isinstance(ann, VideoAnnotation)` against the
+  *dustrack* subclass, but `lk_moving_average_filter` returns the
+  parent `datanavigator.VideoAnnotation`, so the check silently fell
+  through to `fname = str(obj)` -- the Python default repr of the
+  VideoAnnotation, parsed as a Path stem. Fix: relax the isinstance
+  to `dnav.VideoAnnotation` and re-promote the freshly-added layer
+  to the dustrack subclass post-add (mirrors the bulk promotion
+  `__init__` already does for layers loaded at startup).
 
 ### Notes
 - Programmatic callers that need the return value
