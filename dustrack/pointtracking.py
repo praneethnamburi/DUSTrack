@@ -158,6 +158,8 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.set_key_bindings()
 
+        self.buttons.add(text="Refresh UI", action_func=self.refresh)
+
         # set mouse click behavior
         if self._fast_render:
             # Image pane is Qt-native: pick + place_label events on
@@ -381,6 +383,10 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
 
+        self.add_key_binding(
+            "f5", self.refresh, "Refresh UI from current annotation data"
+        )
+
         if self._fast_render:
             # Overwrite the inherited 'r' binding (GenericBrowser.reset_axes)
             # so a single keystroke resets BOTH the trace axes AND the
@@ -397,6 +403,29 @@ class VideoPointAnnotator(VideoBrowser):
         matplotlib trace axes (`reset_axes("both")`)."""
         self._image_pane.reset_view()
         self.reset_axes(axis="both", event=event)
+
+    def refresh(self, event: Any | None = None) -> None:
+        """Force-refresh the UI from the current annotation ``.data``.
+
+        Drops the trace-display cache on every annotation layer and the
+        frame-marker cache, then calls ``update()`` so the next draw
+        re-reads every value from the backing dicts.
+
+        Recovery path for the rare case where ``.data`` was mutated
+        directly (e.g. from an IPython prompt:
+        ``v.ann.data["0"][42] = [x, y]``) bypassing the public
+        ``add()`` / ``remove()`` / ``add_at_frame()`` API and therefore
+        skipping the ``_revision`` bump that
+        :meth:`VideoAnnotation.update_display_trace` and
+        :meth:`update_frame_marker` cache on. In normal in-code
+        mutation paths the public API bumps ``_revision`` and the
+        caches invalidate automatically; calling ``refresh()`` is
+        always safe but rarely necessary.
+        """
+        for ann in self.annotations:
+            ann.invalidate_caches()
+        self._frame_marker_cache = None
+        self.update()
 
     def add_events(self) -> None:
         """Add an event to specify time intervals for interpolating with lucas-kanade."""
@@ -1812,6 +1841,17 @@ class VideoAnnotation:
         # Fresh plot_handles -> the cache key from the prior handles is
         # stale. Invalidate so the next update_display_trace populates
         # the new artists with their ydata.
+        self.invalidate_caches()
+
+    def invalidate_caches(self) -> None:
+        """Drop per-annotation render caches so the next
+        ``update_display_trace`` re-runs the full ydata sweep.
+
+        Recovery hatch for direct ``.data`` mutations from the command
+        line (which skip the ``_revision`` bump the trace cache keys
+        on). Normal in-code mutations should go through ``add()`` /
+        ``remove()`` / ``add_at_frame()`` instead.
+        """
         self._trace_display_cache_key = None
 
     def update_display_scatter(self, frame_number: int, draw: bool = False) -> None:
