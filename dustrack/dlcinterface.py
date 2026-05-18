@@ -382,18 +382,23 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self._apply_dark_theme()
 
         self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
-        self.buttons.add_separator()
+        # Double separators mark the major button-group boundaries in
+        # rc2's vertical sidebar: shortcuts | DLC pipeline | trace +
+        # display controls | (state variables, separated by dnav's own
+        # trailing double separator on the statevars widget).
+        self.buttons.add_separator(style="double")
         if HAS_DLC:
             self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
             self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
             self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-            self.buttons.add_separator()
+            self.buttons.add_separator(style="double")
         self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
         self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
         self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
         self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
         self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
+        self.buttons.add_separator(style="double")
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
         

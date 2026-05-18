@@ -9,6 +9,16 @@ fixes); rc2 turns to the user-facing rough edges, starting with the
 DLC training round-trip.
 
 ### Changed
+- `dustrack/dlcinterface.py`: button-column separators promoted from
+  single to **double** (dnav 1.4.0rc2's new
+  `Buttons.add_separator(style="double")`) to mark the major
+  functional groups in the rc2 sidebar: shortcuts | DLC pipeline
+  | trace + display controls. A trailing double separator now also
+  closes the display-controls group (after "Toggle enhance"); the
+  state-variables section gets its own trailing double separator
+  for free via dnav's `_QtStatevarsWidget`. Visual rhythm matches
+  what the rc2 stacked statevars layout introduced; users no longer
+  have to scan for group boundaries in a long flat list of buttons.
 - `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project` no longer
   closes the figure and re-opens it after training. On a Qt backend
   (the default for `DUSTrack(..., fast_render=True)`, which is the
