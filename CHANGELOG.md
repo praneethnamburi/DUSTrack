@@ -1,6 +1,58 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.1.0rc3] - 2026-05-18 (unreleased)
+
+Harmonisation pass on layer naming + display state. Three paths add
+annotation layers to a live DUSTrack session: cold open
+(`DLCProject.annotate`), post-train refresh (`_refresh_dlc_layers`),
+and in-session post-processing (`process_with_lk` / **Reduce jitter**).
+The first two ran every filepath through
+`VideoFileManager._get_annotation_name` / `_get_dlc_trace_name`; the
+third constructed a `VideoAnnotation` directly and inherited the
+`"noname"` fallback in `VideoAnnotation.__init__` because the
+LK-RSTC output filename lacks `_annotations_`. Result: a layer named
+`"noname"` in-session that mysteriously became `dlc_iteration-N_<window>`
+on close + reopen. rc3 collapses the three callers onto one naming
+function so the layer name a user sees is identical regardless of
+how they got there.
+
+### Changed
+- `dustrack/dlcinterface.py`: `VideoFileManager.canonical_layer_name(fname)`
+  is the single source of truth for layer names derived from a filepath.
+  Dispatches by pattern: stems containing `_annotations` get the suffix
+  after `_annotations`; stems containing `DLC` get
+  `dlc_<parent-iteration-N>_<last underscore-token>` (also catches
+  LK-RSTC outputs `<dlc_stem>_lkmovavg_<window>.json`); anything else
+  falls back to the file stem. The pre-rc3 `_get_annotation_name` and
+  `_get_dlc_trace_name` static methods are deleted; the `annotations`
+  and `dlc_traces` properties now call `canonical_layer_name`.
+- `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk`
+  (**Reduce jitter**) routes the new smoothed layer through
+  `DUSTrack._adopt_layer` on both the sync and Qt-async paths. The
+  layer name is re-derived from the filepath via
+  `canonical_layer_name`, so the noname → reload mismatch is gone;
+  for DLC-trace sources the new layer also gets `set_plot_type("line")`
+  and (if appropriate) the dlc-overlay re-pointing convention via
+  `_normalize_dlc_layer_display`, which previously only ran on the
+  cold-open / post-train paths.
+
+### Added
+- `dustrack/dlcinterface.py`: `DUSTrack._adopt_layer(ann_or_fname, *,
+  set_active=False, set_overlay=None)` -- new in-session layer-add
+  helper. Resolves the layer name via
+  `VideoFileManager.canonical_layer_name` (ignoring any caller-set
+  `.name`), adds via `add_annotation_layers({name: fname})`, runs
+  `_normalize_dlc_layer_display(scope=[name])` for `dlc_*` layers,
+  and sets statevars per kwargs. Idempotent: re-adopting a layer
+  that's already in `self.annotations.names` returns `None` and is a
+  no-op.
+- `tests/test_canonical_layer_name.py` -- pin the
+  `canonical_layer_name` dispatch matrix: manual annotations
+  (incl. multi-token suffix, iteration suffix, buffer suffix,
+  LK-on-manual), DLC traces (`.h5`, `.json`, LK-on-dlc), bare-file
+  fallback, `str` / `Path` argument acceptance. 12 tests.
+
 ## [1.1.0rc2] - 2026-05-18 (unreleased)
 
 Second release candidate for the smoother-interaction band. rc1 was

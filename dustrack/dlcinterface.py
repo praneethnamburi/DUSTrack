@@ -1010,7 +1010,67 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self.annotations[name].set_plot_type("line")
         if dlc_names:
             self.statevariables["annotation_overlay"].set_state(dlc_names[-1])
-    
+
+    def _adopt_layer(
+        self,
+        ann_or_fname,
+        *,
+        set_active: bool = False,
+        set_overlay=None,
+    ) -> str | None:
+        """Adopt an in-session-produced annotation file into the live layer list
+        under the same conventions used by the cold-open (:meth:`DLCProject.annotate`)
+        and post-train (:meth:`_refresh_dlc_layers`) paths.
+
+        Single entry point for layer additions that bypass
+        :class:`VideoFileManager` (e.g. :meth:`process_with_lk`):
+
+        - Re-derives the layer name from the filepath via
+          :meth:`VideoFileManager.canonical_layer_name`. Any caller-provided
+          ``.name`` on a :class:`VideoAnnotation` is ignored -- the path is
+          authoritative, so a freshly-built ``VideoAnnotation`` whose
+          ``.name`` would otherwise fall back to ``"noname"`` gets the
+          same name it would receive on reload.
+        - Adds via :meth:`add_annotation_layers` ``{name: fname}`` so the
+          dnav plotting / buffer / label-union plumbing fires identically
+          to the bulk-load path.
+        - If the layer name starts with ``dlc_``, runs
+          :meth:`_normalize_dlc_layer_display` over just this one layer so
+          plot-type and ``annotation_overlay`` end up where they would after
+          a close + reopen.
+        - Skips (returns ``None``) if a layer with that name is already
+          loaded -- mirroring :meth:`_refresh_dlc_layers`'s idempotency.
+
+        Args:
+            ann_or_fname: A :class:`VideoAnnotation`, ``Path``, or path
+                string pointing at the annotation file on disk.
+            set_active: If True, set ``annotation_layer`` to the new layer.
+            set_overlay: If not None, set ``annotation_overlay`` to this
+                layer name. Use this to pin the original source layer as
+                overlay when the new layer is a derived (e.g. smoothed)
+                version, matching the pre-harmonization behaviour of
+                :meth:`process_with_lk`.
+
+        Returns:
+            The canonical layer name on success, or ``None`` if the layer
+            was already loaded.
+        """
+        if isinstance(ann_or_fname, VideoAnnotation):
+            fname = ann_or_fname.fname
+        else:
+            fname = str(ann_or_fname)
+        name = VideoFileManager.canonical_layer_name(fname)
+        if name in self.annotations.names:
+            return None
+        self.add_annotation_layers({name: fname})
+        if name.startswith("dlc_"):
+            self._normalize_dlc_layer_display(scope=[name])
+        if set_overlay is not None:
+            self.statevariables["annotation_overlay"].set_state(set_overlay)
+        if set_active:
+            self.statevariables["annotation_layer"].set_state(name)
+        return name
+
     def process_with_lk(self, event=None, *args, **kwargs):
         """
         Apply Lucas-Kanade optical flow post-processing to reduce tracking jitter.
@@ -1027,6 +1087,15 @@ class DUSTrack(dnav.VideoPointAnnotator):
         Correction) algorithm to smooth trajectories. The processed
         annotation is saved and added as a new layer, with the
         original set as overlay for comparison.
+
+        rc3 (1.1.0rc3): the new layer is adopted via
+        :meth:`_adopt_layer`, which derives its name from the output
+        filepath via :meth:`VideoFileManager.canonical_layer_name` --
+        identical to what a close + reopen would show. Replaces the
+        pre-rc3 behaviour where the in-session layer briefly carried
+        the ``"noname"`` fallback until reload. When the source layer
+        is a DLC trace, the smoothed output is also plot-type-normalised
+        to ``"line"`` so it looks identical to other ``dlc_*`` layers.
 
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
@@ -1053,16 +1122,20 @@ class DUSTrack(dnav.VideoPointAnnotator):
         qt_window = self._find_qt_window()
         if qt_window is None:
             ann_processed = _smooth()
-            self.add_annotation_layers(ann_processed)
-            self.statevariables["annotation_overlay"].set_state(source_layer_name)
-            self.statevariables["annotation_layer"].set_state(ann_processed.name)
+            self._adopt_layer(
+                ann_processed,
+                set_active=True,
+                set_overlay=source_layer_name,
+            )
             self.update()
             return ann_processed
 
         def _on_success(ann_processed):
-            self.add_annotation_layers(ann_processed)
-            self.statevariables["annotation_overlay"].set_state(source_layer_name)
-            self.statevariables["annotation_layer"].set_state(ann_processed.name)
+            self._adopt_layer(
+                ann_processed,
+                set_active=True,
+                set_overlay=source_layer_name,
+            )
             self.update()
 
         self._run_with_overlay(
@@ -2462,85 +2535,85 @@ class VideoFileManager(pyfilemanager.FileManager):
     def annotations(self) -> dict:
         """
         Map annotation names to file paths.
-        
+
         Returns:
             dict: {annotation_name: file_path} for all JSON annotation files.
         """
-        # name_to_path = {Path(x).stem: x for x in self.all_files}
         pattern = f'*{self.video_stem}*_annotations*.json'
         file_names = fnmatch.filter([Path(x).name for x in self.all_files], pattern)
         files = [self[file_name][0] for file_name in file_names]
-        # files = [name_to_path[file_name] for file_name in file_names]
-        # files = self[f'{self.video_stem}*_annotations*.json']
-        return {self._get_annotation_name(fname):fname for fname in files}
-    
+        return {self.canonical_layer_name(fname): fname for fname in files}
+
     @property
     def annotation_files(self) -> list:
         """List of full paths to annotation JSON files."""
         return list(self.annotations.values())
-    
+
     @property
     def annotation_names(self) -> list:
         """List of annotation layer names (without paths or extensions)."""
         return list(self.annotations.keys())
-    
+
     @staticmethod
-    def _get_annotation_name(fname):
+    def canonical_layer_name(fname) -> str:
+        """Single source of truth for DUSTrack layer names derived from a filepath.
+
+        The DUSTrack workflow produces three categories of layer file:
+
+        - Manual / hand-edited annotations: ``<video>_annotations[_<name>].json``.
+          Returns the suffix after ``_annotations`` (or empty string if absent),
+          which is what users picked when they saved.
+        - DLC prediction traces: live under ``videos/iteration-{N}/`` and have
+          ``DLC`` in the stem. Returns ``'dlc_iteration-{N}_<last underscore-token of stem>'``.
+          This pattern also catches LK-RSTC post-processed outputs, which
+          inherit the DLC source stem -- so a jitter-reduced layer gets a
+          deterministic ``dlc_iteration-{N}_<window>`` name rather than the
+          ``"noname"`` fallback that ``VideoAnnotation.__init__`` produces for
+          paths without ``_annotations``.
+        - Anything else: the file stem.
+
+        Called by :attr:`annotations` / :attr:`dlc_traces` at fresh-load
+        time AND by :meth:`DUSTrack._adopt_layer` for in-session adds, so
+        the name a user sees in the layer panel is identical regardless
+        of whether the layer was discovered on disk or produced live.
         """
-        Extract annotation name from filename.
-        
-        Args:
-            fname (str): Full path like 'video_annotations_manual.json'.
-        
-        Returns:
-            str: Name part after '_annotations_' (e.g., 'manual').
-        """
-        return Path(fname).stem.split('_annotations')[-1].removesuffix('.json').strip('_')
-    
+        p = Path(fname)
+        stem = p.stem
+        if '_annotations' in stem:
+            return stem.split('_annotations')[-1].removesuffix('.json').strip('_')
+        if 'DLC' in stem:
+            return 'dlc_' + p.parts[-2] + '_' + stem.split('_')[-1]
+        return stem
+
     @staticmethod
     def _get_video_name(fname):
         """Return the 'name' of the video file <video_name>_annotations_<name>.json.
         For example, C:\\video01_annotations_brachialis_praneeth.json will return video01
         """
         return Path(fname).stem.split('_annotations')[0]
-    
+
     @property
     def dlc_traces(self) -> dict:
         """
         Map DLC trace names to HDF5 file paths.
-        
+
         Returns:
             dict: {trace_name: file_path} for all DLC prediction files.
                 Trace names format: 'dlc_iteration-{N}_{training_iter}'
         """
         fm_temp = pyfilemanager.FileManager(str(Path(self.base_dir) / "videos")).add()
-        # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
-        # I want both .h5 file and json file
         fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
-        return {self._get_dlc_trace_name(fname): fname for fname in fnames}
-    
+        return {self.canonical_layer_name(fname): fname for fname in fnames}
+
     @property
     def dlc_trace_files(self):
         """List of full paths to DLC prediction HDF5 files."""
         return list(self.dlc_traces.values())
-    
+
     @property
     def dlc_trace_names(self):
         """List of DLC trace identifiers."""
         return list(self.dlc_traces.keys())
-    
-    @staticmethod
-    def _get_dlc_trace_name(fname):
-        """
-        Extract standardized DLC trace name from filepath.
-        
-        Args:
-            fname (str): Path like 'videos/iteration-0/video_dlc_250000.h5'.
-        
-        Returns:
-            str: Name like 'dlc_iteration-0_250000'.
-        """
-        return 'dlc_' + Path(fname).parts[-2] + '_' + Path(fname).stem.split('_')[-1]
 
     @property
     def labeled_data(self):
