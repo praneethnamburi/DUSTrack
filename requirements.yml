@@ -18,4 +18,4 @@ dependencies:
     - opencv-python
     - pysampled
     - pyfilemanager
-    - datanavigator>=1.3.0
+    - datanavigator>=1.3.0,<1.4.0

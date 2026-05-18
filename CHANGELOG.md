@@ -1,6 +1,59 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-05-17
+
+Audit-and-polish release. No public API changes. Drops the alpha tag,
+re-points the README + bibtex from the arXiv preprint to the published
+*Scientific Reports* paper (Namburi et al., 2026,
+[doi:10.1038/s41598-026-42795-3](https://doi.org/10.1038/s41598-026-42795-3),
+accepted 2026-02-27), and folds in mechanical cleanup along the lines
+of datanavigator 1.2.0. The `numpy<2` pin and `<=3.13` upper bound stay
+in place — both are slated for relaxation in a CI-gated follow-up.
+
+### Fixed
+- `dustrack/dlcinterface.py`: removed a duplicate
+  `from skimage import io, img_as_ubyte` that was masked by the first
+  import a few lines up.
+- `dustrack/dlcinterface.py`: the ImportError path for missing
+  `deeplabcut` now calls `warnings.warn(...)` instead of `print(...)`,
+  so library import no longer writes unsolicited text to stdout when
+  `HAS_DLC=False`.
+- `dustrack/dlcinterface.py`: `process_dlc_project` had an
+  `assert self._dlcproject is not None` immediately followed by an
+  `if self._dlcproject is None: raise ValueError(...)`; the assert was
+  unreachable and has been dropped. The `ValueError` branch is now also
+  evaluated *before* `plt.close(self.figure)` so a stale-state caller
+  doesn't lose its figure.
+- `dustrack/dlcinterface.py`: removed four leftover developer-debug
+  `print` calls (`from_video` h5 path, `copy_annotations` filename,
+  `process` iteration counters, `annotate` video name). User-facing
+  status prints in extraction / training / merge paths are unchanged.
+- `dustrack/postprocess.py`: `lk_moving_average_filter` docstring no
+  longer contradicts the signature — `video_name` is documented as
+  optional with the path-argument requirement asserted at call time.
+
+### Changed
+- `dustrack/dlcinterface.py`: import-alias hygiene per the portfolio
+  convention settled 2026-05-13/14 — `from pyfilemanager import
+  FileManager` → `import pyfilemanager`; `import datanavigator` →
+  `import datanavigator as dnav`. Stdlib imports (`re`, `warnings`,
+  `PureWindowsPath`, `PurePosixPath`) are now grouped with the other
+  stdlib imports at the top of the module instead of trailing the
+  `try/except ImportError` block. No external API surface change.
+- `pyproject.toml`: dropped `Python :: 3.7` and `Python :: 3.8` from
+  the classifier list. The dependency stack (DLC3 + datanavigator
+  1.3.x + scientific Python) does not actually support either, and the
+  classifiers were misleading on PyPI. `requires-python = ">=3.7,
+  <=3.13"` is unchanged for this release (CI matrix + bound relaxation
+  is the next-band item).
+- `README.md`: citation paragraph and bibtex block now point at the
+  Nature *Scientific Reports* article rather than the arXiv preprint.
+- `docs/conf.py`: `release` bumped to `1.0.0`; stale `# pyfilemanager`
+  comment dropped.
+- `docs/index.md`: master-file comment header switched from
+  `pyfilemanager` (boilerplate copy-paste) to `dustrack`.
+
 ## [1.0.0a2] - 2026-05-17
 
 Maintenance release. Fixes a packaging bug in 1.0.0a1 that silently

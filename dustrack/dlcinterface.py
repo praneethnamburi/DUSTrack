@@ -4,25 +4,24 @@ Main DUSTrack module, including an interface to manage DeepLabCut (DLC) projects
 from __future__ import annotations
 
 import fnmatch
-import os
-import shutil
-from pathlib import Path
-from typing import Mapping, Union
 import functools
+import os
+import re
+import shutil
+import warnings
+from pathlib import Path, PureWindowsPath, PurePosixPath
+from typing import Mapping, Union
 
 import numpy as np
 import pandas as pd
 import cv2 as cv
-from pyfilemanager import FileManager
+import pyfilemanager
 import pysampled
-from skimage import io
-from skimage.util import img_as_ubyte
+from skimage import io, img_as_ubyte
 
 import matplotlib.pyplot as plt
-import datanavigator
+import datanavigator as dnav
 from datanavigator import VideoReader, cpu
-
-from skimage import io, img_as_ubyte
 
 from .postprocess import lk_moving_average_filter
 from . import _config
@@ -34,12 +33,11 @@ try:
     DLC3 = deeplabcut.__version__.startswith('3.')
     HAS_DLC = True
 except ImportError:
-    print('deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.')
+    warnings.warn(
+        'deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.',
+        stacklevel=2,
+    )
     HAS_DLC = False
-
-import re
-from pathlib import PureWindowsPath, PurePosixPath
-
 
 
 EXPERIMENTER = _config.EXPERIMENTER
@@ -83,11 +81,11 @@ def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, bri
     return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
 
 
-class VideoAnnotation(datanavigator.VideoAnnotation):
+class VideoAnnotation(dnav.VideoAnnotation):
     """
     Enhanced VideoAnnotation with integrated post-processing.
-    
-    This subclass extends datanavigator.VideoAnnotation by adding the Lucas-Kanade
+
+    This subclass extends dnav.VideoAnnotation by adding the Lucas-Kanade
     moving average filter as a default post-processing method for smoothing trajectories.
     
     Attributes:
@@ -95,7 +93,7 @@ class VideoAnnotation(datanavigator.VideoAnnotation):
     """
     postprocess = lk_moving_average_filter
 
-class DUSTrack(datanavigator.VideoPointAnnotator):
+class DUSTrack(dnav.VideoPointAnnotator):
     """
     Interactive video point annotator with DeepLabCut integration.
     
@@ -171,7 +169,7 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
         self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
 
-        self.statevariables._text._pos = datanavigator.utils._parse_pos("bottom left")
+        self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
         
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
@@ -324,10 +322,9 @@ class DUSTrack(datanavigator.VideoPointAnnotator):
         """
         if not HAS_DLC:
             raise ImportError('deeplabcut is not installed. Cannot process DLC project.')
-        assert self._dlcproject is not None, "DLCProject not created. Use create_dlc_project() to create it."
-        plt.close(self.figure)
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
+        plt.close(self.figure)
         self._dlcproject.process(*args, **kwargs)
         return self._dlcproject.annotate()
     
@@ -462,7 +459,7 @@ class DLCData(pysampled.Data):
         df_h5 = pd.read_hdf(file_path)
         label_names = list(df_h5.columns.unique(level='bodyparts'))
         coords = list(df_h5.columns.unique(level='coords'))
-        vid_paths = FileManager(Path(file_path).parent).add()[f'*{Path(file_path).stem}*_labeled.mp4']
+        vid_paths = pyfilemanager.FileManager(Path(file_path).parent).add()[f'*{Path(file_path).stem}*_labeled.mp4']
         if len(vid_paths) == 0:
             raise FileNotFoundError('Could not find the video file')
         sr = int(cv.VideoCapture(vid_paths[0]).get(cv.CAP_PROP_FPS))
@@ -489,14 +486,13 @@ class DLCData(pysampled.Data):
         assert os.path.exists(vid_path)
         # find the hdf file
         vid_path = Path(vid_path)
-        h5_list = FileManager(vid_path.parent).add()[f'{vid_path.stem}*.h5']
+        h5_list = pyfilemanager.FileManager(vid_path.parent).add()[f'{vid_path.stem}*.h5']
         iter_num_to_fname = {int(Path(x).stem.split('_')[-1]):x for x in h5_list}
         if iter_num is None:
             # pick the highest iteration number
             iter_num = max(iter_num_to_fname)
         assert iter_num in iter_num_to_fname
         h5_file = iter_num_to_fname[iter_num]
-        print(h5_file)
         return cls.from_hdf(h5_file)
 
 
@@ -776,7 +772,7 @@ class DLCProject:
         ret = {}
         for iteration_num in self.all_iterations:
             source_path = self.paths['models'] / f'iteration-{iteration_num}'
-            snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*{ext}']
+            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot*{ext}']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" not in Path(x).stem]
             snapshot_numbers.sort()
             snapshot_numbers += [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
@@ -853,7 +849,6 @@ class DLCProject:
             return copied_files
         v = Path(video_name)
         a_name = f'{v.stem}_annotations{"_" if self.annotation_suffix else ""}{self.annotation_suffix}.json'
-        print(a_name)
         annotation_file_src = v.parent / a_name
         annotation_file_dest = Path(self.config_path).parent / 'videos' / a_name
         if os.path.exists(annotation_file_src):
@@ -892,10 +887,10 @@ class DLCProject:
 
             if annotation_file_names_input is None:
                 pattern = f'{video_stem}*_annotations*.json'
-                fm = FileManager(self.paths['videos']).add()
+                fm = pyfilemanager.FileManager(self.paths['videos']).add()
                 file_names = fnmatch.filter([Path(x).name for x in fm.all_files], pattern)
                 annotation_file_names = sorted([fm[file_name][0] for file_name in file_names])
-                # annotation_file_names = sorted(FileManager(self.paths['videos']).add()[f'{video_stem}*_annotations*.json'])
+                # annotation_file_names = sorted(pyfilemanager.FileManager(self.paths['videos']).add()[f'{video_stem}*_annotations*.json'])
                 # ignore the *correction* files. In theory, no training is to be done after the dlccorr files are created, but just being careful.
                 annotation_file_names = [x for x in annotation_file_names if "_dlccorr" not in x]
                 print(f'Loading annotations from {len(annotation_file_names)} file(s): ')
@@ -950,7 +945,7 @@ class DLCProject:
             cfg_name = "pytorch_config"
         else:
             cfg_name = "pose_cfg"
-        cfg_files = FileManager(self.paths['models'] / f'iteration-{iteration_num}').add()[f'*{type_}/{cfg_name}*']
+        cfg_files = pyfilemanager.FileManager(self.paths['models'] / f'iteration-{iteration_num}').add()[f'*{type_}/{cfg_name}*']
         assert len(cfg_files) == 1
         return cfg_files[0]
     
@@ -973,7 +968,7 @@ class DLCProject:
         
         if DLC3:
             source_path = self.paths['models'] / f'iteration-{iteration_num}'
-            snapshot_filenames = FileManager(source_path).add()[f'*train/snapshot*.pt']
+            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot*.pt']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
             best_snapshot_number = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
             if not _config.DLC3_USE_LAST_SNAPSHOT:
@@ -1066,7 +1061,7 @@ class DLCProject:
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
         ext = '.pt' if DLC3 else '.index'
-        init_weights_files = FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
+        init_weights_files = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
 
         if DLC3:
@@ -1234,8 +1229,6 @@ class DLCProject:
 
         current_iteration = self.current_iteration
         latest_iteration = self.latest_iteration
-        print(f'{current_iteration=}')
-        print(f'{latest_iteration=}')
         if current_iteration < latest_iteration:
             return self.evaluate().analyze_videos(create_video=create_video)
 
@@ -1298,10 +1291,7 @@ class DLCProject:
         if video_index < 0:
             video_index = len(self.video_list) + video_index
         assert 0 <= video_index < len(self.video_list)
-        # print the video name, the base name of the video
-        print(f"Video name: {Path(self.video_list[video_index]).stem}")
 
-        
         if new_annotation_suffix is None:
             if self.latest_iteration_is_trained():
                 new_iteration_num = self.latest_iteration + 1
@@ -1518,7 +1508,7 @@ def make_annotation_file_name(video_file_name: Path, annotation_suffix: str='') 
     return annotation_file_name
 
 
-class VideoFileManager(FileManager):
+class VideoFileManager(pyfilemanager.FileManager):
     """
     File manager for organizing annotation and result files for one video.
     
@@ -1605,7 +1595,7 @@ class VideoFileManager(FileManager):
             dict: {trace_name: file_path} for all DLC prediction files.
                 Trace names format: 'dlc_iteration-{N}_{training_iter}'
         """
-        fm_temp = FileManager(str(Path(self.base_dir) / "videos")).add()
+        fm_temp = pyfilemanager.FileManager(str(Path(self.base_dir) / "videos")).add()
         # fnames = fm_temp[f'{self.video_stem}*{self.project_name}*.h5']
         # I want both .h5 file and json file
         fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
@@ -1645,7 +1635,7 @@ class VideoFileManager(FileManager):
         Raises:
             AssertionError: If file doesn't exist or multiple files found.
         """
-        fm_temp = FileManager(str(Path(self.base_dir) / "labeled-data")).add()
+        fm_temp = pyfilemanager.FileManager(str(Path(self.base_dir) / "labeled-data")).add()
         ret = fm_temp[f'{self.video_stem}*CollectedData*.h5']
         assert len(ret) == 1
         return ret[0]
@@ -1715,7 +1705,7 @@ def merge_annotations_in_folder(path, annotation_suffix='merged'):
         path (str): Directory containing videos and annotation JSON files.
         annotation_suffix (str): Suffix for merged output files. Defaults to 'merged'.
     """
-    fm = FileManager(path).add_by_depth(0)
+    fm = pyfilemanager.FileManager(path).add_by_depth(0)
     all_names = [Path(x).name for x in fm.all_files]
     all_video_names = fnmatch.filter(all_names, '*.mp4')
     video_files = [fm[name][0] for name in all_video_names]

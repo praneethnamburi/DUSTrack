@@ -6,10 +6,10 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'dustrack' # pyfilemanager
+project = 'dustrack'
 copyright = '2025-present, Praneeth Namburi'
 author = 'Praneeth Namburi'
-release = '1.0.0a1' # 0.1.0
+release = '1.0.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

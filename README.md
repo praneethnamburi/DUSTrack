@@ -17,7 +17,7 @@
 - **Versatile**: Works with ultrasound and other video types
 - **Flexible installation**: Use GUI + optical flow only, or add deep learning capabilities
 
-Learn more about DUSTrack in our [preprint](https://arxiv.org/abs/2507.14368).
+Learn more about DUSTrack in our [paper in *Scientific Reports*](https://doi.org/10.1038/s41598-026-42795-3).
 
 ## Installation
 
@@ -76,11 +76,14 @@ Full documentation is available at [DUSTrack.readthedocs.io](https://DUSTrack.re
 If you use DUSTrack in your research, please cite our paper:
 
 ```bibtex
-@article{namburi2025dustrack,
+@article{namburi2026dustrack,
   title={DUSTrack: Semi-automated point tracking in ultrasound videos},
   author={Namburi, Praneeth and Pallar{\`e}s-L{\'o}pez, Roger and Rosendorf, Jessica and Folgado, Duarte and Anthony, Brian W},
-  journal={arXiv preprint arXiv:2507.14368},
-  year={2025}
+  journal={Scientific Reports},
+  volume={16},
+  pages={13340},
+  year={2026},
+  doi={10.1038/s41598-026-42795-3}
 }
 ```
 

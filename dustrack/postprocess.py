@@ -285,7 +285,9 @@ def lk_moving_average_filter(
         tracked_points (Union[str, VideoAnnotation]): Either:
             - Path to annotation JSON file
             - VideoAnnotation object with tracking data
-        video_name (str, optional): Video path. Required if tracked_points is a file path.
+        video_name (str, optional): Video path. Defaults to None; required when
+            ``tracked_points`` is a file path (asserted at call time). Ignored
+            when ``tracked_points`` is already a ``VideoAnnotation``.
         window_size (float, optional): Time window in seconds for moving average.
             Larger windows provide more smoothing but increase computation.
             Typical range: 0.1 to 1.0 seconds. Defaults to 0.5.

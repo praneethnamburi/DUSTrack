@@ -29,8 +29,6 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Topic :: Scientific/Engineering",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.7",
-  "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -51,6 +49,9 @@ docs = [
 
 [project.urls]
 Home = "https://github.com/praneethnamburi/DUSTrack"
+
+[tool.flit.sdist]
+exclude = ["docs/_static/dustrack_applications.mp4"]
 
 [tool.black]
 line-length = 88
