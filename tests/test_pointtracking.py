@@ -814,6 +814,66 @@ def test_video_annotation_display_update_visibility(video_fname):
     assert True  # If no exceptions, test passed
 
 
+def test_set_plot_type_syncs_plot_type_attribute(video_fname):
+    """``set_plot_type`` and the ``plot_type`` setter must leave the
+    annotation in the same state.
+
+    Regression guard: pre-fix, ``set_plot_type("line")`` only
+    updated trace handles' linestyle/marker, leaving
+    ``self._plot_type`` at its ``__init__`` default ``"dot"``. A
+    subsequent ``re_setup_display`` (which fires inside
+    ``add_annotation_layers`` for every existing layer) would call
+    ``setup_display`` → ``set_plot_type(self.plot_type)``, reading
+    the stale ``"dot"`` and reverting the visual. Caused the
+    DUSTrack ``dlccorr`` "renders as dots after Reduce jitter"
+    regression.
+    """
+    fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
+    ann = datanavigator.VideoAnnotation(
+        vname=video_fname, name="plot_type_sync"
+    )
+    ann.setup_display(
+        ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
+    )
+    # init default is "dot"
+    assert ann.plot_type == "dot"
+    # Method call must update the attribute, not just the visuals.
+    ann.set_plot_type("line", draw=False)
+    assert ann.plot_type == "line"
+    assert ann._plot_type == "line"
+    ann.set_plot_type("dot", draw=False)
+    assert ann.plot_type == "dot"
+    # Property setter still works and delegates to the same machinery.
+    ann.plot_type = "line"
+    assert ann.plot_type == "line"
+    assert ann._plot_type == "line"
+    plt.close(fig)
+
+
+def test_set_plot_type_survives_re_setup_display(video_fname):
+    """After ``set_plot_type("line")``, re-running
+    ``re_setup_display`` (which fires for every existing layer
+    inside ``add_annotation_layers``) must preserve the line
+    styling. Direct verification of the regression mechanism.
+    """
+    fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
+    ann = datanavigator.VideoAnnotation(
+        vname=video_fname, name="plot_type_after_resetup"
+    )
+    ann.setup_display(
+        ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
+    )
+    ann.add([1, 1], "0", 0)
+    ann.set_plot_type("line", draw=False)
+    ann.re_setup_display()
+    # After re_setup_display, the styling must still be line.
+    assert ann.plot_type == "line"
+    # Spot-check the actual artist: a line plot has linestyle "-".
+    sample_handle = next(iter(ann._trace_handles.values()))
+    assert sample_handle.get_linestyle() == "-"
+    plt.close(fig)
+
+
 def test_video_point_annotator_init(video_fname):
     # simple initialization with video only.
     v = datanavigator.VideoPointAnnotator(vid_name=video_fname)

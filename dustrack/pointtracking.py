@@ -1427,10 +1427,13 @@ class VideoAnnotation:
     
     @plot_type.setter
     def plot_type(self, plot_type: str) -> None:
-        """Set the type of plot to use for the annotations."""
-        assert plot_type in ("line", "dot")
-        self._plot_type = plot_type
-        self.set_plot_type(self._plot_type)
+        """Set the type of plot to use for the annotations.
+
+        Thin delegate to :meth:`set_plot_type`; the two APIs are kept
+        symmetric so a caller using either ends up in the same state
+        (visual style applied AND :attr:`_plot_type` recorded).
+        """
+        self.set_plot_type(plot_type)
 
     def get_frames(self, label: str) -> list[int]:
         """Return a list of frames that are annotated with the current label."""
@@ -1988,11 +1991,18 @@ class VideoAnnotation:
     def set_plot_type(self, type_: str = "line", draw: bool = True) -> None:
         """Set the plot type for traces.
 
+        Records the choice on :attr:`_plot_type` *and* applies the
+        visual style, so subsequent :meth:`re_setup_display` /
+        :meth:`setup_display` calls (which read
+        ``self.plot_type``) don't revert to the stale value.
+        Symmetric with the :attr:`plot_type` property setter.
+
         Args:
             type_ (str, optional): "line" or "dot". Defaults to "line".
             draw (bool, optional): Update display if True. Defaults to True.
         """
         assert type_ in ("line", "dot")
+        self._plot_type = type_
         for trace_handle in self._trace_handles.values():
             if type_ == "line":
                 trace_handle.set_linestyle("-")
