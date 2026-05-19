@@ -290,12 +290,23 @@ class VideoPointAnnotator(VideoBrowser):
 
         Groups mirror the 5-step workflow in ``docs/source/resources/
         keyboard_shortcuts.png``: layer selection → label selection →
-        frame navigation → edit → refine. Bindings not on the PNG
-        (save, refresh, reset view, pan, keep-overlapping) fall through
-        to the "Other" section of the cheatsheet.
+        frame navigation → edit → refine. ``self._section_order`` pins
+        the cheatsheet's section order to the workflow order (section 3
+        first, then 1, 2, 4, 5a, 5b, 5c) regardless of when each binding
+        was originally registered. Bindings not on the PNG (save,
+        refresh, reset view, pan, keep-overlapping, toggle-num-keys
+        mode) fall through to the "Other" section.
         """
-        # 1. Select annotation layer
         sec1 = "1. Select annotation layer"
+        sec2 = "2. Select annotation number (#)"
+        sec3 = "3. Navigate to the desired video frame"
+        sec4 = "4. Edit annotation"
+        sec5a = "5a. LK-RSTC based label augmentation"
+        sec5b = "5b. Refine labels in a selected interval"
+        sec5c = "5c. Copy annotations between layers"
+        self._section_order = (sec3, sec1, sec2, sec4, sec5a, sec5b, sec5c)
+
+        # 1. Select annotation layer
         self.add_key_binding("=", self.next_annotation_layer,
             "Next annotation layer (primary)", group=sec1)
         self.add_key_binding("-", self.previous_annotation_layer,
@@ -306,20 +317,16 @@ class VideoPointAnnotator(VideoBrowser):
             "Previous annotation layer (overlay)", group=sec1)
 
         # 2. Select annotation number (#)
-        sec2 = "2. Select annotation number (#)"
         self.add_key_binding("'", self.next_annotation_label,
             "Next annotation label (#)", group=sec2)
         self.add_key_binding(";", self.previous_annotation_label,
             "Previous annotation label (#)", group=sec2)
-        self.add_key_binding("`", self.cycle_number_keys_behavior,
-            "Toggle num-keys mode (select / place)", group=sec2)
         self.add_key_binding("w", self.increment_label_range,
             "Next annotation # range", group=sec2)
         self.add_key_binding("q", self.decrement_label_range,
             "Previous annotation # range", group=sec2)
 
         # 3. Navigate to the desired video frame
-        sec3 = "3. Navigate to the desired video frame"
         self.add_key_binding("g", self.increment,
             "Next video frame", group=sec3)
         self.add_key_binding("f", self.increment_if_unannotated,
@@ -342,45 +349,13 @@ class VideoPointAnnotator(VideoBrowser):
             "Previous frame with current annotation (alias of p)", group=sec3)
 
         # 4. Edit annotation
-        sec4 = "4. Edit annotation"
         self.add_key_binding("t", self.add_annotation,
             "Add annotation (hover on image)", group=sec4)
         self.add_key_binding("y", self.remove_annotation,
             "Remove annotation (hover near it on image)", group=sec4)
 
         # 5a. LK-RSTC based label augmentation
-        sec5a = "5a. LK-RSTC based label augmentation"
-        self.add_key_binding(
-            "a", self.interpolate_with_lk,
-            "Interpolate current label with LK-RSTC (buffer layer)",
-            group=sec5a,
-        )
-        self.add_key_binding(
-            "ctrl+a",
-            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
-            "Interpolate all labels with LK-RSTC (buffer layer)",
-            group=sec5a,
-        )
-        self.add_key_binding(
-            "ctrl+d",
-            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
-            "Interpolate all labels with LK (no RSTC, primary layer)",
-            group=sec5a,
-        )
-        self.add_key_binding(
-            "alt+b",
-            (lambda s: s.predict_labels_with_lucas_kanade(labels="current")).__get__(
-                self
-            ),
-            "Predict current label at current frame with LK (primary layer)",
-            group=sec5a,
-        )
-        self.add_key_binding(
-            "ctrl+b",
-            (lambda s: s.predict_labels_with_lucas_kanade(labels="all")).__get__(self),
-            "Predict all labels at current frame with LK (primary layer)",
-            group=sec5a,
-        )
+        # Sequence: v, alt+v, ctrl+alt+v, alt+b, ctrl+b
         self.add_key_binding(
             "v",
             (lambda s: s.check_labels_with_lk(mode="minimal")).__get__(self),
@@ -399,9 +374,50 @@ class VideoPointAnnotator(VideoBrowser):
             "Check labels with LK - all labels",
             group=sec5a,
         )
+        self.add_key_binding(
+            "alt+b",
+            (lambda s: s.predict_labels_with_lucas_kanade(labels="current")).__get__(
+                self
+            ),
+            "Predict current label at current frame with LK (primary layer)",
+            group=sec5a,
+        )
+        self.add_key_binding(
+            "ctrl+b",
+            (lambda s: s.predict_labels_with_lucas_kanade(labels="all")).__get__(self),
+            "Predict all labels at current frame with LK (primary layer)",
+            group=sec5a,
+        )
 
         # 5b. Refine labels in a selected interval
-        sec5b = "5b. Refine labels in a selected interval"
+        # Sequence: z, a, ctrl+a, alt+a, ctrl+alt+a, ctrl+d
+        #
+        # ``z`` is registered by ``add_events()`` (which runs in __init__
+        # before set_key_bindings) as the add-event hotkey for the
+        # interp_with_lk interval picker -- with an auto-generated
+        # description and no group. Re-register here with the proper
+        # group + description; remove_key_binding first so it lands at
+        # the end of the dict (rather than its earlier insertion slot),
+        # ensuring it leads section 5b in dict-iteration order.
+        z_binding = self._keypressdict.get("z")
+        if z_binding is not None:
+            self.remove_key_binding("z")
+            self.add_key_binding(
+                "z", z_binding.callback,
+                "Select interval (press once at start, once at end)",
+                group=sec5b,
+            )
+        self.add_key_binding(
+            "a", self.interpolate_with_lk,
+            "Interpolate current label with LK-RSTC (buffer layer)",
+            group=sec5b,
+        )
+        self.add_key_binding(
+            "ctrl+a",
+            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
+            "Interpolate all labels with LK-RSTC (buffer layer)",
+            group=sec5b,
+        )
         self.add_key_binding(
             "alt+a", self.remove_labels_in_interval,
             "Clear current label in selected interval",
@@ -413,17 +429,23 @@ class VideoPointAnnotator(VideoBrowser):
             "Clear all labels in selected interval",
             group=sec5b,
         )
+        self.add_key_binding(
+            "ctrl+d",
+            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
+            "Interpolate all labels with LK (no RSTC, primary layer)",
+            group=sec5b,
+        )
 
         # 5c. Copy annotations between layers
-        sec5c = "5c. Copy annotations between layers"
+        # Sequence: m, alt+c, c, ctrl+alt+c
         self.add_key_binding("m", self.toggle_frame_of_interest,
             "Toggle (mark / unmark) current frame as a frame of interest",
             group=sec5c)
-        self.add_key_binding("c", self.copy_current_annotation_from_overlay,
-            "Copy current annotation at current frame from overlay",
-            group=sec5c)
         self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay,
             "Copy annotations at frames of interest from overlay",
+            group=sec5c)
+        self.add_key_binding("c", self.copy_current_annotation_from_overlay,
+            "Copy current annotation at current frame from overlay",
             group=sec5c)
         self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay,
             "Copy annotations in selected interval from overlay",
@@ -431,8 +453,10 @@ class VideoPointAnnotator(VideoBrowser):
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
         self.add_key_binding("s", self.save, "Save current annotation layer")
+        self.add_key_binding("`", self.cycle_number_keys_behavior,
+            "Toggle num-keys mode (select / place)")
         self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames,
-            "Keep only frames where every label is annotated")
+            "Keep only consecutive frames where every label is annotated")
         self.add_key_binding(
             "j",
             (lambda s: s.pan(direction="left")).__get__(self),
