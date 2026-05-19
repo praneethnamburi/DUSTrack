@@ -163,7 +163,7 @@ class VideoPointAnnotator(VideoBrowser):
 
         self.set_key_bindings()
 
-        self.buttons.add(text="Refresh UI", action_func=self.refresh)
+        self._add_default_buttons()
 
         # set mouse click behavior
         if self._fast_render:
@@ -304,7 +304,7 @@ class VideoPointAnnotator(VideoBrowser):
         sec5a = "5a. LK-RSTC based label augmentation"
         sec5b = "5b. Refine labels in a selected interval"
         sec5c = "5c. Copy annotations between layers"
-        self._section_order = (sec3, sec1, sec2, sec4, sec5a, sec5b, sec5c)
+        self._section_order = (sec1, sec2, sec3, sec4, sec5a, sec5b, sec5c)
 
         # 1. Select annotation layer
         self.add_key_binding("=", self.next_annotation_layer,
@@ -458,6 +458,17 @@ class VideoPointAnnotator(VideoBrowser):
         self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames,
             "Keep only consecutive frames where every label is annotated")
         self.add_key_binding(
+            "f5", self.refresh, "Refresh UI from current annotation data",
+        )
+
+        # Pan keys: ``/`` and ``l`` were registered by
+        # set_default_keybindings at very early dict positions; remove +
+        # re-add here alongside the new ``j`` / ``k`` so all four pan
+        # keys sit as one contiguous block in the cheatsheet's Other
+        # section.
+        self.remove_key_binding("/")
+        self.remove_key_binding("l")
+        self.add_key_binding(
             "j",
             (lambda s: s.pan(direction="left")).__get__(self),
             description="pan left",
@@ -468,7 +479,14 @@ class VideoPointAnnotator(VideoBrowser):
             description="pan right",
         )
         self.add_key_binding(
-            "f5", self.refresh, "Refresh UI from current annotation data",
+            "/",
+            (lambda s: s.pan(direction="right")).__get__(self),
+            description="pan right (alias of k)",
+        )
+        self.add_key_binding(
+            "l",
+            (lambda s: s.pan(direction="up")).__get__(self),
+            description="pan up",
         )
 
         self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
@@ -489,6 +507,16 @@ class VideoPointAnnotator(VideoBrowser):
         matplotlib trace axes (`reset_axes("both")`)."""
         self._image_pane.reset_view()
         self.reset_axes(axis="both", event=event)
+
+    def _add_default_buttons(self) -> None:
+        """Install the default action buttons appended after ``__init__``.
+
+        Subclasses with a hand-curated button order (e.g. DUSTrack's
+        rc2 sidebar) override this to suppress the default placement
+        and add the same buttons at the desired position. Currently
+        installs only ``Refresh UI``; new defaults belong here.
+        """
+        self.buttons.add(text="Refresh UI", action_func=self.refresh)
 
     def refresh(self, event: Any | None = None) -> None:
         """Force-refresh the UI from the current annotation ``.data``.
