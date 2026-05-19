@@ -2221,3 +2221,54 @@ def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
     assert v._current_layer == "alpha"
     assert v.statevariables["annotation_overlay"].current_state == "gamma"
     plt.close(v.figure)
+
+
+def test_video_annotations_reorder_permutes_in_place():
+    """``VideoAnnotations.reorder(names)`` rewrites _list order; idempotent."""
+    from datanavigator.pointtracking import VideoAnnotations
+
+    class _Named:
+        def __init__(self, name):
+            self.name = name
+
+    container = VideoAnnotations(parent=None)
+    a, b, c, d = _Named("a"), _Named("b"), _Named("c"), _Named("d")
+    for x in (a, b, c, d):
+        container._list.append(x)
+    assert container.names == ["a", "b", "c", "d"]
+
+    container.reorder(["c", "a", "d", "b"])
+    assert container.names == ["c", "a", "d", "b"]
+    # Same objects, not copies.
+    assert container["a"] is a and container["b"] is b
+    assert container["c"] is c and container["d"] is d
+
+    # Idempotent no-op when already in target order.
+    before = list(container._list)
+    container.reorder(["c", "a", "d", "b"])
+    assert container._list == before
+
+
+def test_video_annotations_reorder_rejects_non_permutation():
+    """``reorder`` rejects missing / extra / duplicate names."""
+    from datanavigator.pointtracking import VideoAnnotations
+
+    class _Named:
+        def __init__(self, name):
+            self.name = name
+
+    container = VideoAnnotations(parent=None)
+    for n in ("a", "b", "c"):
+        container._list.append(_Named(n))
+
+    # Missing one.
+    with pytest.raises(ValueError):
+        container.reorder(["a", "b"])
+    # Extra unknown name.
+    with pytest.raises(ValueError):
+        container.reorder(["a", "b", "c", "d"])
+    # Duplicate (same length, wrong set).
+    with pytest.raises(ValueError):
+        container.reorder(["a", "a", "b"])
+    # State unchanged on all rejections.
+    assert container.names == ["a", "b", "c"]

@@ -2630,6 +2630,27 @@ class VideoAnnotations(AssetContainer):
             ann = VideoAnnotation(fname, vname, name, **kwargs)
         return super().add(ann)
 
+    def reorder(self, names: list[str]) -> None:
+        """Permute the underlying ``_list`` so layer names follow ``names``.
+
+        ``names`` must be a permutation of the current
+        :attr:`AssetContainer.names`. Callers that own the rotation of a
+        ``annotation_layer`` / ``annotation_overlay``
+        :class:`StateVariable` (i.e. :class:`VideoPointAnnotator` and
+        subclasses) are responsible for resyncing those after this
+        returns -- ``reorder`` only manages the membership order.
+        """
+        current = self.names
+        if list(names) == current:
+            return
+        if set(names) != set(current) or len(names) != len(current):
+            raise ValueError(
+                "reorder(names) requires a permutation of existing layer names; "
+                f"got {names!r} for current {current!r}"
+            )
+        by_name = {ann.name: ann for ann in self._list}
+        self._list = [by_name[n] for n in names]
+
 
 if __name__ == "__main__":
     import sys
