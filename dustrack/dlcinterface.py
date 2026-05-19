@@ -85,6 +85,39 @@ def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, bri
     return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
 
 
+# Layer-name patterns that indicate "dense" tracking output (data on
+# every frame, like a model prediction or a smoothed trajectory) --
+# the default rendering for these is a line plot, vs the dnav default
+# of "dot" which is right for sparse manual annotations. Kept here as
+# data, not a hardcoded predicate, so adding a new smoothing recipe
+# (e.g. a second post-processing filter that writes
+# <stem>_kalman_<param>.json) is a one-line tuple edit. See
+# :func:`_is_dense_layer_name`.
+_DENSE_LAYER_PREFIXES = ("dlc_", "dlccorr")
+_DENSE_LAYER_SUBSTRINGS = ("lkmovavg",)
+
+
+def _is_dense_layer_name(name: str) -> bool:
+    """True if ``name`` is a layer that should render as a line plot
+    by default (DLC inference, the ``dlccorr`` manual-corrections
+    splice, or any LK-RSTC jitter-reduced output).
+
+    The LK output of a non-DLC source (e.g. ``dlccorr``) lands at a
+    name like ``dlccorr_lkmovavg_0.500`` via
+    :meth:`VideoFileManager.canonical_layer_name`'s ``_annotations``
+    branch -- dense like a DLC trace, but it doesn't start with
+    ``dlc_``. The substring match catches it without widening the
+    prefix list. ``dlccorr`` itself is dense because it's the
+    overlay's per-frame DLC trace with the active layer's sparse
+    manual edits spliced in -- per-frame coverage is inherited from
+    the overlay.
+    """
+    return (
+        any(name.startswith(p) for p in _DENSE_LAYER_PREFIXES)
+        or any(s in name for s in _DENSE_LAYER_SUBSTRINGS)
+    )
+
+
 class VideoAnnotation(dnav.VideoAnnotation):
     """
     Enhanced VideoAnnotation with integrated post-processing.
@@ -1347,9 +1380,10 @@ class DUSTrack(dnav.VideoPointAnnotator):
         """Load any annotation files produced by DLC training into the
         live DUSTrack session, plus a fresh empty ``iteration-{N+1}``
         layer to capture next-round manual refinements, set newly-added
-        ``dlc_*`` layers to a line plot, point the overlay statevar at
-        the freshest DLC trace, and activate the new iteration layer
-        so the user can immediately start annotating.
+        dense layers (DLC inference + any LK-RSTC output, see
+        :func:`_is_dense_layer_name`) to a line plot, point the overlay
+        statevar at the freshest ``dlc_*`` trace, and activate the new
+        iteration layer so the user can immediately start annotating.
 
         Mirrors the loading + new-layer logic in
         :meth:`DLCProject.annotate` but operates on the existing
@@ -1407,31 +1441,49 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self.update()
 
     def _normalize_dlc_layer_display(self, scope=None):
-        """Apply the post-load display convention for DLC trace layers:
-        every ``dlc_*`` layer renders as a line plot, and the latest
-        ``dlc_*`` layer is set as the ``annotation_overlay``.
+        """Apply the post-load display convention for DLC-pipeline layers:
+        every *dense* layer renders as a line plot (DLC inference plus
+        any LK-RSTC jitter-reduced output, regardless of source layer),
+        and the latest ``dlc_*`` inference layer is set as the
+        ``annotation_overlay``.
 
-        ``scope`` selects which layer names participate in the overlay
-        decision (the line-plot conversion is always applied to that
-        same scope -- ``set_plot_type`` is idempotent):
+        Two predicates, on purpose:
+
+        - *Dense* (see :func:`_is_dense_layer_name`) drives the
+          plot-type pass. Broader than ``dlc_*`` so a Reduce-jitter
+          output named ``dlccorr_lkmovavg_0.500`` (LK over the
+          manual-corrections layer) renders continuously like every
+          other DLC-pipeline trace.
+        - ``dlc_*`` (narrow) drives the overlay pin. Overlay semantics
+          are "show me the model prediction next to manual", which a
+          smoothing artifact doesn't satisfy -- if the latest dense
+          layer were used, clicking Reduce jitter on a manual layer
+          would silently swap the overlay onto the smoothed layer.
+
+        ``scope`` selects which layer names participate (the plot-type
+        pass is idempotent so re-running on an already-line layer is a
+        no-op):
 
         - ``None`` -- fresh-construction path: scope = all current
-          ``dlc_*`` layers in the session. Always (re-)points the
-          overlay if at least one exists.
+          layers in the session. Always (re-)points the overlay if at
+          least one dlc_* layer exists.
         - iterable of names -- in-place refresh path: scope = the
           freshly-added layers only. If none of them are ``dlc_*``,
           the overlay isn't touched (preserves prior selection).
 
-        Single source of truth shared by :meth:`DLCProject.annotate` and
-        :meth:`_refresh_dlc_layers` so the on-screen state is identical
-        regardless of how the user entered the session.
+        Single source of truth shared by :meth:`DLCProject.annotate`,
+        :meth:`_refresh_dlc_layers`, and :meth:`_adopt_layer` so the
+        on-screen state is identical regardless of how the user
+        entered the session.
         """
         if scope is None:
-            dlc_names = [a.name for a in self.annotations if a.name.startswith("dlc_")]
+            names = [a.name for a in self.annotations]
         else:
-            dlc_names = [n for n in scope if n.startswith("dlc_")]
-        for name in dlc_names:
+            names = list(scope)
+        dense_names = [n for n in names if _is_dense_layer_name(n)]
+        for name in dense_names:
             self.annotations[name].set_plot_type("line")
+        dlc_names = [n for n in names if n.startswith("dlc_")]
         if dlc_names:
             self.statevariables["annotation_overlay"].set_state(dlc_names[-1])
 
@@ -1458,10 +1510,11 @@ class DUSTrack(dnav.VideoPointAnnotator):
         - Adds via :meth:`add_annotation_layers` ``{name: fname}`` so the
           dnav plotting / buffer / label-union plumbing fires identically
           to the bulk-load path.
-        - If the layer name starts with ``dlc_``, runs
-          :meth:`_normalize_dlc_layer_display` over just this one layer so
-          plot-type and ``annotation_overlay`` end up where they would after
-          a close + reopen.
+        - If the layer name is a *dense* DLC-pipeline output (see
+          :func:`_is_dense_layer_name`), runs
+          :meth:`_normalize_dlc_layer_display` over just this one layer
+          so plot-type (and, for ``dlc_*`` names, ``annotation_overlay``)
+          end up where they would after a close + reopen.
         - Skips (returns ``None``) if a layer with that name is already
           loaded -- mirroring :meth:`_refresh_dlc_layers`'s idempotency.
 
@@ -1499,7 +1552,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
             new_layer = self.annotations[name]
             if not isinstance(new_layer, VideoAnnotation):
                 new_layer.__class__ = VideoAnnotation
-            if name.startswith("dlc_"):
+            if _is_dense_layer_name(name):
                 self._normalize_dlc_layer_display(scope=[name])
         # Apply the requested overlay / active state even if the layer
         # was already present -- e.g. Reduce jitter on a layer whose

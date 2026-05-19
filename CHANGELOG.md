@@ -166,6 +166,34 @@ itself.
   in the session now still swaps the UI to the smoothed layer with
   the source pinned as overlay (previously the early `return None`
   left the UI on the source layer).
+- `dustrack/dlcinterface.py`: the "render as line plot, not dots"
+  default for DLC-pipeline layers now covers `dlccorr` (the
+  manual-corrections splice) and every LK-RSTC jitter-reduced
+  output, not just DLC inference and LK outputs derived from a
+  DLC trace. The pre-fix predicate in `_normalize_dlc_layer_display`
+  and `_adopt_layer` was `name.startswith("dlc_")`, which matched
+  DLC inference and the LK output of DLC traces (named
+  `dlc_iteration-N_<window>` via the `DLC` branch of
+  `canonical_layer_name`) but missed `dlccorr` itself and the LK
+  output of the `dlccorr` layer (named `dlccorr_lkmovavg_<window>`
+  via the `_annotations` branch). `dlccorr` is dense because it's
+  the overlay's per-frame DLC trace with the active manual layer's
+  sparse edits spliced in -- per-frame coverage is inherited from
+  the overlay. Symptom: clicking *Apply manual corrections* or
+  *Reduce jitter* on the manual-corrections layer produced a dense
+  trajectory that rendered as disconnected dots, requiring a
+  manual *Trace: line* click. Fixed by widening the plot-type
+  predicate to a new module-level helper `_is_dense_layer_name`
+  (matches `dlc_` or `dlccorr` prefix OR `lkmovavg` substring);
+  the overlay-pin predicate stays at `dlc_*` so neither
+  *Apply manual corrections* nor a Reduce-jitter click on a
+  manual layer silently retargets the overlay off the latest DLC
+  inference. Applies to all three layer-add paths -- cold open
+  (`DLCProject.annotate`), post-train refresh
+  (`_refresh_dlc_layers`), and in-session adopt (`_adopt_layer`).
+  Pattern data lives in the `_DENSE_LAYER_PREFIXES` /
+  `_DENSE_LAYER_SUBSTRINGS` tuples so adding a future smoothing
+  recipe is a one-line edit.
 
 ### Added
 - `dustrack/dlcinterface.py`: pre-flight helpers on `DUSTrack` for
