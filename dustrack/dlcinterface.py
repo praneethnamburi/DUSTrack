@@ -1839,8 +1839,10 @@ class DUSTrack(dnav.VideoPointAnnotator):
         ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
         sidecar = self._build_dropped_incomplete_sidecar_name(ann.fname, ts)
         payload = self._build_dropped_incomplete_payload(ann.data, incomplete_frames)
-        with open(sidecar, "w") as f:
-            json.dump(payload, f, indent=2)
+        # Path.write_text rather than builtin open() because the
+        # module-level open() (workflow entry point) shadows
+        # builtins.open inside this file -- see _load_layer_disk_data.
+        Path(sidecar).write_text(json.dumps(payload, indent=2))
         return sidecar
 
     @staticmethod
