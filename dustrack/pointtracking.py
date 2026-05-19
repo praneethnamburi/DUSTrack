@@ -409,24 +409,24 @@ class VideoPointAnnotator(VideoBrowser):
             )
         self.add_key_binding(
             "a", self.interpolate_with_lk,
-            "Interpolate current label with LK-RSTC (buffer layer)",
+            "Interpolate current label with LK-RSTC (primary layer)",
             group=sec5b,
         )
         self.add_key_binding(
             "ctrl+a",
             (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
-            "Interpolate all labels with LK-RSTC (buffer layer)",
+            "Interpolate all labels with LK-RSTC (primary layer)",
             group=sec5b,
         )
         self.add_key_binding(
             "alt+a", self.remove_labels_in_interval,
-            "Clear current label in selected interval",
+            "Clear current label in selected interval (primary layer)",
             group=sec5b,
         )
         self.add_key_binding(
             "ctrl+alt+a",
             (lambda s: s.remove_labels_in_interval(all_labels=True)).__get__(self),
-            "Clear all labels in selected interval",
+            "Clear all labels in selected interval (primary layer)",
             group=sec5b,
         )
         self.add_key_binding(
