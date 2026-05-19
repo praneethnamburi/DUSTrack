@@ -287,109 +287,117 @@ class VideoPointAnnotator(VideoBrowser):
 
     def set_key_bindings(self) -> None:
         """Set the keyboard actions."""
-        self.add_key_binding("s", self.save, "Save current annotation layer")
-        self.add_key_binding("t", self.add_annotation)
-        self.add_key_binding("y", self.remove_annotation)
+        self.add_key_binding("s", self.save, "Save current annotation layer", group="File")
 
-        self.add_key_binding("f", self.increment_if_unannotated)
-        self.add_key_binding("g", self.increment)
-        self.add_key_binding("d", self.decrement_if_unannotated)
-
-        self.add_key_binding("-", self.previous_annotation_layer)
-        self.add_key_binding("=", self.next_annotation_layer)
-        self.add_key_binding("[", self.previous_annotation_overlay)
-        self.add_key_binding("]", self.next_annotation_overlay)
-        self.add_key_binding(";", self.previous_annotation_label)
-        self.add_key_binding("'", self.next_annotation_label)
-        self.add_key_binding(",", self.previous_frame_with_any_label)
-        self.add_key_binding(".", self.next_frame_with_any_label)
-        self.add_key_binding("alt+,", self.previous_frame_of_interest)
-        self.add_key_binding("alt+.", self.next_frame_of_interest)
-
+        self.add_key_binding("t", self.add_annotation, group="Annotation")
+        self.add_key_binding("y", self.remove_annotation, group="Annotation")
+        self.add_key_binding("c", self.copy_current_annotation_from_overlay, group="Annotation")
+        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay, group="Annotation")
+        self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay, group="Annotation")
         self.add_key_binding(
-            "j",
-            (lambda s: s.pan(direction="left")).__get__(self),
-            description="pan left",
-        )
-        self.add_key_binding(
-            "k",
-            (lambda s: s.pan(direction="right")).__get__(self),
-            description="pan right",
-        )
-
-        self.add_key_binding("`", self.cycle_number_keys_behavior)
-
-        self.add_key_binding("n", self.next_frame_with_current_label)
-        self.add_key_binding("p", self.previous_frame_with_current_label)
-        self.add_key_binding("b", self.previous_frame_with_current_label)
-
-        self.add_key_binding("m", self.toggle_frame_of_interest)
-        self.add_key_binding("c", self.copy_current_annotation_from_overlay)
-        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay)
-        self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay)
-
-        self.add_key_binding(
-            "v",
-            (lambda s: s.check_labels_with_lk(mode="minimal")).__get__(self),
-            "Check labels with LK - minimal mode",
-        )
-        self.add_key_binding(
-            "alt+v",
-            (lambda s: s.check_labels_with_lk(mode="current")).__get__(self),
-            "Check labels with LK - current label",
-        )
-        self.add_key_binding(
-            "ctrl+alt+v",
-            (lambda s: s.check_labels_with_lk(mode="all")).__get__(self),
-            "Check labels with LK - all labels",
-        )
-
-        self.add_key_binding(
-            "a", self.interpolate_with_lk, "Interpolate current point with LK"
-        )
-        self.add_key_binding(
-            "ctrl+a",
-            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
-            "Interpolate all points with LK",
-        )
-
-        self.add_key_binding(
-            "ctrl+d",
-            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
-            "Interpolate all points with LK",
-        )
-
-        self.add_key_binding(
-            "alt+a", self.remove_labels_in_interval, "Clear current label in interval"
+            "alt+a", self.remove_labels_in_interval, "Clear current label in interval",
+            group="Annotation",
         )
         self.add_key_binding(
             "ctrl+alt+a",
             (lambda s: s.remove_labels_in_interval(all_labels=True)).__get__(self),
             "Clear all labels in interval",
+            group="Annotation",
         )
 
+        self.add_key_binding("f", self.increment_if_unannotated, group="Frame nav")
+        self.add_key_binding("g", self.increment, group="Frame nav")
+        self.add_key_binding("d", self.decrement_if_unannotated, group="Frame nav")
+        self.add_key_binding(",", self.previous_frame_with_any_label, group="Frame nav")
+        self.add_key_binding(".", self.next_frame_with_any_label, group="Frame nav")
+        self.add_key_binding("alt+,", self.previous_frame_of_interest, group="Frame nav")
+        self.add_key_binding("alt+.", self.next_frame_of_interest, group="Frame nav")
+        self.add_key_binding("n", self.next_frame_with_current_label, group="Frame nav")
+        self.add_key_binding("p", self.previous_frame_with_current_label, group="Frame nav")
+        self.add_key_binding("b", self.previous_frame_with_current_label, group="Frame nav")
+        self.add_key_binding("m", self.toggle_frame_of_interest, group="Frame nav")
+
+        self.add_key_binding("-", self.previous_annotation_layer, group="Layer / label")
+        self.add_key_binding("=", self.next_annotation_layer, group="Layer / label")
+        self.add_key_binding("[", self.previous_annotation_overlay, group="Layer / label")
+        self.add_key_binding("]", self.next_annotation_overlay, group="Layer / label")
+        self.add_key_binding(";", self.previous_annotation_label, group="Layer / label")
+        self.add_key_binding("'", self.next_annotation_label, group="Layer / label")
+        self.add_key_binding("w", self.increment_label_range, group="Layer / label")
+        self.add_key_binding("q", self.decrement_label_range, group="Layer / label")
+        self.add_key_binding("`", self.cycle_number_keys_behavior, group="Layer / label")
+
+        self.add_key_binding(
+            "j",
+            (lambda s: s.pan(direction="left")).__get__(self),
+            description="pan left",
+            group="View",
+        )
+        self.add_key_binding(
+            "k",
+            (lambda s: s.pan(direction="right")).__get__(self),
+            description="pan right",
+            group="View",
+        )
+
+        self.add_key_binding(
+            "v",
+            (lambda s: s.check_labels_with_lk(mode="minimal")).__get__(self),
+            "Check labels with LK - minimal mode",
+            group="LK / interpolate",
+        )
+        self.add_key_binding(
+            "alt+v",
+            (lambda s: s.check_labels_with_lk(mode="current")).__get__(self),
+            "Check labels with LK - current label",
+            group="LK / interpolate",
+        )
+        self.add_key_binding(
+            "ctrl+alt+v",
+            (lambda s: s.check_labels_with_lk(mode="all")).__get__(self),
+            "Check labels with LK - all labels",
+            group="LK / interpolate",
+        )
+        self.add_key_binding(
+            "a", self.interpolate_with_lk, "Interpolate current point with LK",
+            group="LK / interpolate",
+        )
+        self.add_key_binding(
+            "ctrl+a",
+            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
+            "Interpolate all points with LK",
+            group="LK / interpolate",
+        )
+        self.add_key_binding(
+            "ctrl+d",
+            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
+            "Interpolate all points with LK (no RSTC)",
+            group="LK / interpolate",
+        )
         self.add_key_binding(
             "alt+b",
             (lambda s: s.predict_points_with_lucas_kanade(labels="current")).__get__(
                 self
             ),
             "Predict current point with lucas-kanade",
+            group="LK / interpolate",
         )
         self.add_key_binding(
             "ctrl+b",
             (lambda s: s.predict_points_with_lucas_kanade(labels="all")).__get__(self),
             "Predict all points with lucas-kanade",
+            group="LK / interpolate",
         )
-
-        self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames)
-
-        self.add_key_binding("w", self.increment_label_range)
-        self.add_key_binding("q", self.decrement_label_range)
+        self.add_key_binding(
+            "alt+q", self.keep_overlapping_continuous_frames,
+            group="LK / interpolate",
+        )
 
         self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
 
         self.add_key_binding(
-            "f5", self.refresh, "Refresh UI from current annotation data"
+            "f5", self.refresh, "Refresh UI from current annotation data",
+            group="View",
         )
 
         if self._fast_render:
@@ -400,7 +408,8 @@ class VideoPointAnnotator(VideoBrowser):
             # back" key. Tier 1 keeps the inherited binding (no image
             # zoom to reset).
             self.add_key_binding(
-                "r", self._reset_view_all, "Reset image zoom + trace axes"
+                "r", self._reset_view_all, "Reset image zoom + trace axes",
+                group="View",
             )
 
     def _reset_view_all(self, event: Any | None = None) -> None:

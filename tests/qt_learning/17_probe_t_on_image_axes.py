@@ -95,7 +95,11 @@ def main():
     import types
     ret.add_annotation = types.MethodType(sniff_add_annotation, ret)
     # Rebind the keypress dispatch entry to the new method
-    ret._keypressdict["t"] = (ret.add_annotation, ret._keypressdict["t"][1])
+    from datanavigator.core import KeyBinding
+    prev = ret._keypressdict["t"]
+    ret._keypressdict["t"] = KeyBinding(
+        callback=ret.add_annotation, description=prev.description, group=prev.group
+    )
 
     canvas = ret.figure.canvas
     print(f"figure size : {ret.figure.get_size_inches()} inches")
