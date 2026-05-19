@@ -522,7 +522,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if dark_mode:
             self._apply_dark_theme()
 
-        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings(f="new", pos="center left")).__get__(self))
+        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self))
         # Double separators mark the major button-group boundaries in
         # rc2's vertical sidebar: shortcuts | DLC pipeline | trace +
         # display controls | (state variables, separated by dnav's own
