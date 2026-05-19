@@ -8,6 +8,19 @@
     :special-members: __init__
 ```
 
+## Entry point
+
+The recommended way to start a DUSTrack session. Hand it a path and it
+figures out whether you're starting fresh on a bare video or resuming
+inside a DLC project, dispatching to :class:`~dustrack.dlcinterface.DUSTrack`
+or :meth:`~dustrack.dlcinterface.DLCProject.annotate` accordingly. Direct
+construction of :class:`~dustrack.dlcinterface.DUSTrack` still works for
+advanced use, but ``dustrack.open(...)`` is the documented surface.
+
+```{eval-rst}
+.. autofunction:: dustrack.dlcinterface.open
+```
+
 ## DUSTrack GUI
 
 ```{eval-rst}

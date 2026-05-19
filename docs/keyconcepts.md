@@ -91,18 +91,20 @@ The GUI displays two layers simultaneously:
 
 **Creating layers**:
 ```python
+import dustrack
+
 # Initialize with single layer
-tracker = DUSTrack('video.mp4', "manual")
+tracker = dustrack.open('video.mp4', "manual")
 
 # If video_annotations_manual.json file exists in the same folder as video.mp4, 
 # then annotations from this file will be loaded into the "manual" layer.
 # Otherwise, an "empty" layer will be created.
 
 # Initialize with multiple layers
-tracker = DUSTrack('video.mp4', ["manual", "dlc_iter1"])
+tracker = dustrack.open('video.mp4', ["manual", "dlc_iter1"])
 
 # Initialize with specific file paths
-tracker = DUSTrack('video.mp4', {
+tracker = dustrack.open('video.mp4', {
     'manual': 'path/to/manual_annotations.json',
     'predictions': 'path/to/dlc_predictions.h5'
 })
@@ -202,8 +204,10 @@ The most common operation is the **`z`, `z`, `a` sequence**:
 
 **Example workflow**:
 ```python
+import dustrack
+
 # Setup: manual layer has labels at frames 10 and 50
-tracker = DUSTrack('video.mp4', "manual")
+tracker = dustrack.open('video.mp4', "manual")
 
 # In GUI:
 # 1. Set overlay to "manual" (to use as reference)

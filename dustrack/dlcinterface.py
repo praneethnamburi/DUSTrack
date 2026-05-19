@@ -1081,6 +1081,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
         _ax_lims (dict): Stores axis limits when plot axes are frozen.
     
     Example:
+        >>> # Most users should call :func:`dustrack.open` instead of
+        >>> # constructing DUSTrack directly -- it dispatches to either
+        >>> # this class (bare video) or :meth:`DLCProject.annotate`
+        >>> # (resume in a DLC project) based on the path you pass.
+        >>> # Direct construction below is for advanced / scripted use.
+        >>>
         >>> # Basic usage -- annotation_names defaults to "iteration-0",
         >>> # the canonical seed name for the DLC pipeline (the next
         >>> # DLC training round lands as iteration-1).
@@ -1892,8 +1898,17 @@ class DUSTrack(dnav.VideoPointAnnotator):
     @staticmethod
     def _normalize_layer_data(data: dict) -> dict:
         """Canonical form for diff comparison: int frame keys, float
-        ``[x, y]`` values, empty labels filtered (matches
-        :meth:`VideoAnnotation.save`'s ``remove_empty_labels``).
+        ``[x, y]`` values, empty labels filtered.
+
+        Empty-label filtering exists for *diff* symmetry: a label
+        with no frames contributes no entries to added / removed /
+        modified regardless of whether it's present on one side
+        only. With dnav 1.4.0rc2's first-class-label schema, both
+        on-disk JSON and in-memory data may legitimately carry
+        ``"label": {}`` entries (whereas pre-rc2,
+        :meth:`VideoAnnotation.save` pruned them on the way out); the
+        diff still works correctly because both inputs are filtered
+        the same way here.
         """
         out: dict = {}
         for label, frames in data.items():

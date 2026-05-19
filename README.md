@@ -51,13 +51,22 @@ For longer videos or ultrasound videos with repetitive motions, deep learning si
 ## Quick Start
 
 ```python
-from dustrack import DUSTrack
+import dustrack
 import datanavigator
 
 # Launch the GUI with an example video
 video_path = datanavigator.get_example_video()  # or use your own video path
-d = DUSTrack(video_path, "pn") 
-# The second argument is the name of the "layer" for storing tracking annotations
+d = dustrack.open(video_path, "pn")
+# The second argument is the name of the "layer" for storing tracking annotations.
+# If you omit it, DUSTrack defaults to "iteration-0" -- the canonical seed name
+# for the DLC training pipeline (next iteration lands as "iteration-1").
+
+# To resume later, `dustrack.open(...)` auto-detects whether the path is a
+# bare video (start fresh) or a DLC project (resume in place):
+#   dustrack.open('video.mp4')                          # fresh, single video
+#   dustrack.open('path/to/project/')                   # resume from project root
+#   dustrack.open('path/to/project/config.yaml')        # resume from config
+#   dustrack.open('path/to/project/videos/video.mp4')   # resume on a specific video
 ```
 
 **Next steps:**
