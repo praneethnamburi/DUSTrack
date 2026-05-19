@@ -1409,7 +1409,7 @@ def test_video_point_annotator_copy_annotations(video_fname):
 
 
 def test_video_point_annotator_lucas_kanade(video_fname):
-    # -- predict_points_with_lucas_kanade --
+    # -- predict_labels_with_lucas_kanade --
     v = datanavigator.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn6"]
     )

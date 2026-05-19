@@ -286,119 +286,168 @@ class VideoPointAnnotator(VideoBrowser):
     
 
     def set_key_bindings(self) -> None:
-        """Set the keyboard actions."""
-        self.add_key_binding("s", self.save, "Save current annotation layer", group="File")
+        """Set the keyboard actions.
 
-        self.add_key_binding("t", self.add_annotation, group="Annotation")
-        self.add_key_binding("y", self.remove_annotation, group="Annotation")
-        self.add_key_binding("c", self.copy_current_annotation_from_overlay, group="Annotation")
-        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay, group="Annotation")
-        self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay, group="Annotation")
+        Groups mirror the 5-step workflow in ``docs/source/resources/
+        keyboard_shortcuts.png``: layer selection → label selection →
+        frame navigation → edit → refine. Bindings not on the PNG
+        (save, refresh, reset view, pan, keep-overlapping) fall through
+        to the "Other" section of the cheatsheet.
+        """
+        # 1. Select annotation layer
+        sec1 = "1. Select annotation layer"
+        self.add_key_binding("=", self.next_annotation_layer,
+            "Next annotation layer (primary)", group=sec1)
+        self.add_key_binding("-", self.previous_annotation_layer,
+            "Previous annotation layer (primary)", group=sec1)
+        self.add_key_binding("]", self.next_annotation_overlay,
+            "Next annotation layer (overlay)", group=sec1)
+        self.add_key_binding("[", self.previous_annotation_overlay,
+            "Previous annotation layer (overlay)", group=sec1)
+
+        # 2. Select annotation number (#)
+        sec2 = "2. Select annotation number (#)"
+        self.add_key_binding("'", self.next_annotation_label,
+            "Next annotation label (#)", group=sec2)
+        self.add_key_binding(";", self.previous_annotation_label,
+            "Previous annotation label (#)", group=sec2)
+        self.add_key_binding("`", self.cycle_number_keys_behavior,
+            "Toggle num-keys mode (select / place)", group=sec2)
+        self.add_key_binding("w", self.increment_label_range,
+            "Next annotation # range", group=sec2)
+        self.add_key_binding("q", self.decrement_label_range,
+            "Previous annotation # range", group=sec2)
+
+        # 3. Navigate to the desired video frame
+        sec3 = "3. Navigate to the desired video frame"
+        self.add_key_binding("g", self.increment,
+            "Next video frame", group=sec3)
+        self.add_key_binding("f", self.increment_if_unannotated,
+            "Next video frame if unannotated", group=sec3)
+        self.add_key_binding("d", self.decrement_if_unannotated,
+            "Previous video frame if unannotated", group=sec3)
+        self.add_key_binding(",", self.previous_frame_with_any_label,
+            "Previous frame with any annotation", group=sec3)
+        self.add_key_binding(".", self.next_frame_with_any_label,
+            "Next frame with any annotation", group=sec3)
+        self.add_key_binding("alt+,", self.previous_frame_of_interest,
+            "Previous frame of interest", group=sec3)
+        self.add_key_binding("alt+.", self.next_frame_of_interest,
+            "Next frame of interest", group=sec3)
+        self.add_key_binding("n", self.next_frame_with_current_label,
+            "Next frame with current annotation", group=sec3)
+        self.add_key_binding("p", self.previous_frame_with_current_label,
+            "Previous frame with current annotation", group=sec3)
+        self.add_key_binding("b", self.previous_frame_with_current_label,
+            "Previous frame with current annotation (alias of p)", group=sec3)
+
+        # 4. Edit annotation
+        sec4 = "4. Edit annotation"
+        self.add_key_binding("t", self.add_annotation,
+            "Add annotation (hover on image)", group=sec4)
+        self.add_key_binding("y", self.remove_annotation,
+            "Remove annotation (hover near it on image)", group=sec4)
+
+        # 5a. LK-RSTC based label augmentation
+        sec5a = "5a. LK-RSTC based label augmentation"
         self.add_key_binding(
-            "alt+a", self.remove_labels_in_interval, "Clear current label in interval",
-            group="Annotation",
+            "a", self.interpolate_with_lk,
+            "Interpolate current label with LK-RSTC (buffer layer)",
+            group=sec5a,
         )
         self.add_key_binding(
-            "ctrl+alt+a",
-            (lambda s: s.remove_labels_in_interval(all_labels=True)).__get__(self),
-            "Clear all labels in interval",
-            group="Annotation",
-        )
-
-        self.add_key_binding("f", self.increment_if_unannotated, group="Frame nav")
-        self.add_key_binding("g", self.increment, group="Frame nav")
-        self.add_key_binding("d", self.decrement_if_unannotated, group="Frame nav")
-        self.add_key_binding(",", self.previous_frame_with_any_label, group="Frame nav")
-        self.add_key_binding(".", self.next_frame_with_any_label, group="Frame nav")
-        self.add_key_binding("alt+,", self.previous_frame_of_interest, group="Frame nav")
-        self.add_key_binding("alt+.", self.next_frame_of_interest, group="Frame nav")
-        self.add_key_binding("n", self.next_frame_with_current_label, group="Frame nav")
-        self.add_key_binding("p", self.previous_frame_with_current_label, group="Frame nav")
-        self.add_key_binding("b", self.previous_frame_with_current_label, group="Frame nav")
-        self.add_key_binding("m", self.toggle_frame_of_interest, group="Frame nav")
-
-        self.add_key_binding("-", self.previous_annotation_layer, group="Layer / label")
-        self.add_key_binding("=", self.next_annotation_layer, group="Layer / label")
-        self.add_key_binding("[", self.previous_annotation_overlay, group="Layer / label")
-        self.add_key_binding("]", self.next_annotation_overlay, group="Layer / label")
-        self.add_key_binding(";", self.previous_annotation_label, group="Layer / label")
-        self.add_key_binding("'", self.next_annotation_label, group="Layer / label")
-        self.add_key_binding("w", self.increment_label_range, group="Layer / label")
-        self.add_key_binding("q", self.decrement_label_range, group="Layer / label")
-        self.add_key_binding("`", self.cycle_number_keys_behavior, group="Layer / label")
-
-        self.add_key_binding(
-            "j",
-            (lambda s: s.pan(direction="left")).__get__(self),
-            description="pan left",
-            group="View",
+            "ctrl+a",
+            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
+            "Interpolate all labels with LK-RSTC (buffer layer)",
+            group=sec5a,
         )
         self.add_key_binding(
-            "k",
-            (lambda s: s.pan(direction="right")).__get__(self),
-            description="pan right",
-            group="View",
+            "ctrl+d",
+            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
+            "Interpolate all labels with LK (no RSTC, primary layer)",
+            group=sec5a,
         )
-
+        self.add_key_binding(
+            "alt+b",
+            (lambda s: s.predict_labels_with_lucas_kanade(labels="current")).__get__(
+                self
+            ),
+            "Predict current label at current frame with LK (primary layer)",
+            group=sec5a,
+        )
+        self.add_key_binding(
+            "ctrl+b",
+            (lambda s: s.predict_labels_with_lucas_kanade(labels="all")).__get__(self),
+            "Predict all labels at current frame with LK (primary layer)",
+            group=sec5a,
+        )
         self.add_key_binding(
             "v",
             (lambda s: s.check_labels_with_lk(mode="minimal")).__get__(self),
             "Check labels with LK - minimal mode",
-            group="LK / interpolate",
+            group=sec5a,
         )
         self.add_key_binding(
             "alt+v",
             (lambda s: s.check_labels_with_lk(mode="current")).__get__(self),
             "Check labels with LK - current label",
-            group="LK / interpolate",
+            group=sec5a,
         )
         self.add_key_binding(
             "ctrl+alt+v",
             (lambda s: s.check_labels_with_lk(mode="all")).__get__(self),
             "Check labels with LK - all labels",
-            group="LK / interpolate",
+            group=sec5a,
+        )
+
+        # 5b. Refine labels in a selected interval
+        sec5b = "5b. Refine labels in a selected interval"
+        self.add_key_binding(
+            "alt+a", self.remove_labels_in_interval,
+            "Clear current label in selected interval",
+            group=sec5b,
         )
         self.add_key_binding(
-            "a", self.interpolate_with_lk, "Interpolate current point with LK",
-            group="LK / interpolate",
+            "ctrl+alt+a",
+            (lambda s: s.remove_labels_in_interval(all_labels=True)).__get__(self),
+            "Clear all labels in selected interval",
+            group=sec5b,
+        )
+
+        # 5c. Copy annotations between layers
+        sec5c = "5c. Copy annotations between layers"
+        self.add_key_binding("m", self.toggle_frame_of_interest,
+            "Toggle (mark / unmark) current frame as a frame of interest",
+            group=sec5c)
+        self.add_key_binding("c", self.copy_current_annotation_from_overlay,
+            "Copy current annotation at current frame from overlay",
+            group=sec5c)
+        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay,
+            "Copy annotations at frames of interest from overlay",
+            group=sec5c)
+        self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay,
+            "Copy annotations in selected interval from overlay",
+            group=sec5c)
+
+        # Bindings not depicted on the docs PNG -- fall through to "Other".
+        self.add_key_binding("s", self.save, "Save current annotation layer")
+        self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames,
+            "Keep only frames where every label is annotated")
+        self.add_key_binding(
+            "j",
+            (lambda s: s.pan(direction="left")).__get__(self),
+            description="pan left",
         )
         self.add_key_binding(
-            "ctrl+a",
-            (lambda s: s.interpolate_with_lk(all_labels=True)).__get__(self),
-            "Interpolate all points with LK",
-            group="LK / interpolate",
+            "k",
+            (lambda s: s.pan(direction="right")).__get__(self),
+            description="pan right",
         )
         self.add_key_binding(
-            "ctrl+d",
-            (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
-            "Interpolate all points with LK (no RSTC)",
-            group="LK / interpolate",
-        )
-        self.add_key_binding(
-            "alt+b",
-            (lambda s: s.predict_points_with_lucas_kanade(labels="current")).__get__(
-                self
-            ),
-            "Predict current point with lucas-kanade",
-            group="LK / interpolate",
-        )
-        self.add_key_binding(
-            "ctrl+b",
-            (lambda s: s.predict_points_with_lucas_kanade(labels="all")).__get__(self),
-            "Predict all points with lucas-kanade",
-            group="LK / interpolate",
-        )
-        self.add_key_binding(
-            "alt+q", self.keep_overlapping_continuous_frames,
-            group="LK / interpolate",
+            "f5", self.refresh, "Refresh UI from current annotation data",
         )
 
         self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
-
-        self.add_key_binding(
-            "f5", self.refresh, "Refresh UI from current annotation data",
-            group="View",
-        )
 
         if self._fast_render:
             # Overwrite the inherited 'r' binding (GenericBrowser.reset_axes)
@@ -409,7 +458,6 @@ class VideoPointAnnotator(VideoBrowser):
             # zoom to reset).
             self.add_key_binding(
                 "r", self._reset_view_all, "Reset image zoom + trace axes",
-                group="View",
             )
 
     def _reset_view_all(self, event: Any | None = None) -> None:
@@ -922,7 +970,7 @@ class VideoPointAnnotator(VideoBrowser):
         self.ann.keep_overlapping_frames()
         self.update()
 
-    def predict_points_with_lucas_kanade(
+    def predict_labels_with_lucas_kanade(
         self,
         labels: str | list[str] = "all",
         start_frame: int | None = None,
