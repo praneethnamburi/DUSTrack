@@ -145,3 +145,213 @@ class TestFormatIncompleteBreakdown:
         assert len(lines) == 4  # 3 rows + tail
         assert lines[0] == "Frame 0: missing 0"
         assert lines[-1] == "... (497 more frames)"
+
+
+class TestIsManualAnnotationLayer:
+    VIDEO = "/data/v1/myvideo.mp4"
+
+    def _check(self, ann_fname, ann_name):
+        return DUSTrack._is_manual_annotation_layer(self.VIDEO, ann_fname, ann_name)
+
+    def test_typical_iteration_layer_is_manual(self):
+        assert self._check("/data/v1/myvideo_annotations_iteration-2.json", "iteration-2")
+
+    def test_unsuffixed_annotations_file_is_manual(self):
+        # The default <video>_annotations.json (no suffix; layer name is "noname"
+        # in dnav but DUSTrack canonicalises it).
+        assert self._check("/data/v1/myvideo_annotations.json", "")
+
+    def test_renamed_layer_still_manual(self):
+        # User closed UI and renamed iteration-1 to iter1 on disk.
+        # File pattern still matches; layer name is irrelevant.
+        assert self._check("/data/v1/myvideo_annotations_iter1.json", "iter1")
+
+    def test_experimenter_initials_layer_is_manual(self):
+        # Initial layer seeded with experimenter initials per DUSTrack convention.
+        assert self._check("/data/v1/myvideo_annotations_pn.json", "pn")
+
+    def test_dlccorr_excluded(self):
+        # File matches the pattern but the layer name is the terminal
+        # apply_manual_corrections output -- not a training source.
+        assert not self._check(
+            "/data/v1/myvideo_annotations_dlccorr.json", "dlccorr"
+        )
+
+    def test_buffer_excluded(self):
+        # Workspace scratch layer.
+        assert not self._check(
+            "/data/v1/myvideo_annotations_buffer.json", "buffer"
+        )
+
+    def test_dlc_trace_layer_excluded_by_name(self):
+        # LK output (process_with_lk) lands alongside the video as a
+        # .json matching the pattern, but its layer name starts with
+        # "dlc" so we exclude.
+        assert not self._check(
+            "/data/v1/myvideo_annotations_dlc_iteration-2_0.500.json",
+            "dlc_iteration-2_0.500",
+        )
+
+    def test_h5_file_excluded(self):
+        # DLC traces from h5 don't match the .json suffix.
+        assert not self._check(
+            "/data/v1/myvideo_iteration-2.h5", "dlc_iteration-2"
+        )
+
+    def test_different_directory_excluded(self):
+        # .json with the right name but in a different folder
+        # (e.g. a postprocess subdir or unrelated working dir).
+        assert not self._check(
+            "/data/v1/postprocess/myvideo_annotations_iteration-2.json",
+            "iteration-2",
+        )
+
+    def test_wrong_stem_pattern_excluded(self):
+        # Filename doesn't match <video_stem>_annotations*.
+        assert not self._check("/data/v1/myvideo_notes_iteration-2.json", "iteration-2")
+
+    def test_none_fname_excluded(self):
+        assert not self._check(None, "iteration-2")
+
+
+class TestNormalizeLayerData:
+    def test_int_keys_float_values(self):
+        # JSON loads frame keys as strings and xy as int/float mixed.
+        raw = {"0": {"5": [1, 2], "6": [3.5, 4]}, "1": {"5": [10, 20]}}
+        out = DUSTrack._normalize_layer_data(raw)
+        assert out == {
+            "0": {5: [1.0, 2.0], 6: [3.5, 4.0]},
+            "1": {5: [10.0, 20.0]},
+        }
+        # Verify the types explicitly.
+        for label, frames in out.items():
+            for frame, xy in frames.items():
+                assert isinstance(frame, int)
+                assert all(isinstance(x, float) for x in xy)
+
+    def test_drops_empty_labels(self):
+        raw = {"0": {5: [1.0, 1.0]}, "1": {}, "2": {3: [2.0, 2.0]}}
+        out = DUSTrack._normalize_layer_data(raw)
+        assert set(out.keys()) == {"0", "2"}
+
+
+class TestDiffAnnVsDisk:
+    def test_identical_returns_no_diff(self):
+        a = {"0": {5: [1.0, 1.0]}}
+        b = {"0": {5: [1.0, 1.0]}}
+        result = DUSTrack._diff_ann_vs_disk(a, b)
+        assert result == {"added": [], "removed": [], "modified": []}
+
+    def test_added_frames_detected(self):
+        mem = {"0": {5: [1.0, 1.0], 6: [2.0, 2.0]}}
+        disk = {"0": {5: [1.0, 1.0]}}
+        result = DUSTrack._diff_ann_vs_disk(mem, disk)
+        assert result["added"] == [("0", 6)]
+        assert result["removed"] == []
+        assert result["modified"] == []
+
+    def test_removed_frames_detected(self):
+        mem = {"0": {5: [1.0, 1.0]}}
+        disk = {"0": {5: [1.0, 1.0]}, "1": {3: [9.0, 9.0]}}
+        result = DUSTrack._diff_ann_vs_disk(mem, disk)
+        assert result["added"] == []
+        assert result["removed"] == [("1", 3)]
+        assert result["modified"] == []
+
+    def test_modified_xy_detected(self):
+        mem = {"0": {5: [1.5, 1.0]}}
+        disk = {"0": {5: [1.0, 1.0]}}
+        result = DUSTrack._diff_ann_vs_disk(mem, disk)
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert result["modified"] == [("0", 5)]
+
+    def test_disk_empty_treats_all_mem_as_added(self):
+        # Fully unsaved layer: disk has no file yet, mem has data.
+        mem = {"0": {5: [1.0, 1.0], 6: [2.0, 2.0]}}
+        result = DUSTrack._diff_ann_vs_disk(mem, {})
+        assert result["added"] == [("0", 5), ("0", 6)]
+        assert result["removed"] == []
+        assert result["modified"] == []
+
+    def test_results_label_then_frame_sorted(self):
+        mem = {
+            "1": {5: [1.0, 1.0], 2: [1.0, 1.0]},
+            "0": {10: [1.0, 1.0]},
+        }
+        result = DUSTrack._diff_ann_vs_disk(mem, {})
+        # Labels sorted: "0" then "1"; within each label, frames sorted.
+        assert result["added"] == [("0", 10), ("1", 2), ("1", 5)]
+
+
+class TestFormatPreFlightSummary:
+    def test_diffs_only_layer(self):
+        issues = {
+            "iteration-1": {
+                "diff": {"added": [("0", 5)], "removed": [], "modified": []},
+                "incomplete": {},
+            }
+        }
+        out = DUSTrack._format_pre_flight_summary(issues)
+        assert "Layer 'iteration-1'" in out
+        assert "+1 added" in out
+        assert "(no incomplete frames)" in out
+
+    def test_incomplete_only_layer(self):
+        issues = {
+            "iteration-2": {
+                "diff": {"added": [], "removed": [], "modified": []},
+                "incomplete": {5: ["1"], 10: ["0", "2"]},
+            }
+        }
+        out = DUSTrack._format_pre_flight_summary(issues)
+        assert "(no unsaved changes)" in out
+        assert "Incomplete frames: 2" in out
+        assert "frame 5: missing 1" in out
+        assert "frame 10: missing 0, 2" in out
+
+    def test_both_kinds_of_issues(self):
+        issues = {
+            "pn": {
+                "diff": {
+                    "added": [("0", 5)],
+                    "removed": [("1", 3)],
+                    "modified": [("0", 7)],
+                },
+                "incomplete": {2: ["1"]},
+            }
+        }
+        out = DUSTrack._format_pre_flight_summary(issues)
+        assert "+1 added" in out
+        assert "-1 removed" in out
+        assert "~1 modified" in out
+        assert "Incomplete frames: 1" in out
+
+    def test_multiple_layers_separated_by_blank_line(self):
+        issues = {
+            "iteration-1": {
+                "diff": {"added": [("0", 5)], "removed": [], "modified": []},
+                "incomplete": {},
+            },
+            "iteration-2": {
+                "diff": {"added": [], "removed": [], "modified": []},
+                "incomplete": {7: ["0"]},
+            },
+        }
+        out = DUSTrack._format_pre_flight_summary(issues)
+        assert "\n\n" in out  # blank line between layer blocks
+        assert "Layer 'iteration-1'" in out
+        assert "Layer 'iteration-2'" in out
+
+    def test_incomplete_truncation(self):
+        issues = {
+            "iteration-1": {
+                "diff": {"added": [], "removed": [], "modified": []},
+                "incomplete": {i: ["0"] for i in range(10)},
+            }
+        }
+        out = DUSTrack._format_pre_flight_summary(
+            issues, max_incomplete_examples=2
+        )
+        assert "Incomplete frames: 10" in out
+        assert "... (8 more)" in out

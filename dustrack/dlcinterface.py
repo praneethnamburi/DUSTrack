@@ -729,24 +729,27 @@ class DUSTrack(dnav.VideoPointAnnotator):
         failure paths fold into the overlay rather than popping a
         separate :class:`QMessageBox`.
 
-        A **pre-flight check on the active annotation layer** runs
-        before the overlay starts: any frame missing one or more
-        bodyparts triggers a modal with a per-bodypart breakdown and
-        a choice between *Drop and train* (drop the incomplete frames,
-        write a ``<fstem>.dustrack-dropped-incomplete-<ts>`` recovery
-        sidecar next to the annotation file, save the trimmed layer,
-        then train) and *Cancel* (return to the UI to fix manually).
-        On the clean path the active layer is still saved right
-        before training kicks off, so the on-disk state reflects
-        exactly what feeds DLC's training input. Empty layers (the
-        auto-created ``iteration-N+1`` placeholder from
-        :meth:`_refresh_dlc_layers`, untouched by the user) skip the
-        save -- persisting an empty json next to the video would
-        let the annotation-discovery glob re-ingest it on the next
-        training run. The check covers the active layer only;
-        sibling annotation files in the project folder may have
-        their own incomplete frames that still feed
-        :meth:`DLCProject.extract_frames`.
+        A **unified pre-flight** runs before the overlay starts,
+        scanning *every* manual annotation layer in the session
+        (file-pattern detection -- ``.json`` alongside the video,
+        ``<video_stem>_annotations*.json``, minus ``dlccorr`` /
+        ``buffer`` / ``dlc*``; agnostic to which layer is active,
+        the overlay, or a placeholder, and to whether the user
+        renamed ``iteration-N`` to something else). For each manual
+        layer we report (a) in-memory diffs vs the on-disk JSON
+        and (b) frames missing one or more bodyparts. If any layer
+        has either kind of issue, a single modal lists the
+        per-layer breakdown and offers two actions: *Save and clean*
+        (write per-layer recovery sidecars for the dropped frames,
+        drop the incomplete frames from every affected layer, then
+        save every affected layer, then train) and *Cancel*
+        (return to the UI). Layers without issues are not touched;
+        DLC trace layers and ``dlccorr`` are not in scope. Recovery
+        sidecars are written as
+        ``<fstem>.dustrack-dropped-incomplete-<YYYYMMDDTHHMMSS>``;
+        the composite extension avoids ``.json`` so the
+        annotation-discovery glob does not re-ingest them on
+        subsequent training runs.
 
         DLC's stdout/stderr are also teed to the launching terminal
         (``sys.__stdout__``) so callers who launched from a shell can
@@ -788,34 +791,20 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
 
-        # Pre-flight: scan the active layer for incomplete frames. If
-        # any, ask the user whether to drop them (with sidecar) or
-        # bail back to the UI.
-        incomplete = self._scan_incomplete_frames(self.ann.data)
-        if incomplete:
-            if not self._prompt_drop_or_cancel(qt_window, incomplete):
-                return self  # user cancelled -- leave the UI intact
-            self._save_dropped_incomplete_sidecar(incomplete)
-            # remove_empty_labels first so the underlying
-            # frames_overlapping is well-defined (placeholder labels
-            # with zero annotations would otherwise empty the set).
-            self.ann.remove_empty_labels()
-            self.keep_overlapping_frames()
-
-        # Save the active layer right before training kicks off so the
-        # on-disk state matches what DLC will see. Skip if the layer
-        # is empty: the auto-created iteration-N+1 placeholder
-        # (from _refresh_dlc_layers post-train) lands empty until the
-        # user starts refining, and persisting it would leave an
-        # empty json next to the video for the annotation-discovery
-        # glob to re-ingest on the next training run.
-        if self.ann.frames:
-            self.save()
-        else:
-            print(
-                f"[train_dlc] skipping pre-train save of empty source "
-                f"layer {self.ann.name!r}."
-            )
+        # Pre-flight: scan every manual annotation layer for
+        # in-memory-vs-disk diffs AND/OR frames missing one or more
+        # bodyparts. Single modal lets the user save & clean
+        # everything in one click or return to the UI; layers
+        # without issues are not touched. DLC traces / dlccorr /
+        # buffer / non-iteration placeholders all fall out of scope
+        # by file pattern, so a user who happens to have a DLC
+        # trace active at click time doesn't trigger an h5 save
+        # crash or a silent-overwrite of an unrelated layer.
+        issues = self._scan_unsaved_and_incomplete()
+        if issues:
+            if not self._prompt_unified_pre_flight(qt_window, issues):
+                return self  # user cancelled -- UI left intact
+            self._apply_pre_flight_remediations(issues)
 
         def _train():
             self._dlcproject.process(*args, **kwargs)
@@ -915,55 +904,240 @@ class DUSTrack(dnav.VideoPointAnnotator):
             rows.append(f"Frame {frame}: missing {', '.join(missing)}")
         return "\n".join(rows)
 
-    def _save_dropped_incomplete_sidecar(self, incomplete_frames: dict):
-        """Persist the dropped-frame contents next to the active layer.
+    def _save_dropped_incomplete_sidecar(self, ann, incomplete_frames: dict):
+        """Persist the dropped-frame contents next to the given layer.
 
-        Returns the sidecar path on success, ``None`` if the active
-        layer has no on-disk filename (in-memory only).
+        Returns the sidecar path on success, ``None`` if the layer
+        has no on-disk filename (in-memory only).
         """
         import datetime
         import json
-        if self.ann.fname is None:
+        if ann.fname is None:
             return None
         ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-        sidecar = self._build_dropped_incomplete_sidecar_name(self.ann.fname, ts)
-        payload = self._build_dropped_incomplete_payload(self.ann.data, incomplete_frames)
+        sidecar = self._build_dropped_incomplete_sidecar_name(ann.fname, ts)
+        payload = self._build_dropped_incomplete_payload(ann.data, incomplete_frames)
         with open(sidecar, "w") as f:
             json.dump(payload, f, indent=2)
         return sidecar
 
-    def _prompt_drop_or_cancel(self, qt_window, incomplete_frames: dict) -> bool:
-        """Show the pre-flight modal; return True iff user picked
-        *Drop and train*.
+    @staticmethod
+    def _is_manual_annotation_layer(
+        video_fname,
+        ann_fname,
+        ann_name: str,
+        special_names: tuple = ("dlccorr", "buffer"),
+    ) -> bool:
+        """Identify a manual annotation ``.json`` layer that feeds
+        :meth:`DLCProject.extract_frames`.
+
+        Rule: ``.json`` file alongside the video, matching the
+        ``<video_stem>_annotations*.json`` pattern. Excludes
+        ``dlccorr`` (terminal output of apply_manual_corrections,
+        also stripped by the ``_dlccorr`` filter in extract_frames),
+        ``buffer`` (workspace scratch), and any layer whose name
+        starts with ``"dlc"`` (DLC traces and process_with_lk LK
+        outputs land in the video dir but are not manual training
+        sources).
+
+        File-based detection -- doesn't rely on the
+        ``iteration-N`` naming convention, so a layer the user
+        renamed to ``iter1`` or seeded with experimenter initials
+        (e.g. ``pn``) is still picked up.
+        """
+        if ann_fname is None or video_fname is None:
+            return False
+        fname_path = Path(ann_fname)
+        if fname_path.suffix != ".json":
+            return False
+        video_path = Path(video_fname)
+        if fname_path.parent != video_path.parent:
+            return False
+        video_stem = video_path.stem
+        stem = fname_path.stem
+        if stem != f"{video_stem}_annotations" and not stem.startswith(
+            f"{video_stem}_annotations_"
+        ):
+            return False
+        if ann_name in special_names:
+            return False
+        if ann_name.startswith("dlc"):
+            return False
+        return True
+
+    @staticmethod
+    def _normalize_layer_data(data: dict) -> dict:
+        """Canonical form for diff comparison: int frame keys, float
+        ``[x, y]`` values, empty labels filtered (matches
+        :meth:`VideoAnnotation.save`'s ``remove_empty_labels``).
+        """
+        out: dict = {}
+        for label, frames in data.items():
+            if not frames:
+                continue
+            out[label] = {
+                int(frame): [float(x) for x in xy]
+                for frame, xy in frames.items()
+            }
+        return out
+
+    @staticmethod
+    def _load_layer_disk_data(ann_fname) -> dict:
+        """Read the on-disk JSON for a layer and return its data in
+        canonical form. Empty dict if the file does not exist or
+        cannot be parsed (treated as "fully unsaved").
+        """
+        import json
+        if ann_fname is None:
+            return {}
+        p = Path(ann_fname)
+        if not p.exists():
+            return {}
+        try:
+            with open(p) as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return DUSTrack._normalize_layer_data(raw)
+
+    @staticmethod
+    def _diff_ann_vs_disk(mem_data: dict, disk_data: dict) -> dict:
+        """Compare two canonical data dicts. Returns
+        ``{"added": [...], "removed": [...], "modified": [...]}``
+        where each list contains ``(label, frame)`` tuples in label-
+        then frame-sorted order.
+
+        Both inputs are assumed normalized via
+        :meth:`_normalize_layer_data`.
+        """
+        added: list = []
+        removed: list = []
+        modified: list = []
+        all_labels = set(mem_data) | set(disk_data)
+        for label in sorted(all_labels):
+            mem_frames = mem_data.get(label, {})
+            disk_frames = disk_data.get(label, {})
+            for frame in sorted(set(mem_frames) - set(disk_frames)):
+                added.append((label, frame))
+            for frame in sorted(set(disk_frames) - set(mem_frames)):
+                removed.append((label, frame))
+            for frame in sorted(set(mem_frames) & set(disk_frames)):
+                if mem_frames[frame] != disk_frames[frame]:
+                    modified.append((label, frame))
+        return {"added": added, "removed": removed, "modified": modified}
+
+    def _scan_unsaved_and_incomplete(self) -> dict:
+        """Across every manual annotation layer in the session, find
+        in-memory-vs-disk diffs AND/OR incomplete frames. Returns
+        ``{layer_name: {"diff": ..., "incomplete": ...}}`` for
+        layers with at least one issue; layers with neither are
+        omitted.
+
+        Manual annotation layers are identified by file pattern
+        (see :meth:`_is_manual_annotation_layer`) so the scan is
+        agnostic to which layer is the active one, the overlay, or
+        a placeholder.
+        """
+        issues: dict = {}
+        for ann in self.annotations:
+            if not self._is_manual_annotation_layer(
+                self.fname, ann.fname, ann.name
+            ):
+                continue
+            mem_data = self._normalize_layer_data(ann.data)
+            disk_data = self._load_layer_disk_data(ann.fname)
+            diff = self._diff_ann_vs_disk(mem_data, disk_data)
+            incomplete = self._scan_incomplete_frames(ann.data)
+            if any(diff.values()) or incomplete:
+                issues[ann.name] = {"diff": diff, "incomplete": incomplete}
+        return issues
+
+    @staticmethod
+    def _format_pre_flight_summary(
+        issues: dict, max_incomplete_examples: int = 3
+    ) -> str:
+        """Per-layer breakdown for the unified pre-flight modal's
+        detailed-text panel.
+        """
+        blocks = []
+        for layer_name, info in issues.items():
+            lines = [f"Layer {layer_name!r}:"]
+            diff = info.get("diff", {})
+            a = len(diff.get("added", []))
+            r = len(diff.get("removed", []))
+            m = len(diff.get("modified", []))
+            if a or r or m:
+                pieces = []
+                if a:
+                    pieces.append(f"+{a} added")
+                if r:
+                    pieces.append(f"-{r} removed")
+                if m:
+                    pieces.append(f"~{m} modified")
+                lines.append("  Unsaved changes: " + ", ".join(pieces))
+            else:
+                lines.append("  (no unsaved changes)")
+            incomplete = info.get("incomplete", {})
+            if incomplete:
+                n = len(incomplete)
+                lines.append(f"  Incomplete frames: {n}")
+                for i, (frame, missing) in enumerate(sorted(incomplete.items())):
+                    if i >= max_incomplete_examples:
+                        lines.append(
+                            f"    ... ({n - max_incomplete_examples} more)"
+                        )
+                        break
+                    lines.append(
+                        f"    frame {frame}: missing {', '.join(missing)}"
+                    )
+            else:
+                lines.append("  (no incomplete frames)")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
+        """Single modal for the combined save-state + incompleteness
+        pre-flight. Returns True iff the user picked
+        *Save and clean*.
         """
         from qtpy.QtWidgets import QMessageBox
-
-        n = len(incomplete_frames)
+        n = len(issues)
         msg = QMessageBox(qt_window)
         msg.setIcon(QMessageBox.Warning)
-        msg.setWindowTitle("Incomplete frames detected")
+        msg.setWindowTitle("Pre-flight issues")
         msg.setText(
-            f"{n} frame{'s' if n != 1 else ''} in the active layer "
-            f"({self.ann.name!r}) "
-            f"{'are' if n != 1 else 'is'} missing one or more bodyparts."
+            f"{n} manual annotation layer{'s' if n != 1 else ''} "
+            f"{'have' if n != 1 else 'has'} unsaved changes and/or "
+            "incomplete frames."
         )
         msg.setInformativeText(
-            "DeepLabCut tolerates per-bodypart NaN in its CSV but partial "
-            "frames degrade the trained model in practice.\n\n"
-            "Choose Drop and train to drop these frames from the active "
-            "layer (a sidecar is written so the data is recoverable) and "
-            "kick off training. Choose Cancel to return to the UI and fix "
-            "them manually.\n\n"
-            "Note: this check covers the active layer only. Other "
-            "annotation files in the project folder may have their own "
-            "incomplete frames that will still feed DLC's training input."
+            "Choose Save and clean to:\n"
+            " - save in-memory edits to disk for the listed layer(s),\n"
+            " - drop frames missing one or more bodyparts (per-layer "
+            "recovery sidecars are written next to the annotation file),\n"
+            " - then start training.\n\n"
+            "Choose Cancel to return to the UI without changes."
         )
-        msg.setDetailedText(self._format_incomplete_breakdown(incomplete_frames))
-        drop_btn = msg.addButton("Drop and train", QMessageBox.AcceptRole)
+        msg.setDetailedText(self._format_pre_flight_summary(issues))
+        save_btn = msg.addButton("Save and clean", QMessageBox.AcceptRole)
         cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
         msg.setDefaultButton(cancel_btn)
         msg.exec_()
-        return msg.clickedButton() is drop_btn
+        return msg.clickedButton() is save_btn
+
+    def _apply_pre_flight_remediations(self, issues: dict) -> None:
+        """For each layer with issues, drop incomplete frames (with
+        recovery sidecar) and save the (possibly trimmed) layer.
+        """
+        for layer_name, info in issues.items():
+            ann = self.annotations[layer_name]
+            incomplete = info.get("incomplete") or {}
+            if incomplete:
+                self._save_dropped_incomplete_sidecar(ann, incomplete)
+                ann.remove_empty_labels()
+                ann.keep_overlapping_frames()
+            ann.save()
+        self.update()
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``
