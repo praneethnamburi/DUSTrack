@@ -71,6 +71,16 @@ itself.
   backends the pre-existing synchronous behavior is retained,
   including the `VideoAnnotation` return value. On the Qt path the
   smoothed layer is added (and selected) when the user clicks Done.
+- `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk` now
+  `save()`-es the source layer to disk right before LK kicks off,
+  mirroring the pre-train save in
+  `DUSTrack.process_dlc_project`. In the typical workflow the
+  source is the `dlccorr` layer (active after
+  `apply_manual_corrections`) and the save persists any in-memory
+  manual edits before smoothing. Sources without a `.json`
+  filename (raw DLC traces loaded from `.h5`) are read-only
+  inputs; the save is skipped with a one-line note since
+  `VideoAnnotation.save()` only writes JSON.
 - `dustrack/dlcinterface.py`: `DUSTrack.create_dlc_project`
   (**Create DLC Project**) joins the overlay path on a Qt backend
   with `show_progress_bar=False` (it's a quick op with no
@@ -84,7 +94,12 @@ itself.
   itself (title flips to "Failed", exception in the phase label,
   traceback in the log); the same Done button dismisses cleanly.
   Same folding applies to the rare "training succeeded but layer
-  refresh failed" path.
+  refresh failed" path -- and that follow-up branch now also streams
+  its traceback into the overlay log (previously only `sys.__stderr__`,
+  invisible when DUSTrack is launched from an IDE / launcher that
+  doesn't show the original stderr) and falls back to `repr(exc)`
+  when `str(exc)` is empty, so a bare `assert X` no longer surfaces
+  as a blank "AssertionError: " summary.
 - `dustrack/dlcinterface.py`: DLC's stdout/stderr during overlay
   work are teed to `sys.__stdout__` (the original terminal file
   descriptor) rather than the possibly-wrapped `sys.stdout`, so

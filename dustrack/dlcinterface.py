@@ -1125,14 +1125,24 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 try:
                     on_success(value)
                 except Exception as e:  # noqa: BLE001
+                    # Mirror the worker-side failure path: stream the
+                    # traceback into the overlay log so the user can
+                    # diagnose without depending on the launching
+                    # terminal, and fall back to repr() for exceptions
+                    # whose str() is empty (bare ``assert X`` produces
+                    # ``AssertionError`` with str() == "").
+                    tb = traceback.format_exc()
                     sys.__stderr__.write(
-                        f"{title} succeeded but follow-up failed: {e}\n"
+                        f"{title} succeeded but follow-up failed:\n{tb}"
                     )
+                    for line in tb.splitlines():
+                        overlay.append_log(line)
+                    exc_str = str(e) or repr(e)
                     overlay.mark_done(
                         success=False,
                         summary=(
                             f"Work succeeded, but follow-up step raised "
-                            f"{type(e).__name__}: {e}"
+                            f"{type(e).__name__}: {exc_str}"
                         ),
                     )
                     return
@@ -1337,6 +1347,16 @@ class DUSTrack(dnav.VideoPointAnnotator):
         is a DLC trace, the smoothed output is also plot-type-normalised
         to ``"line"`` so it looks identical to other ``dlc_*`` layers.
 
+        The source layer is `save()`-ed to disk right before LK
+        kicks off (mirroring the pre-train save in
+        :meth:`process_dlc_project`), so the on-disk state matches
+        what LK sees. In the typical workflow the source is the
+        ``dlccorr`` layer (active after
+        :meth:`apply_manual_corrections`) and the save persists any
+        in-memory manual edits. Sources without a ``.json`` filename
+        (e.g. raw DLC traces loaded from ``.h5``) are read-only
+        inputs; the save is skipped for them with a one-line note.
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
             *args: Additional arguments passed to lk_moving_average_filter.
@@ -1353,6 +1373,19 @@ class DUSTrack(dnav.VideoPointAnnotator):
         """
         source_ann = self.ann
         source_layer_name = source_ann.name
+
+        # Persist the source layer to disk before smoothing kicks off
+        # so the on-disk state matches what LK sees. Skip gracefully
+        # for non-JSON-backed sources (raw DLC traces / h5) since
+        # VideoAnnotation.save() raises on non-json filenames.
+        source_fname = getattr(source_ann, "fname", None)
+        if source_fname is not None and Path(source_fname).suffix == ".json":
+            source_ann.save()
+        else:
+            print(
+                f"[reduce_jitter] skipping pre-save of source layer "
+                f"{source_layer_name!r} (no .json filename to anchor to)."
+            )
 
         def _smooth():
             ann_processed = lk_moving_average_filter(source_ann, *args, **kwargs)
