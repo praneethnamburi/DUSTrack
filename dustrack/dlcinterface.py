@@ -738,10 +738,15 @@ class DUSTrack(dnav.VideoPointAnnotator):
         then train) and *Cancel* (return to the UI to fix manually).
         On the clean path the active layer is still saved right
         before training kicks off, so the on-disk state reflects
-        exactly what feeds DLC's training input. The check covers
-        the active layer only; sibling annotation files in the
-        project folder may have their own incomplete frames that
-        still feed :meth:`DLCProject.extract_frames`.
+        exactly what feeds DLC's training input. Empty layers (the
+        auto-created ``iteration-N+1`` placeholder from
+        :meth:`_refresh_dlc_layers`, untouched by the user) skip the
+        save -- persisting an empty json next to the video would
+        let the annotation-discovery glob re-ingest it on the next
+        training run. The check covers the active layer only;
+        sibling annotation files in the project folder may have
+        their own incomplete frames that still feed
+        :meth:`DLCProject.extract_frames`.
 
         DLC's stdout/stderr are also teed to the launching terminal
         (``sys.__stdout__``) so callers who launched from a shell can
@@ -798,8 +803,19 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self.keep_overlapping_frames()
 
         # Save the active layer right before training kicks off so the
-        # on-disk state matches what DLC will see.
-        self.save()
+        # on-disk state matches what DLC will see. Skip if the layer
+        # is empty: the auto-created iteration-N+1 placeholder
+        # (from _refresh_dlc_layers post-train) lands empty until the
+        # user starts refining, and persisting it would leave an
+        # empty json next to the video for the annotation-discovery
+        # glob to re-ingest on the next training run.
+        if self.ann.frames:
+            self.save()
+        else:
+            print(
+                f"[train_dlc] skipping pre-train save of empty source "
+                f"layer {self.ann.name!r}."
+            )
 
         def _train():
             self._dlcproject.process(*args, **kwargs)

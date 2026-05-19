@@ -60,8 +60,13 @@ itself.
   and may still carry their own gaps. The sidecar's composite
   extension intentionally avoids `.json` so the discovery glob
   (`{video_stem}*_annotations*.json`) does not re-ingest it on
-  subsequent training runs. Non-Qt fallback path (no QMainWindow)
-  skips the modal -- no GUI to host it.
+  subsequent training runs. Empty active layers (the auto-created
+  `iteration-N+1` placeholder produced by `_refresh_dlc_layers`
+  after a successful train, untouched by the user) skip the
+  pre-train save with a one-line stdout note -- persisting an
+  empty json next to the video would let the discovery glob
+  re-ingest it on the next training run. Non-Qt fallback path (no
+  QMainWindow) skips the modal -- no GUI to host it.
 - `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk`
   (**Reduce jitter**) joins the overlay path on a Qt backend (no
   more UI freeze during long LK-RSTC passes). The overlay log
