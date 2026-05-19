@@ -225,6 +225,22 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   `Path.read_text(encoding="utf-8")` + `json.loads`, the same
   convention `DLCProject._read_trackermap` already uses for the
   same reason.
+- **`apply_manual_corrections` no longer crashes when the user
+  has manually corrected only one of two (or more) labels.**
+  Pre-fix path: `VideoAnnotation.save()` pruned empty labels at
+  serialization time, so the patch overlay's untouched label
+  silently disappeared from disk and from `self.labels`; the
+  subsequent `self.update()` reached
+  `VideoPointAnnotator.update_frame_marker`, which iterates every
+  layer with the active label and calls `to_trace(label)` on each
+  — for the pruned-label layer that asserted
+  `label in self.labels` and blew up. Fix relies on dnav 1.4.0rc2's
+  three-part label-schema rework (save preserves empty labels +
+  schema-tolerant `to_trace` + n_labels default drops to 1). On the
+  DUSTrack side this required no new code; `_normalize_layer_data`'s
+  empty-label filter still applies symmetrically to both sides of
+  the diff and the comment was updated to reflect the new dnav
+  contract.
 
 ### Changed
 - **`DUSTrack(...)` annotation layer name default** is now
