@@ -39,6 +39,82 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   `_format_unsaved_summary`, `_prompt_save_on_close`,
   `_save_unsaved_layers`. 18 new tests in
   `tests/test_save_on_close.py`.
+- **`ConfirmOverlay`** -- new module-level `_make_confirm_overlay_class`
+  factory in `dustrack/dlcinterface.py`, sibling to
+  `_make_progress_overlay_class`. Modal confirm overlay parented to
+  the DUSTrack QMainWindow that shares the dark-translucent backdrop +
+  reposition + event-filter scaffolding with `ProgressOverlay`;
+  synchronous (`exec_()` runs a local `QEventLoop` and returns the
+  clicked button's label string). Severity-aware title color
+  (`info` / `warning` / `destructive`, reusing ProgressOverlay's
+  green `#7cdb7c` / red `#ff7c7c` palette so the two overlays share
+  visual vocab); per-button QSS styled by role
+  (`primary` / `destructive` / `neutral`); `default=` names the
+  button that receives focus. Replaces the two pre-rc2 `QMessageBox`
+  sites (`_prompt_unified_pre_flight`, `_prompt_save_on_close`) and
+  hosts the two new rc2 confirms below. External contracts
+  (`bool` for pre-flight, `"save"`/`"discard"`/`"cancel"` for
+  save-on-close) preserved.
+- **`Discard unsaved annotations` button** (display group) +
+  `DUSTrack.discard_unsaved_annotations()` action. Drops the active
+  layer's in-memory edits and re-syncs from disk via
+  dnav 1.4.0rc2's new `VideoAnnotation.reload()`; confirm body
+  branches on whether the layer's backing file exists (Reload from
+  disk vs Reset to empty). Refuses on `dlccorr` and any layer
+  matching `_is_dense_layer_name` with an info notice pointing the
+  user at `Remove layer` -- "discard" has no meaningful semantic
+  for layers regenerated from other layers. mpl-fallback path
+  (no Qt window): falls through to `ann.reload()` + `update()`
+  silently, same convention as the rest of DUSTrack's Qt-specific
+  UI.
+- **`Remove layer` button** (niche group) +
+  `DUSTrack.remove_current_layer()` action. Drops the active
+  annotation layer from the session via dnav 1.4.0rc2's new
+  `VideoPointAnnotator.remove_annotation_layer()`. **Session-only:**
+  the backing file on disk is *not* deleted, so the layer reappears
+  on next launch unless the file is removed manually -- pair with a
+  filesystem delete (or `Save annotation as...` to a different name
+  + delete the original) when the intent is "undo manual
+  corrections". Severity-aware confirm body via
+  `_is_dense_layer_name`: dense/derived layers (regenerable) default
+  to `Remove layer`; sparse/authored layers (irreversible) default
+  to `Cancel` and include the to-be-dropped frame count. Refuses
+  with an info notice if only one removable layer remains
+  (excluding the implicit `"buffer"`), pointing the user at
+  `Discard unsaved annotations` for the "reset contents" semantic.
+  Requires dnav 1.4.0rc2 for the underlying
+  `remove_annotation_layer` surface.
+- **Two-slider `EnhanceWidget`** -- new
+  `_make_enhance_widget_class` factory + new
+  `DUSTrack._add_enhance_widget()` that mounts the widget below the
+  statevars widget in the rc2 left-column dock. Two `QSlider`
+  controls with live numeric labels: **CLAHE clip** maps to
+  `[1.0, 4.0]` and **Gamma** maps to `[1.0, 1.5]`. CLAHE grid (`8`)
+  stays at the `__init__` default. Slider values update
+  `self._clahe_clip` / `self._gamma` and call `self.update()` on
+  every value change so the image redraws live. Sliders are integer
+  `0..100`; pure-function slider<->param maps
+  (`_slider_to_clahe_clip` / `_slider_to_gamma` / inverses) live at
+  module scope and are unit-tested in
+  `tests/test_enhance_widget_mapping.py`. **Sliders-at-minimum is
+  the true bypass**: `_enhance_is_passthrough(clip, gamma)` returns
+  `True` when both sliders sit at their leftmost position (clip=1.0
+  AND gamma=1.0); the image processor short-circuits and returns
+  the raw frame untouched (skipping the CLAHE pass and the
+  RGB->gray->RGB roundtrip). Replaces the originally-rc2 `Toggle
+  enhance` button -- with slider-driven bypass at min, a separate
+  toggle is redundant. Constructor defaults shifted to
+  `clahe_clip=1.0` (was 2.0), `gamma=1.0` (was 1.2),
+  `brightness=0` (was 10) so DUSTrack opens with the raw frame and
+  the user dials enhancement in via the sliders. Dropping the
+  `brightness=+10` baseline means nudging either slider one tick
+  off zero doesn't visually jump a +10 brightness offset in
+  alongside CLAHE/gamma -- the transition off the bypass is purely
+  the user-driven slider values. `clahe_clip` / `clahe_grid` /
+  `gamma` / `brightness` kwargs on `DUSTrack.__init__` stay
+  available for callers who want to seed the sliders to non-default
+  positions. mpl-fallback path: `_add_enhance_widget` is a no-op
+  and the constructor defaults stand.
 
 ### Fixed
 - Latent shadowing bug in `_load_layer_disk_data`: was calling the
@@ -64,13 +140,15 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   (top-to-bottom):
     1. **Workflow** -- Create DLC Project → Train DLC model → Apply
        manual corrections → Reduce jitter → Save annotation as...
-    2. **Display / trace** -- Toggle enhance → [Trace: line |
-       Trace: dot] → [Freeze plot axes | Unfreeze plot axes]
+    2. **Display / trace** -- Discard unsaved annotations →
+       [Trace: line | Trace: dot] →
+       [Freeze plot axes | Unfreeze plot axes]
        (the bracketed pairs render as one row each via
        `Buttons.add_multi`; see the next bullet)
-    3. **Niche op** -- Replace existing from overlay *(flagged for
-       a future decision: keep the button or replace with a
-       keyboard-only shortcut to reclaim the slot)*
+    3. **Niche op** -- Replace existing from overlay → Remove layer
+       *(the original niche-op-keyboard-shortcut question is parked
+       — adding Remove layer here makes the group a coherent
+       "layer-mutating affordances" cluster.)*
     4. **Utilities + Swap** -- Refresh UI → Keyboard shortcuts →
        Swap layers
   Groups 1-3 are separated by single double-separators; group 3 is
@@ -80,6 +158,18 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   separator for free via dnav's `_QtStatevarsWidget`. Users no
   longer have to scan for group boundaries in a long flat list of
   buttons.
+- `_prompt_unified_pre_flight` and `_prompt_save_on_close` now route
+  through the new `ConfirmOverlay` instead of `QMessageBox`. External
+  return contracts (`bool` for pre-flight, `"save"`/`"discard"`/
+  `"cancel"` for save-on-close) are unchanged; the change is purely
+  visual + interactive (shared backdrop + per-role button styling
+  with the other rc2 modals). The native `QFileDialog.getSaveFileName`
+  in `save_annotation_as` stays native -- file pickers carry too much
+  UX equity (recents, drive nav, paste-path) to replace.
+- `Toggle enhance` button and the `_toggle_enhancement` /
+  `_enhance_enabled` plumbing are gone -- the EnhanceWidget
+  sliders own the on/off semantics now (both at min = bypass).
+  See the EnhanceWidget bullet above.
 - `dustrack/dlcinterface.py`: the **Trace: line / Trace: dot** and
   **Freeze plot axes / Unfreeze plot axes** pairs in the Display /
   trace group now render as side-by-side two-button rows via dnav

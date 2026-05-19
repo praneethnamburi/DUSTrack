@@ -481,6 +481,350 @@ def _make_progress_overlay_class():
     return ProgressOverlay
 
 
+def _make_confirm_overlay_class():
+    """Build :class:`ConfirmOverlay` lazily, mirroring
+    :func:`_make_progress_overlay_class`'s qtpy-import-on-demand pattern.
+
+    Sibling to :class:`ProgressOverlay`: shares the backdrop-frame +
+    reposition + event-filter + dark-translucent scaffolding, but is
+    synchronous (``exec_()`` runs a local ``QEventLoop`` and returns
+    the clicked button's label string) rather than async. Replaces the
+    pre-rc2 ``QMessageBox`` sites (``_prompt_unified_pre_flight``,
+    ``_prompt_save_on_close``) and hosts the new rc2 confirms
+    (``discard_unsaved_annotations``, ``remove_current_layer``).
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
+    )
+
+    # Severity tint reuses ProgressOverlay's done/failed palette
+    # (#7cdb7c / #ff7c7c, see ProgressOverlay.mark_done) so the two
+    # overlays share a visual vocabulary.
+    _SEVERITY_TITLE_COLOR = {
+        "info": "white",
+        "warning": "#7cdb7c",
+        "destructive": "#ff7c7c",
+    }
+    _ROLE_QSS = {
+        "primary": (
+            "QPushButton { background-color: #3a86ff; color: white; "
+            "  border: 1px solid #2a76ef; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4a96ff; }"
+            "QPushButton:pressed { background-color: #2a76ef; }"
+        ),
+        "destructive": (
+            "QPushButton { background-color: #ff7c7c; color: white; "
+            "  border: 1px solid #df5c5c; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #ff9c9c; }"
+            "QPushButton:pressed { background-color: #df5c5c; }"
+        ),
+        "neutral": (
+            "QPushButton { background-color: #555555; color: white; "
+            "  border: 1px solid #444444; padding: 6px 24px; "
+            "  font-size: 11pt; }"
+            "QPushButton:hover { background-color: #666666; }"
+            "QPushButton:pressed { background-color: #444444; }"
+        ),
+    }
+
+    class ConfirmOverlay(QObject):
+        """Modal confirm overlay parented to the DUSTrack QMainWindow.
+
+        Synchronous: :meth:`exec_` runs a local :class:`QEventLoop`
+        and returns the label string of the clicked button. Mirrors
+        :class:`ProgressOverlay`'s parented-QFrame + reposition +
+        event-filter + dark-translucent scaffolding.
+
+        Example::
+
+            result = ConfirmOverlay(
+                qt_window,
+                title="Remove layer",
+                message="...severity-aware body...",
+                buttons=[
+                    ("Remove layer", "destructive"),
+                    ("Cancel", "neutral"),
+                ],
+                default="Cancel",
+                severity="warning",
+            ).exec_()
+            if result == "Remove layer":
+                ...
+
+        ``severity`` picks the title color
+        (``info`` / ``warning`` / ``destructive``);
+        ``buttons`` is an ordered list of ``(label, role)`` pairs where
+        ``role`` styles the button (``primary`` / ``destructive`` /
+        ``neutral``); ``default`` names the button that receives focus
+        (and is the implicit Enter / Esc target -- ``Cancel`` is the
+        usual choice for destructive flows).
+        """
+
+        def __init__(
+            self,
+            main_window,
+            *,
+            title: str,
+            message: str,
+            buttons,  # list[tuple[label, role]]
+            default: str | None = None,
+            severity: str = "info",
+        ):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._result: str | None = None
+            self._loop = QEventLoop()
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_confirm_overlay")
+            title_color = _SEVERITY_TITLE_COLOR.get(severity, "white")
+            self._frame.setStyleSheet(
+                "#dustrack_confirm_overlay { background-color: rgba(0, 0, 0, 200); }"
+                "QLabel { color: white; }"
+                f"#dustrack_confirm_title {{ color: {title_color}; "
+                "  font-size: 22pt; font-weight: bold; }"
+                "#dustrack_confirm_message { font-size: 12pt; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            layout = QVBoxLayout(self._frame)
+            layout.setAlignment(Qt.AlignCenter)
+            layout.addStretch(1)
+
+            title_lbl = QLabel(title)
+            title_lbl.setObjectName("dustrack_confirm_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title_lbl)
+
+            message_lbl = QLabel(message)
+            message_lbl.setObjectName("dustrack_confirm_message")
+            message_lbl.setAlignment(Qt.AlignCenter)
+            message_lbl.setWordWrap(True)
+            # Cap the message width so long bodies wrap rather than
+            # stretching the overlay to the full window width.
+            message_lbl.setMaximumWidth(720)
+            layout.addWidget(message_lbl, alignment=Qt.AlignCenter)
+
+            button_row = QHBoxLayout()
+            button_row.setAlignment(Qt.AlignCenter)
+            self._buttons = []
+            default_btn = None
+            for label, role in buttons:
+                btn = QPushButton(label)
+                btn.setMinimumWidth(160)
+                # Per-button QSS rather than parent QSS so each role's
+                # palette stays scoped; QSS on a QPushButton replaces
+                # native gradient (see memory feedback_qt_qss_vs_palette).
+                btn.setStyleSheet(_ROLE_QSS.get(role, _ROLE_QSS["neutral"]))
+                btn.clicked.connect(lambda _checked=False, lbl=label: self._on_clicked(lbl))
+                button_row.addWidget(btn)
+                self._buttons.append(btn)
+                if default is not None and label == default:
+                    default_btn = btn
+            layout.addLayout(button_row)
+            layout.addStretch(1)
+
+            main_window.installEventFilter(self)
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            # Focus the default button if named; otherwise focus the
+            # frame so Esc routes through eventFilter and the buttons
+            # are reachable via Tab.
+            if default_btn is not None:
+                default_btn.setFocus()
+            else:
+                self._frame.setFocus()
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _on_clicked(self, label: str) -> None:
+            self._result = label
+            self._dismiss()
+            self._loop.quit()
+
+        def _dismiss(self) -> None:
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self) -> str | None:
+            """Block until the user clicks a button; return its label.
+
+            Returns ``None`` only if the overlay is dismissed
+            externally (e.g. main window close); every normal flow
+            returns the clicked button's label string.
+            """
+            self._loop.exec_()
+            return self._result
+
+    return ConfirmOverlay
+
+
+# Pure-function slider-to-param maps for the EnhanceWidget. Extracted
+# at module scope so they're unit-testable without qtpy import.
+_CLAHE_CLIP_MIN = 1.0
+_CLAHE_CLIP_MAX = 4.0
+_GAMMA_MIN = 1.0
+_GAMMA_MAX = 1.5
+_SLIDER_TICKS = 100  # integer slider range; sliders use 0..100
+
+
+def _slider_to_clahe_clip(slider_value: int) -> float:
+    """Map slider integer 0..100 to CLAHE clip limit in [1.0, 4.0]."""
+    t = max(0, min(_SLIDER_TICKS, int(slider_value))) / _SLIDER_TICKS
+    return _CLAHE_CLIP_MIN + t * (_CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN)
+
+
+def _slider_to_gamma(slider_value: int) -> float:
+    """Map slider integer 0..100 to gamma in [1.0, 1.5]."""
+    t = max(0, min(_SLIDER_TICKS, int(slider_value))) / _SLIDER_TICKS
+    return _GAMMA_MIN + t * (_GAMMA_MAX - _GAMMA_MIN)
+
+
+def _clahe_clip_to_slider(clip: float) -> int:
+    """Inverse of :func:`_slider_to_clahe_clip` -- seed slider from current param."""
+    span = _CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN
+    if span <= 0:
+        return 0
+    t = (float(clip) - _CLAHE_CLIP_MIN) / span
+    return max(0, min(_SLIDER_TICKS, round(t * _SLIDER_TICKS)))
+
+
+def _gamma_to_slider(gamma: float) -> int:
+    """Inverse of :func:`_slider_to_gamma` -- seed slider from current param."""
+    span = _GAMMA_MAX - _GAMMA_MIN
+    if span <= 0:
+        return 0
+    t = (float(gamma) - _GAMMA_MIN) / span
+    return max(0, min(_SLIDER_TICKS, round(t * _SLIDER_TICKS)))
+
+
+def _enhance_is_passthrough(clahe_clip: float, gamma: float) -> bool:
+    """True if the enhancement pipeline should be bypassed entirely.
+
+    Returns ``True`` when both sliders sit at their minimum (the
+    "no enhancement" position): ``clahe_clip <= 1.0`` AND
+    ``gamma <= 1.0``. At that point :func:`enhance_ultrasound_image`
+    would still run a CLAHE pass at clip=1.0 (minimal but non-zero
+    effect) and would convert RGB->gray->RGB unconditionally, so the
+    "bypass" semantic is implemented by short-circuiting at the
+    image processor level rather than by tuning the parameter
+    extremes. Replaces the pre-2026-05-19 ``_enhance_enabled``
+    toggle that the deleted "Toggle enhance" button flipped.
+    """
+    return float(clahe_clip) <= _CLAHE_CLIP_MIN and float(gamma) <= _GAMMA_MIN
+
+
+def _make_enhance_widget_class():
+    """Build :class:`EnhanceWidget` lazily, mirroring
+    :func:`_make_progress_overlay_class`'s qtpy-import-on-demand pattern.
+
+    Two-slider control mounted in the rc2 left-column dock below the
+    statevars widget. CLAHE clip (1.0 -> 4.0) and gamma (1.0 -> 1.5).
+    Brightness and CLAHE grid (8) stay at their constructor defaults --
+    both ride below the "useful slider range" threshold for routine
+    review. The widget itself owns no enable/disable state: both
+    sliders at their minimum (clip=1.0 AND gamma=1.0) is the bypass
+    -- :func:`_enhance_is_passthrough` short-circuits the image
+    processor and returns the raw frame untouched.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import (
+        QHBoxLayout, QLabel, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    )
+
+    class EnhanceWidget(QWidget):
+        """Two-slider widget for ultrasound image enhancement.
+
+        Slider 1 -- CLAHE clip:  1.0 -> 4.0, default 2.0.
+        Slider 2 -- Gamma:       1.0 -> 1.5, default 1.2.
+
+        Sliders update ``self._owner._clahe_clip`` / ``_gamma`` directly
+        on every value change and trigger ``self._owner.update()`` so
+        the image redraws live.
+        """
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self._owner = owner
+
+            # Slightly darker bg than the parent dock so the enhance
+            # section reads as a distinct group from the statevars
+            # widget above it. Theme-adaptive via palette.darker().
+            self.setAutoFillBackground(True)
+            pal = self.palette()
+            base = pal.color(self.backgroundRole())
+            pal.setColor(self.backgroundRole(), base.darker(110))
+            self.setPalette(pal)
+
+            self.setFocusPolicy(Qt.NoFocus)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(4, 4, 4, 4)
+            outer.setSpacing(4)
+
+            section_label = QLabel("Image enhance:", self)
+            outer.addWidget(section_label)
+
+            # CLAHE clip slider row.
+            self._clip_label = QLabel(
+                f"Clip: {float(owner._clahe_clip):.2f}", self,
+            )
+            outer.addWidget(self._clip_label)
+            self._clip_slider = QSlider(Qt.Horizontal, self)
+            self._clip_slider.setRange(0, _SLIDER_TICKS)
+            self._clip_slider.setValue(_clahe_clip_to_slider(owner._clahe_clip))
+            self._clip_slider.setFocusPolicy(Qt.NoFocus)
+            self._clip_slider.valueChanged.connect(self._on_clip_changed)
+            outer.addWidget(self._clip_slider)
+
+            # Gamma slider row.
+            self._gamma_label = QLabel(
+                f"Gamma: {float(owner._gamma):.2f}", self,
+            )
+            outer.addWidget(self._gamma_label)
+            self._gamma_slider = QSlider(Qt.Horizontal, self)
+            self._gamma_slider.setRange(0, _SLIDER_TICKS)
+            self._gamma_slider.setValue(_gamma_to_slider(owner._gamma))
+            self._gamma_slider.setFocusPolicy(Qt.NoFocus)
+            self._gamma_slider.valueChanged.connect(self._on_gamma_changed)
+            outer.addWidget(self._gamma_slider)
+
+        def _on_clip_changed(self, value: int) -> None:
+            clip = _slider_to_clahe_clip(value)
+            self._owner._clahe_clip = clip
+            self._clip_label.setText(f"Clip: {clip:.2f}")
+            self._owner.update()
+
+        def _on_gamma_changed(self, value: int) -> None:
+            gamma = _slider_to_gamma(value)
+            self._owner._gamma = gamma
+            self._gamma_label.setText(f"Gamma: {gamma:.2f}")
+            self._owner.update()
+
+    return EnhanceWidget
+
+
 class DUSTrack(dnav.VideoPointAnnotator):
     """
     Interactive video point annotator with DeepLabCut integration.
@@ -521,24 +865,35 @@ class DUSTrack(dnav.VideoPointAnnotator):
     CORRECTIONS_LAYER_NAME = "dlccorr"
 
     def __init__(self, *args,
-                 clahe_clip=2.0, clahe_grid=8, gamma=1.2, brightness=10,
-                 dark_mode=False, enhance_enabled=True, **kwargs):
-        # Store enhancement settings
+                 clahe_clip=1.0, clahe_grid=8, gamma=1.0, brightness=0,
+                 dark_mode=False, **kwargs):
+        # Store enhancement settings. Defaults now correspond to "no
+        # enhancement" so the EnhanceWidget sliders start at their
+        # leftmost position and DUSTrack opens with the raw frame;
+        # the user dials enhancement in via the sliders. Replaced the
+        # pre-2026-05-19 "Toggle enhance" button: with slider-driven
+        # bypass at min, a separate toggle is redundant. ``brightness``
+        # default dropped from ``+10`` to ``0`` so nudging either
+        # slider one tick off zero doesn't visually jump a +10 offset
+        # in alongside CLAHE/gamma -- the transition off the bypass
+        # is now purely the user-driven slider values.
         self._clahe_clip = clahe_clip
         self._clahe_grid = clahe_grid
         self._gamma = gamma
         self._brightness = brightness
-        self._enhance_enabled = enhance_enabled
         self._dark_mode = dark_mode
 
-        # Create image processor function
+        # Create image processor function. Both sliders at their
+        # minimum (clip=1.0 AND gamma=1.0) is the bypass: return the
+        # raw image untouched, skipping the CLAHE pass + grayscale
+        # roundtrip. Any non-min slider runs the full pipeline.
         def image_processor(im):
-            if self._enhance_enabled:
-                return enhance_ultrasound_image(
-                    im, self._clahe_clip, self._clahe_grid,
-                    self._gamma, self._brightness
-                )
-            return im
+            if _enhance_is_passthrough(self._clahe_clip, self._gamma):
+                return im
+            return enhance_ultrasound_image(
+                im, self._clahe_clip, self._clahe_grid,
+                self._gamma, self._brightness
+            )
 
         kwargs['image_process_func'] = image_processor
         # DUSTrack defaults to datanavigator 1.5.0+ Tier 2 (Qt-native
@@ -588,7 +943,10 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self.buttons.add_separator(style="double")
 
         # --- Display / trace controls -----------------------------------
-        self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement, style_tag="display")
+        # Image enhancement is driven by the EnhanceWidget sliders
+        # (mounted below statevars by _add_enhance_widget). Sliders at
+        # min = bypass; no separate Toggle enhance button.
+        self.buttons.add(text="Discard unsaved annotations", action_func=self.discard_unsaved_annotations, style_tag="display")
         self.buttons.add_multi(
             dict(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self), style_tag="display"),
             dict(text="Trace: dot",  action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self), style_tag="display"),
@@ -603,6 +961,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # button be replaced by a keyboard-only shortcut to reclaim the
         # vertical slot? Track usage before removing.
         self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay, style_tag="niche")
+        self.buttons.add(text="Remove layer", action_func=self.remove_current_layer, style_tag="niche")
         self.buttons.add_separator(style="double")
 
         # --- Utilities + Swap layers -----------------------------------
@@ -621,6 +980,13 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # path because QSS on a QWidget parent flattens child
         # QComboBoxes (Windows-native dropdown rendering goes away).
         self._paint_statevars_widget()
+
+        # Enhance two-slider widget: Qt-only; mpl fallback gets the
+        # constructor defaults baked in via __init__ kwargs. Same
+        # convention as the rest of DUSTrack's Qt-specific UI
+        # (confirm modals, progress overlay, dock sidebar).
+        self._enhance_widget = None
+        self._add_enhance_widget()
 
         # rc2 safeguard: intercept window close so the user is asked
         # before losing in-memory annotation diffs. The Train pre-flight
@@ -678,6 +1044,30 @@ class DUSTrack(dnav.VideoPointAnnotator):
         },
     }
 
+    def _add_enhance_widget(self) -> None:
+        """Mount the two-slider :class:`EnhanceWidget` below the
+        statevars widget in the rc2 left-column dock.
+
+        Inserted into ``_dnav_left_column.outer_layout`` immediately
+        after the statevars slot so the visual stack is
+        ``buttons | statevars | enhance | stretch``. No-op on the
+        mpl fallback path (no Qt main window / left column).
+        """
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            return
+        col = getattr(qt_window, "_dnav_left_column", None)
+        if col is None:
+            return
+        EnhanceWidget = _make_enhance_widget_class()
+        widget = EnhanceWidget(self, parent=col.host)
+        # statevars slot is at col.statevars_slot_index; insert right
+        # after it (or right after the buttons widget if statevars
+        # never got built).
+        insert_at = (col.statevars_slot_index + 1) if col.statevars_widget is not None else col.statevars_slot_index
+        col.outer_layout.insertWidget(insert_at, widget)
+        self._enhance_widget = widget
+
     def _paint_statevars_widget(self) -> None:
         """Paint the statevars widget bg/fg to match the rc2 sidebar palette.
 
@@ -730,10 +1120,83 @@ class DUSTrack(dnav.VideoPointAnnotator):
             for spine in ax.spines.values():
                 spine.set_color(text_color)
 
-    def _toggle_enhancement(self, event=None):
-        """Toggle image enhancement on/off."""
-        self._enhance_enabled = not self._enhance_enabled
-        self.update()
+    def discard_unsaved_annotations(self, event=None):
+        """Drop in-memory edits on the active layer and reload from disk.
+
+        Inverse of ``save``: confirms via :class:`ConfirmOverlay`, then
+        calls :meth:`VideoAnnotation.reload` on ``self.ann`` and
+        triggers ``self.update()`` so the trace pane + scatter
+        re-render. The confirm body branches on whether the layer's
+        backing file exists:
+
+        - File exists -> "Reload from disk" semantic.
+        - File missing -> "Reset to empty" semantic.
+
+        Refuses on the ``dlccorr`` splice and any layer matching
+        :func:`_is_dense_layer_name` -- those are regenerated from
+        the active + overlay layers (via ``apply_manual_corrections``
+        or ``process_with_lk``), not authored by hand, so "discard
+        and reload" has no meaningful semantic. Points the user at
+        ``Remove layer`` instead.
+        """
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            # mpl fallback: no overlay; just reload silently. Same
+            # convention as the rest of DUSTrack's Qt-specific UI
+            # (confirm modals, progress overlay, dock sidebar).
+            self.ann.reload()
+            self.update()
+            return
+
+        ConfirmOverlay = _make_confirm_overlay_class()
+        layer_name = self._current_layer
+
+        if _is_dense_layer_name(layer_name):
+            ConfirmOverlay(
+                qt_window,
+                title="Cannot discard derived layer",
+                message=(
+                    f"Layer {layer_name!r} is regenerated from other "
+                    "layers (DLC prediction / manual-correction splice "
+                    "/ jitter-reduced output) -- there is no "
+                    "hand-authored state to discard.\n\n"
+                    "Use Remove layer to drop it from the session "
+                    "instead."
+                ),
+                buttons=[("OK", "neutral")],
+                default="OK",
+                severity="info",
+            ).exec_()
+            return
+
+        fname = getattr(self.ann, "fname", None)
+        file_exists = bool(fname) and Path(fname).exists()
+        if file_exists:
+            body = (
+                f"Reload layer {layer_name!r} from disk?\n\n"
+                f"File: {fname}\n\n"
+                "In-memory edits since the last save will be lost."
+            )
+        else:
+            body = (
+                f"Reset layer {layer_name!r} to empty?\n\n"
+                "No file exists on disk for this layer yet. "
+                "All in-memory annotations will be lost."
+            )
+        result = ConfirmOverlay(
+            qt_window,
+            title="Discard unsaved annotations",
+            message=body,
+            buttons=[
+                ("Discard", "destructive"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="destructive",
+        ).exec_()
+        if result == "Discard":
+            self.ann.reload()
+            self.update()
 
     def _increase_contrast(self, event=None):
         """Increase CLAHE contrast (clip limit)."""
@@ -1334,24 +1797,23 @@ class DUSTrack(dnav.VideoPointAnnotator):
         pre-flight. Returns True iff the user picked
         *Save and clean*.
 
-        The per-layer breakdown is shown inline in
-        ``setInformativeText`` rather than behind
-        ``QMessageBox.setDetailedText``'s collapsed *Show Details...*
-        toggle -- the breakdown is the substance the user needs to
-        decide on, not optional extra.
+        Routes through :class:`ConfirmOverlay` (rc2) so the modal
+        shares visual vocabulary with the new ``Discard unsaved`` /
+        ``Remove layer`` confirms; pre-rc2 used ``QMessageBox``. The
+        per-layer breakdown is shown inline rather than behind a
+        collapsed "Show Details..." toggle -- the breakdown is the
+        substance the user needs to decide on, not optional extra.
         """
-        from qtpy.QtWidgets import QMessageBox
+        ConfirmOverlay = _make_confirm_overlay_class()
         n = len(issues)
-        msg = QMessageBox(qt_window)
-        msg.setIcon(QMessageBox.Warning)
-        msg.setWindowTitle("Pre-flight issues")
-        msg.setText(
+        header = (
             f"{n} manual annotation layer{'s' if n != 1 else ''} "
             f"{'have' if n != 1 else 'has'} unsaved changes and/or "
             "incomplete frames."
         )
         breakdown = self._format_pre_flight_summary(issues)
-        msg.setInformativeText(
+        body = (
+            f"{header}\n\n"
             f"{breakdown}\n\n"
             "Save and clean will:\n"
             " - save in-memory edits to disk for the listed layer(s),\n"
@@ -1360,11 +1822,18 @@ class DUSTrack(dnav.VideoPointAnnotator):
             " - then start training.\n\n"
             "Cancel returns to the UI without changes."
         )
-        save_btn = msg.addButton("Save and clean", QMessageBox.AcceptRole)
-        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
-        msg.setDefaultButton(cancel_btn)
-        msg.exec_()
-        return msg.clickedButton() is save_btn
+        result = ConfirmOverlay(
+            qt_window,
+            title="Pre-flight issues",
+            message=body,
+            buttons=[
+                ("Save and clean", "primary"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="warning",
+        ).exec_()
+        return result == "Save and clean"
 
     def _apply_pre_flight_remediations(self, issues: dict) -> None:
         """For each layer with issues, drop incomplete frames (with
@@ -1387,33 +1856,39 @@ class DUSTrack(dnav.VideoPointAnnotator):
         *Save* writes every layer with diffs and lets the window close;
         *Discard* lets the window close without writing; *Cancel* keeps
         the window open. ``Cancel`` is the default button so that
-        accidental Enter / Esc do not silently lose data.
+        accidental Enter / Esc do not silently lose data. Routes
+        through :class:`ConfirmOverlay` (rc2); pre-rc2 used
+        ``QMessageBox``.
         """
-        from qtpy.QtWidgets import QMessageBox
+        ConfirmOverlay = _make_confirm_overlay_class()
         n = len(unsaved)
-        msg = QMessageBox(qt_window)
-        msg.setIcon(QMessageBox.Warning)
-        msg.setWindowTitle("Unsaved annotations")
-        msg.setText(
+        header = (
             f"{n} annotation layer{'s' if n != 1 else ''} "
             f"{'have' if n != 1 else 'has'} unsaved changes."
         )
         breakdown = self._format_unsaved_summary(unsaved)
-        msg.setInformativeText(
+        body = (
+            f"{header}\n\n"
             f"{breakdown}\n\n"
             "Save all writes the in-memory edits to disk before closing.\n"
             "Discard closes without writing -- changes are lost.\n"
             "Cancel keeps the window open."
         )
-        save_btn = msg.addButton("Save all", QMessageBox.AcceptRole)
-        discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
-        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
-        msg.setDefaultButton(cancel_btn)
-        msg.exec_()
-        clicked = msg.clickedButton()
-        if clicked is save_btn:
+        result = ConfirmOverlay(
+            qt_window,
+            title="Unsaved annotations",
+            message=body,
+            buttons=[
+                ("Save all", "primary"),
+                ("Discard", "destructive"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="destructive",
+        ).exec_()
+        if result == "Save all":
             return "save"
-        if clicked is discard_btn:
+        if result == "Discard":
             return "discard"
         return "cancel"
 
@@ -1968,6 +2443,111 @@ class DUSTrack(dnav.VideoPointAnnotator):
         )
         return None
     
+    def remove_current_layer(self, event=None):
+        """Remove the active annotation layer from the DUSTrack session.
+
+        Session-only: the underlying JSON / HDF5 file on disk is *not*
+        touched -- so on next launch the layer reappears if its file
+        is still next to the video. Pair with a manual file delete
+        (or ``Save annotation as...`` to a different name + delete the
+        original) when the intent is "undo manual corrections".
+
+        Refuses with a notice if only one removable layer remains in
+        the session (excluding the implicit ``"buffer"`` layer, which
+        is never user-visible but always present). Otherwise confirms
+        via :class:`ConfirmOverlay`; the confirm body is severity-
+        aware via :func:`_is_dense_layer_name`:
+
+        - Dense / derived (``dlc_*``, ``dlccorr``, ``*lkmovavg*``):
+          regenerable, default button = Remove.
+        - Sparse / authored (manual labels): irreversible, default
+          button = Cancel.
+        """
+        qt_window = self._find_qt_window()
+        layer_name = self._current_layer
+        if layer_name == "buffer":
+            # Defensive: ``buffer`` should never be the user-selected
+            # primary, but guard anyway.
+            return
+
+        removable = [
+            n for n in self.annotations.names if n != "buffer"
+        ]
+        if len(removable) <= 1:
+            if qt_window is None:
+                return
+            ConfirmOverlay = _make_confirm_overlay_class()
+            ConfirmOverlay(
+                qt_window,
+                title="Cannot remove only remaining layer",
+                message=(
+                    f"Layer {layer_name!r} is the only annotation "
+                    "layer in this session (excluding the internal "
+                    "buffer). Removing it would leave the session "
+                    "with no editable layer.\n\n"
+                    "Use Discard unsaved annotations to reset its "
+                    "contents instead."
+                ),
+                buttons=[("OK", "neutral")],
+                default="OK",
+                severity="info",
+            ).exec_()
+            return
+
+        if qt_window is None:
+            # mpl fallback: drop the layer silently.
+            self.remove_annotation_layer(layer_name)
+            self.update()
+            return
+
+        ConfirmOverlay = _make_confirm_overlay_class()
+        if _is_dense_layer_name(layer_name):
+            if layer_name == "dlccorr":
+                regen_hint = "re-running Apply manual corrections"
+            elif "lkmovavg" in layer_name:
+                regen_hint = "re-running Reduce jitter"
+            else:
+                regen_hint = "re-running the DLC inference / training pipeline"
+            body = (
+                f"Remove regenerable layer {layer_name!r}?\n\n"
+                f"This layer can be reproduced by {regen_hint}. "
+                "The layer is dropped from the current session only; "
+                "the backing file on disk is not deleted, so the "
+                "layer will reappear on next launch unless you "
+                "remove the file manually."
+            )
+            default = "Remove layer"
+            severity = "warning"
+        else:
+            n_frames = len(self.annotations[layer_name].frames)
+            body = (
+                f"Remove layer {layer_name!r}? "
+                f"{n_frames} manually annotated frame(s) will be "
+                "dropped from this session.\n\n"
+                "The backing file on disk is not deleted, so the "
+                "layer will reappear on next launch unless you "
+                "remove the file manually. Once removed from the "
+                "session, any in-memory edits since the last save "
+                "are lost."
+            )
+            default = "Cancel"
+            severity = "destructive"
+
+        result = ConfirmOverlay(
+            qt_window,
+            title="Remove layer",
+            message=body,
+            buttons=[
+                ("Remove layer", "destructive"),
+                ("Cancel", "neutral"),
+            ],
+            default=default,
+            severity=severity,
+        ).exec_()
+        if result == "Remove layer":
+            self.remove_annotation_layer(layer_name)
+            self.update()
+
     def copy_existing_annotations_from_overlay(self, event=None):
         """
         Copy overlay annotation points to the current annotation layer for selected frames.
