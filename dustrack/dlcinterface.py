@@ -1132,6 +1132,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
         """Single modal for the combined save-state + incompleteness
         pre-flight. Returns True iff the user picked
         *Save and clean*.
+
+        The per-layer breakdown is shown inline in
+        ``setInformativeText`` rather than behind
+        ``QMessageBox.setDetailedText``'s collapsed *Show Details...*
+        toggle -- the breakdown is the substance the user needs to
+        decide on, not optional extra.
         """
         from qtpy.QtWidgets import QMessageBox
         n = len(issues)
@@ -1143,15 +1149,16 @@ class DUSTrack(dnav.VideoPointAnnotator):
             f"{'have' if n != 1 else 'has'} unsaved changes and/or "
             "incomplete frames."
         )
+        breakdown = self._format_pre_flight_summary(issues)
         msg.setInformativeText(
-            "Choose Save and clean to:\n"
+            f"{breakdown}\n\n"
+            "Save and clean will:\n"
             " - save in-memory edits to disk for the listed layer(s),\n"
             " - drop frames missing one or more bodyparts (per-layer "
-            "recovery sidecars are written next to the annotation file),\n"
+            "recovery sidecars written next to each annotation file),\n"
             " - then start training.\n\n"
-            "Choose Cancel to return to the UI without changes."
+            "Cancel returns to the UI without changes."
         )
-        msg.setDetailedText(self._format_pre_flight_summary(issues))
         save_btn = msg.addButton("Save and clean", QMessageBox.AcceptRole)
         cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
         msg.setDefaultButton(cancel_btn)
