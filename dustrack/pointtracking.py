@@ -446,7 +446,7 @@ class VideoPointAnnotator(VideoBrowser):
             data_func=round,
             color="gray",
             pick_action="overwrite",
-            ax_list=[self._ax_trace_x],
+            ax_list=[self._ax_trace_x, self._ax_trace_y],
             add_key="z",
             remove_key=None,
             save_key=None,
