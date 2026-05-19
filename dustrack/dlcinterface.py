@@ -729,6 +729,20 @@ class DUSTrack(dnav.VideoPointAnnotator):
         failure paths fold into the overlay rather than popping a
         separate :class:`QMessageBox`.
 
+        A **pre-flight check on the active annotation layer** runs
+        before the overlay starts: any frame missing one or more
+        bodyparts triggers a modal with a per-bodypart breakdown and
+        a choice between *Drop and train* (drop the incomplete frames,
+        write a ``<fstem>.dustrack-dropped-incomplete-<ts>`` recovery
+        sidecar next to the annotation file, save the trimmed layer,
+        then train) and *Cancel* (return to the UI to fix manually).
+        On the clean path the active layer is still saved right
+        before training kicks off, so the on-disk state reflects
+        exactly what feeds DLC's training input. The check covers
+        the active layer only; sibling annotation files in the
+        project folder may have their own incomplete frames that
+        still feed :meth:`DLCProject.extract_frames`.
+
         DLC's stdout/stderr are also teed to the launching terminal
         (``sys.__stdout__``) so callers who launched from a shell can
         watch progress there as before.
@@ -736,7 +750,8 @@ class DUSTrack(dnav.VideoPointAnnotator):
         On non-Qt backends (or if the QMainWindow can't be located), the
         method falls back to the pre-rc2 behavior: close the figure,
         run training synchronously on the calling thread, and return a
-        fresh DUSTrack via :meth:`DLCProject.annotate`.
+        fresh DUSTrack via :meth:`DLCProject.annotate`. The pre-flight
+        modal is skipped on this path (no GUI to host it).
 
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
@@ -748,7 +763,9 @@ class DUSTrack(dnav.VideoPointAnnotator):
         Returns:
             DUSTrack: ``self`` on the Qt path (training is asynchronous;
             the same DUSTrack will refresh in place when the user
-            clicks Done). On the fallback path, the freshly-launched
+            clicks Done). Also ``self`` if the user cancels the
+            pre-flight modal -- the UI is left intact for manual
+            fixes. On the fallback path, the freshly-launched
             DUSTrack from :meth:`DLCProject.annotate`.
 
         Raises:
@@ -765,6 +782,24 @@ class DUSTrack(dnav.VideoPointAnnotator):
             plt.close(self.figure)
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
+
+        # Pre-flight: scan the active layer for incomplete frames. If
+        # any, ask the user whether to drop them (with sidecar) or
+        # bail back to the UI.
+        incomplete = self._scan_incomplete_frames(self.ann.data)
+        if incomplete:
+            if not self._prompt_drop_or_cancel(qt_window, incomplete):
+                return self  # user cancelled -- leave the UI intact
+            self._save_dropped_incomplete_sidecar(incomplete)
+            # remove_empty_labels first so the underlying
+            # frames_overlapping is well-defined (placeholder labels
+            # with zero annotations would otherwise empty the set).
+            self.ann.remove_empty_labels()
+            self.keep_overlapping_frames()
+
+        # Save the active layer right before training kicks off so the
+        # on-disk state matches what DLC will see.
+        self.save()
 
         def _train():
             self._dlcproject.process(*args, **kwargs)
@@ -792,6 +827,127 @@ class DUSTrack(dnav.VideoPointAnnotator):
             success_summary="Training complete. Predictions loaded.",
         )
         return self
+
+    @staticmethod
+    def _scan_incomplete_frames(data: dict) -> dict:
+        """Find frames missing one or more bodyparts in an annotation
+        ``data`` dict (``{label: {frame: [x, y]}}``).
+
+        Considers only labels with at least one annotation -- empty
+        labels are UI placeholders and shouldn't fail every frame.
+        Returns ``{frame: [missing_label, ...]}`` for incomplete
+        frames, frame-sorted with missing-labels lists in the same
+        order as the active label list. Empty dict iff every active
+        frame has every active label.
+
+        Pure data-in / data-out; testable from synthetic dicts.
+        """
+        active_labels = [L for L, frames in data.items() if frames]
+        if not active_labels:
+            return {}
+        all_frames: set = set()
+        for L in active_labels:
+            all_frames.update(data[L].keys())
+        incomplete: dict = {}
+        for frame in sorted(all_frames):
+            missing = [L for L in active_labels if frame not in data[L]]
+            if missing:
+                incomplete[frame] = missing
+        return incomplete
+
+    @staticmethod
+    def _build_dropped_incomplete_payload(data: dict, incomplete_frames: dict) -> dict:
+        """Build the JSON payload for the dropped-incomplete sidecar.
+
+        Each entry is ``{label: [x, y]}`` for the labels that *were*
+        present at the dropped frame (the missing ones are the
+        incompleteness). Frame keys are stringified for JSON compat.
+        """
+        payload: dict = {}
+        for frame in incomplete_frames:
+            present = {}
+            for L, frames in data.items():
+                if frame in frames:
+                    present[L] = [float(x) for x in frames[frame]]
+            payload[str(frame)] = present
+        return payload
+
+    @staticmethod
+    def _build_dropped_incomplete_sidecar_name(ann_fname, ts: str) -> str:
+        """``<fstem>.dustrack-dropped-incomplete-<ts>`` in the
+        annotation's directory.
+
+        Intentionally avoids `.json` so DUSTrack's annotation-discovery
+        glob (``{video_stem}*_annotations*.json`` in
+        :meth:`DLCProject.extract_frames`) does not re-ingest the
+        sidecar on a subsequent training run.
+        """
+        p = Path(ann_fname)
+        return str(p.parent / f"{p.stem}.dustrack-dropped-incomplete-{ts}")
+
+    @staticmethod
+    def _format_incomplete_breakdown(incomplete_frames: dict, max_rows: int = 200) -> str:
+        """Multi-line per-bodypart breakdown for the pre-flight modal's
+        detailed-text panel. Truncates very wide reports.
+        """
+        rows = []
+        total = len(incomplete_frames)
+        for i, (frame, missing) in enumerate(sorted(incomplete_frames.items())):
+            if i >= max_rows:
+                rows.append(f"... ({total - max_rows} more frames)")
+                break
+            rows.append(f"Frame {frame}: missing {', '.join(missing)}")
+        return "\n".join(rows)
+
+    def _save_dropped_incomplete_sidecar(self, incomplete_frames: dict):
+        """Persist the dropped-frame contents next to the active layer.
+
+        Returns the sidecar path on success, ``None`` if the active
+        layer has no on-disk filename (in-memory only).
+        """
+        import datetime
+        import json
+        if self.ann.fname is None:
+            return None
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        sidecar = self._build_dropped_incomplete_sidecar_name(self.ann.fname, ts)
+        payload = self._build_dropped_incomplete_payload(self.ann.data, incomplete_frames)
+        with open(sidecar, "w") as f:
+            json.dump(payload, f, indent=2)
+        return sidecar
+
+    def _prompt_drop_or_cancel(self, qt_window, incomplete_frames: dict) -> bool:
+        """Show the pre-flight modal; return True iff user picked
+        *Drop and train*.
+        """
+        from qtpy.QtWidgets import QMessageBox
+
+        n = len(incomplete_frames)
+        msg = QMessageBox(qt_window)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Incomplete frames detected")
+        msg.setText(
+            f"{n} frame{'s' if n != 1 else ''} in the active layer "
+            f"({self.ann.name!r}) "
+            f"{'are' if n != 1 else 'is'} missing one or more bodyparts."
+        )
+        msg.setInformativeText(
+            "DeepLabCut tolerates per-bodypart NaN in its CSV but partial "
+            "frames degrade the trained model in practice.\n\n"
+            "Choose Drop and train to drop these frames from the active "
+            "layer (a sidecar is written so the data is recoverable) and "
+            "kick off training. Choose Cancel to return to the UI and fix "
+            "them manually.\n\n"
+            "Note: this check covers the active layer only. Other "
+            "annotation files in the project folder may have their own "
+            "incomplete frames that will still feed DLC's training input."
+        )
+        msg.setDetailedText(self._format_incomplete_breakdown(incomplete_frames))
+        drop_btn = msg.addButton("Drop and train", QMessageBox.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.setDefaultButton(cancel_btn)
+        msg.exec_()
+        return msg.clickedButton() is drop_btn
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``

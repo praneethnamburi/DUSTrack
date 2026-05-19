@@ -41,6 +41,27 @@ itself.
   overlay and drawn as a line plot. The pre-rc2 close-and-reopen
   path is retained as the fallback when no QMainWindow can be
   located (non-Qt backend, headless run, etc.).
+- `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project` gains a
+  **pre-flight check on the active annotation layer** before the
+  overlay starts. Any frame missing one or more bodyparts triggers
+  a Qt modal with a per-bodypart breakdown ("Frame N: missing X, Y")
+  and two actions: *Drop and train* (drop the incomplete frames via
+  the new dnav 1.4.0rc2 `keep_overlapping_frames`, write a
+  `<fstem>.dustrack-dropped-incomplete-<YYYYMMDDTHHMMSS>` recovery
+  sidecar next to the annotation file, save the trimmed layer,
+  then kick off training) or *Cancel* (return to the UI to fix
+  manually). On the clean path the active layer is still
+  `save()`-ed right before training kicks off, so the on-disk state
+  matches what DLC will see. Motivation: DLC tolerates per-bodypart
+  NaN in its CSV but partial frames degrade the trained model in
+  practice. The modal warns that the check covers the *active layer
+  only* -- sibling annotation files in the project folder
+  contribute to `DLCProject.extract_frames`'s merged training input
+  and may still carry their own gaps. The sidecar's composite
+  extension intentionally avoids `.json` so the discovery glob
+  (`{video_stem}*_annotations*.json`) does not re-ingest it on
+  subsequent training runs. Non-Qt fallback path (no QMainWindow)
+  skips the modal -- no GUI to host it.
 - `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk`
   (**Reduce jitter**) joins the overlay path on a Qt backend (no
   more UI freeze during long LK-RSTC passes). The overlay log
@@ -123,6 +144,28 @@ itself.
   left the UI on the source layer).
 
 ### Added
+- `dustrack/dlcinterface.py`: pre-flight helpers on `DUSTrack` for the
+  Train DLC model incomplete-frame check. Four pure staticmethods
+  (`_scan_incomplete_frames`, `_build_dropped_incomplete_payload`,
+  `_build_dropped_incomplete_sidecar_name`,
+  `_format_incomplete_breakdown`) plus two instance methods
+  (`_save_dropped_incomplete_sidecar` for sidecar persistence,
+  `_prompt_drop_or_cancel` for the `QMessageBox` modal). The pure
+  helpers ignore empty placeholder labels (a label with zero
+  annotations is not treated as "every frame missing this label"),
+  match what `VideoAnnotation.save()` + dnav's
+  `keep_overlapping_frames` will then act on.
+- `tests/test_train_dlc_preflight.py`: 16 synthetic-data tests
+  covering the four pure pre-flight staticmethods -- complete-frames
+  detection across the empty-data / all-placeholder-labels / single-
+  missing-label / multi-missing-labels / sort-order cases; sidecar
+  payload includes only present labels (not missing) and casts to
+  floats; sidecar filename uses the composite suffix (no `.json`
+  extension) and lives next to the annotation; breakdown formatter
+  truncates at `max_rows` with a tail line. The instance methods
+  (`_save_*` writes a file, `_prompt_*` shows a modal) and the
+  `process_dlc_project` wiring are not unit-tested -- they need a
+  live GUI session.
 - `dustrack/dlcinterface.py`: `DUSTrack._refresh_dlc_layers(video_index=0)`
   helper -- factors the "load trained outputs from disk into the live
   session" step out of `DLCProject.annotate`. Now mirrors `annotate()`
