@@ -622,8 +622,14 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # QComboBoxes (Windows-native dropdown rendering goes away).
         self._paint_statevars_widget()
 
+        # rc2 safeguard: intercept window close so the user is asked
+        # before losing in-memory annotation diffs. The Train pre-flight
+        # already catches this path; this hook covers every other way
+        # the window can close (X button, alt-F4, plt.close()).
+        self._install_close_guard()
+
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
-        
+
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
             self.update()
@@ -1169,6 +1175,11 @@ class DUSTrack(dnav.VideoPointAnnotator):
         """Read the on-disk JSON for a layer and return its data in
         canonical form. Empty dict if the file does not exist or
         cannot be parsed (treated as "fully unsaved").
+
+        Uses ``Path.read_text`` rather than builtin ``open()`` because
+        the module defines a top-level ``open`` (the workflow entry
+        point) that shadows ``builtins.open`` inside this file -- same
+        convention as ``DLCProject._read_trackermap``.
         """
         import json
         if ann_fname is None:
@@ -1177,8 +1188,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if not p.exists():
             return {}
         try:
-            with open(p) as f:
-                raw = json.load(f)
+            raw = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
         return DUSTrack._normalize_layer_data(raw)
@@ -1208,6 +1218,47 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 if mem_frames[frame] != disk_frames[frame]:
                     modified.append((label, frame))
         return {"added": added, "removed": removed, "modified": modified}
+
+    def _scan_unsaved_layers(self) -> dict:
+        """Across every manual annotation layer, return
+        ``{layer_name: diff}`` for layers whose in-memory data differs
+        from disk. Sibling of :meth:`_scan_unsaved_and_incomplete`
+        scoped to the data-loss concern only -- the close-event guard
+        does not care about incomplete-frame quality (that surfaces
+        next time the user trains).
+        """
+        unsaved: dict = {}
+        for ann in self.annotations:
+            if not self._is_manual_annotation_layer(
+                self.fname, ann.fname, ann.name
+            ):
+                continue
+            mem_data = self._normalize_layer_data(ann.data)
+            disk_data = self._load_layer_disk_data(ann.fname)
+            diff = self._diff_ann_vs_disk(mem_data, disk_data)
+            if any(diff.values()):
+                unsaved[ann.name] = diff
+        return unsaved
+
+    @staticmethod
+    def _format_unsaved_summary(unsaved: dict) -> str:
+        """Per-layer +added / -removed / ~modified counts for the
+        save-on-close modal's informative text.
+        """
+        lines = []
+        for layer_name, diff in unsaved.items():
+            a = len(diff.get("added", []))
+            r = len(diff.get("removed", []))
+            m = len(diff.get("modified", []))
+            pieces = []
+            if a:
+                pieces.append(f"+{a} added")
+            if r:
+                pieces.append(f"-{r} removed")
+            if m:
+                pieces.append(f"~{m} modified")
+            lines.append(f"  {layer_name!r}: " + ", ".join(pieces))
+        return "\n".join(lines)
 
     def _scan_unsaved_and_incomplete(self) -> dict:
         """Across every manual annotation layer in the session, find
@@ -1328,6 +1379,93 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 ann.keep_overlapping_frames()
             ann.save()
         self.update()
+
+    def _prompt_save_on_close(self, qt_window, unsaved: dict) -> str:
+        """Modal triggered by the save-on-close guard. Returns the user's
+        choice as one of ``"save"`` / ``"discard"`` / ``"cancel"``.
+
+        *Save* writes every layer with diffs and lets the window close;
+        *Discard* lets the window close without writing; *Cancel* keeps
+        the window open. ``Cancel`` is the default button so that
+        accidental Enter / Esc do not silently lose data.
+        """
+        from qtpy.QtWidgets import QMessageBox
+        n = len(unsaved)
+        msg = QMessageBox(qt_window)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Unsaved annotations")
+        msg.setText(
+            f"{n} annotation layer{'s' if n != 1 else ''} "
+            f"{'have' if n != 1 else 'has'} unsaved changes."
+        )
+        breakdown = self._format_unsaved_summary(unsaved)
+        msg.setInformativeText(
+            f"{breakdown}\n\n"
+            "Save all writes the in-memory edits to disk before closing.\n"
+            "Discard closes without writing -- changes are lost.\n"
+            "Cancel keeps the window open."
+        )
+        save_btn = msg.addButton("Save all", QMessageBox.AcceptRole)
+        discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.setDefaultButton(cancel_btn)
+        msg.exec_()
+        clicked = msg.clickedButton()
+        if clicked is save_btn:
+            return "save"
+        if clicked is discard_btn:
+            return "discard"
+        return "cancel"
+
+    def _save_unsaved_layers(self, unsaved: dict) -> None:
+        """Persist every layer with diffs. Called from the save-on-close
+        guard when the user picks *Save all*.
+        """
+        for layer_name in unsaved:
+            ann = self.annotations[layer_name]
+            ann.save()
+
+    def _install_close_guard(self) -> None:
+        """Patch the QMainWindow ``closeEvent`` so window close triggers
+        the unsaved-diffs scan + modal.
+
+        Monkey-patch rather than subclass because the QMainWindow is
+        constructed inside matplotlib's Qt backend; intercepting it
+        without owning the type means patching the instance. The
+        original ``closeEvent`` is chained at the end so any
+        backend-internal cleanup still runs.
+
+        No-op on the mpl fallback path (no Qt window to hook).
+        """
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            return
+        if getattr(qt_window, "_dustrack_close_guard_installed", False):
+            return  # idempotent: a second __init__ pass (e.g. subclass) must not stack
+
+        original_close_event = qt_window.closeEvent
+        dustrack_self = self
+
+        def closeEvent(event):
+            try:
+                unsaved = dustrack_self._scan_unsaved_layers()
+            except Exception:
+                # If the scan itself fails (e.g. annotation list mutated
+                # mid-shutdown), don't block the close -- the guard is a
+                # safety net, not a hard gate.
+                unsaved = {}
+            if unsaved:
+                choice = dustrack_self._prompt_save_on_close(qt_window, unsaved)
+                if choice == "cancel":
+                    event.ignore()
+                    return
+                if choice == "save":
+                    dustrack_self._save_unsaved_layers(unsaved)
+                # "discard" falls through to the original closeEvent
+            original_close_event(event)
+
+        qt_window.closeEvent = closeEvent
+        qt_window._dustrack_close_guard_installed = True
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``

@@ -13,7 +13,43 @@ modal `ProgressOverlay` instead of freezing the GUI; a unified
 (or read the error) before the underlying UI becomes interactive
 again. The training overlay no longer auto-dismisses, and the
 pre-rc2 `QMessageBox` failure dialogs are folded into the overlay
-itself.
+itself. **Plus (2026-05-19 fold-in from the originally-planned rc3
+robustness band)**: save-on-close guard intercepts every way the
+window can close (X button, alt-F4, `plt.close()`) and offers
+*Save all / Discard / Cancel* on any unsaved diff.
+
+### Added
+- **Save-on-close guard** -- new `DUSTrack._install_close_guard()`,
+  called at end of `__init__`, patches the QMainWindow's
+  `closeEvent` so it first runs `_scan_unsaved_layers()` (sibling
+  of the Train pre-flight's `_scan_unsaved_and_incomplete`, scoped
+  to in-memory-vs-disk diff only -- incomplete-frame quality is a
+  training concern, not a close-time concern). When any layer has
+  unsaved changes, a modal lists per-layer
+  `+added / -removed / ~modified` counts and offers **Save all**,
+  **Discard**, or **Cancel**, with *Cancel* as the default so
+  accidental Enter/Esc does not lose data. Idempotent install via
+  `_dustrack_close_guard_installed` sentinel attribute (a second
+  install pass, e.g. from a subclass re-entry, is a no-op).
+  Defensive: scan failures (e.g. annotations list torn down
+  mid-shutdown) don't strand the user with an un-closeable window
+  -- the guard treats its own errors as "no issues found" and
+  chains through to the original `closeEvent`. mpl-fallback path
+  (no Qt window) is a no-op. Sibling helpers
+  `_format_unsaved_summary`, `_prompt_save_on_close`,
+  `_save_unsaved_layers`. 18 new tests in
+  `tests/test_save_on_close.py`.
+
+### Fixed
+- Latent shadowing bug in `_load_layer_disk_data`: was calling the
+  module-shadowed `dustrack.open` workflow entry point instead of
+  `builtins.open`, which would dispatch JSON paths through
+  `dustrack.open`'s Phase-1 branch and raise `ValueError("layer_name
+  is required")`. Existing pre-flight tests stubbed the method at a
+  higher layer so the bug was latent in rc2. Switched to
+  `Path.read_text(encoding="utf-8")` + `json.loads`, the same
+  convention `DLCProject._read_trackermap` already uses for the
+  same reason.
 
 ### Changed
 - `dustrack/dlcinterface.py`: button-column separators promoted from
