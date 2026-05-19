@@ -522,27 +522,63 @@ class DUSTrack(dnav.VideoPointAnnotator):
         if dark_mode:
             self._apply_dark_theme()
 
-        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self))
-        # Double separators mark the major button-group boundaries in
-        # rc2's vertical sidebar: shortcuts | DLC pipeline | trace +
-        # display controls | (state variables, separated by dnav's own
-        # trailing double separator on the statevars widget).
-        self.buttons.add_separator(style="double")
+        # rc2 sidebar order: workflow | display | niche-op | utilities | swap.
+        # Double separators mark major group boundaries; a *pair* of
+        # double separators sets off Swap layers as a distinct trailing
+        # action. dnav's _QtStatevarsWidget appends its own trailing
+        # double separator below the statevars section, so we don't add
+        # one after Swap layers.
+
+        # --- Workflow group: end-to-end annotation pipeline -------------
+        _btns_workflow = []
         if HAS_DLC:
-            self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project)
-            self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project)
-            self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections)
-            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk)
-            self.buttons.add_separator(style="double")
-        self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self))
-        self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self))
-        self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes)
-        self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes)
-        self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay)
-        self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)
-        self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as)
+            _btns_workflow.append(self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project))
+            _btns_workflow.append(self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project))
+            _btns_workflow.append(self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections))
+            _btns_workflow.append(self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk))
+        _btns_workflow.append(self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as))
         self.buttons.add_separator(style="double")
-        self.buttons.add(text="Swap layers", action_func=self.swap_active_and_overlay)
+
+        # --- Display / trace controls -----------------------------------
+        _btns_display = [
+            self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement),
+            self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self)),
+            self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self)),
+            self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes),
+            self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes),
+        ]
+        self.buttons.add_separator(style="double")
+
+        # Niche operation; flagged for a future decision -- should this
+        # button be replaced by a keyboard-only shortcut to reclaim the
+        # vertical slot? Track usage before removing.
+        _btns_niche = [
+            self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay),
+        ]
+        self.buttons.add_separator(style="double")
+
+        # --- Utilities + Swap layers -----------------------------------
+        # Refresh UI is normally installed by VideoPointAnnotator's
+        # _add_default_buttons hook; DUSTrack overrides that hook to
+        # no-op (see _add_default_buttons below) so this slot keeps the
+        # button next to Keyboard shortcuts as a "utility" pair just
+        # above Swap layers.
+        _btns_utilities = [
+            self.buttons.add(text="Refresh UI", action_func=self.refresh),
+            self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self)),
+        ]
+        self.buttons.add_separator(style="double")
+
+        _btns_swap = [self.buttons.add(text="Swap annotation layers", action_func=self.swap_active_and_overlay)]
+
+        # Per-group color styling (Qt path + dark_mode only; otherwise no-op).
+        self._style_sidebar_buttons({
+            "workflow": _btns_workflow,
+            "display": _btns_display,
+            "niche": _btns_niche,
+            "utilities": _btns_utilities,
+            "swap": _btns_swap,
+        })
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
         
@@ -551,6 +587,103 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self.update()
             plt.setp(self._ax_trace_x.get_xticklabels(), visible=False)
             plt.draw()
+
+    def _add_default_buttons(self) -> None:
+        """Override the parent's default-button hook to a no-op.
+
+        VideoPointAnnotator installs ``Refresh UI`` immediately at
+        end of ``__init__``; DUSTrack's rc2 sidebar instead places it
+        next to ``Keyboard shortcuts`` as a utility pair just above
+        ``Swap layers`` (see button-add block in ``__init__``).
+        """
+        return
+
+    # rc2 sidebar palette (pastel analogous band; cool -> warm -> neutral).
+    # Each group gets a coordinated bg/fg/border/hover/pressed triplet so
+    # group transitions read at a glance without saturation-clash. Swap
+    # layers + the statevars widget share the same pale silver `#e0e4e8`
+    # -- visual pair at the bottom of the column. Single dark-slate
+    # text color (`#2c3e50`) is the same for every group so the eye
+    # isn't asked to retune contrast row-to-row.
+    _SIDEBAR_STATEVARS_BG = "#e0e4e8"
+    _SIDEBAR_TEXT_COLOR = "#2c3e50"
+    _SIDEBAR_PALETTE = {
+        "workflow": {  # powder blue -- primary pipeline, coolest end
+            "bg": "#cfdef3", "fg": "#2c3e50",
+            "border": "#a8c0dd", "hover": "#bccfea", "pressed": "#a8c0dd",
+        },
+        "display": {   # pale mint -- cool green, analogous step from blue
+            "bg": "#d4ebd4", "fg": "#2c3e50",
+            "border": "#aed4ae", "hover": "#c1dfc1", "pressed": "#aed4ae",
+        },
+        "niche": {     # pale apricot -- warm shift, "use sparingly"
+            "bg": "#f5d9c0", "fg": "#2c3e50",
+            "border": "#d9b88a", "hover": "#eaca9f", "pressed": "#d9b88a",
+        },
+        "utilities": {  # pale sand -- neutral warm
+            "bg": "#ece6d5", "fg": "#2c3e50",
+            "border": "#d4cdb8", "hover": "#e0d9c5", "pressed": "#d4cdb8",
+        },
+        "swap": {      # pale silver -- matches statevars
+            "bg": "#e0e4e8", "fg": "#2c3e50",
+            "border": "#c0c5cb", "hover": "#d0d4d9", "pressed": "#c0c5cb",
+        },
+    }
+
+    @staticmethod
+    def _qss_for_group(spec: dict) -> str:
+        return (
+            f"QPushButton {{ background-color: {spec['bg']}; "
+            f"color: {spec['fg']}; border: 1px solid {spec['border']}; "
+            f"padding: 4px; }} "
+            f"QPushButton:hover {{ background-color: {spec['hover']}; }} "
+            f"QPushButton:pressed {{ background-color: {spec['pressed']}; }}"
+        )
+
+    def _style_sidebar_buttons(self, btn_groups: dict) -> None:
+        """Apply per-group color stylesheets + paint the statevars widget.
+
+        The palette is hand-tuned for the dim-room dark-theme use case
+        but is applied unconditionally (not gated on ``self._dark_mode``)
+        because users routinely run with the default
+        ``dark_mode=False`` -- gating the styling there leaves them
+        with a system-native sidebar that defeats the point of the
+        rc2 polish pass. No-op on the mpl fallback path (no
+        ``_qt_btn``) and when the Qt main window can't be located.
+
+        The statevars widget bg is set via palette manipulation
+        (not QSS) so child QComboBoxes inside it keep their native
+        Windows-style dropdown rendering; QSS on a `QWidget` selector
+        cascades into children and replaces the native combo paint
+        with a flat CSS box. Palette propagation respects native
+        widget styling.
+        """
+        for group_name, btns in btn_groups.items():
+            spec = self._SIDEBAR_PALETTE.get(group_name)
+            if spec is None:
+                continue
+            qss = self._qss_for_group(spec)
+            for btn in btns:
+                qbtn = getattr(btn, "_qt_btn", None)
+                if qbtn is not None:
+                    qbtn.setStyleSheet(qss)
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            return
+        col = getattr(qt_window, "_dnav_left_column", None)
+        if col is None or col.statevars_widget is None:
+            return
+        from qtpy.QtGui import QColor
+        sv = col.statevars_widget
+        pal = sv.palette()
+        pal.setColor(sv.backgroundRole(), QColor(self._SIDEBAR_STATEVARS_BG))
+        pal.setColor(sv.foregroundRole(), QColor(self._SIDEBAR_TEXT_COLOR))
+        sv.setPalette(pal)
+        sv.setAutoFillBackground(True)
+        # Clear any stylesheet we set on prior iterations so palette
+        # changes actually take effect (QSS wins over palette).
+        sv.setStyleSheet("")
 
     def _apply_dark_theme(self):
         """Apply dark theme to the GUI for better ultrasound visibility."""

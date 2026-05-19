@@ -19,13 +19,74 @@ itself.
 - `dustrack/dlcinterface.py`: button-column separators promoted from
   single to **double** (dnav 1.4.0rc2's new
   `Buttons.add_separator(style="double")`) to mark the major
-  functional groups in the rc2 sidebar: shortcuts | DLC pipeline
-  | trace + display controls. A trailing double separator now also
-  closes the display-controls group (after "Toggle enhance"); the
-  state-variables section gets its own trailing double separator
-  for free via dnav's `_QtStatevarsWidget`. Visual rhythm matches
-  what the rc2 stacked statevars layout introduced; users no longer
-  have to scan for group boundaries in a long flat list of buttons.
+  functional groups in the rc2 sidebar. Initial rc2 grouping was
+  `shortcuts | DLC pipeline | trace + display controls`; a later
+  rc2 polish pass (same release window) re-ordered the buttons to
+  the final task-flow layout below and folded "Save annotation
+  as..." into the workflow group so it stays adjacent to the
+  pipeline actions that produce annotations. Final rc2 column order
+  (top-to-bottom):
+    1. **Workflow** -- Create DLC Project → Train DLC model → Apply
+       manual corrections → Reduce jitter → Save annotation as...
+    2. **Display / trace** -- Toggle enhance → Trace: line →
+       Trace: dot → Freeze plot axes → Unfreeze plot axes
+    3. **Niche op** -- Replace existing from overlay *(flagged for
+       a future decision: keep the button or replace with a
+       keyboard-only shortcut to reclaim the slot)*
+    4. **Utilities + Swap** -- Refresh UI → Keyboard shortcuts →
+       Swap layers
+  Groups 1-3 are separated by single double-separators; group 3 is
+  separated from group 4 by **two** double-separators so Swap
+  layers reads as a deliberately set-apart trailing action. The
+  state-variables section below appends its own trailing double
+  separator for free via dnav's `_QtStatevarsWidget`. Users no
+  longer have to scan for group boundaries in a long flat list of
+  buttons.
+- `dustrack/dlcinterface.py`: `DUSTrack._add_default_buttons()`
+  overrides the dnav 1.4.0rc2 hook to a no-op. Pre-fix, dnav's
+  `VideoPointAnnotator.__init__` installed "Refresh UI" at slot 0
+  of the buttons column; DUSTrack now places "Refresh UI" itself
+  next to "Keyboard shortcuts" as a utility pair just above
+  "Swap layers" (see the column order above).
+- `dustrack/dlcinterface.py`: per-group color styling via
+  `DUSTrack._style_sidebar_buttons` + `_SIDEBAR_PALETTE` (Qt path
+  only; mpl fallback no-ops). Applied unconditionally so users on
+  the default `dark_mode=False` still see the coordinated rc2
+  sidebar. Pastel analogous band (cool -> warm -> neutral) with a
+  single dark-slate text color across all groups so the eye
+  doesn't retune contrast row-to-row:
+    - **Workflow** (5 btns) -- powder blue `#cfdef3`; primary
+      pipeline, coolest end of the band.
+    - **Display** (5 btns) -- pale mint `#d4ebd4`; cool green,
+      analogous step from blue.
+    - **Niche** (Replace from overlay) -- pale apricot `#f5d9c0`;
+      warm shift signals "use sparingly".
+    - **Utilities** (Refresh UI, Keyboard shortcuts) -- pale sand
+      `#ece6d5`; neutral warm.
+    - **Swap layers** -- pale silver `#e0e4e8`; matches the
+      statevars widget bg.
+  Each group's stylesheet sets bg / fg / border + hover / pressed
+  states only (no `border-radius` or padding overrides) so the
+  QSS rendering stays close to a flat-colored variant of the
+  native button. The statevars widget bg is set via **palette
+  manipulation** (not QSS) so child QComboBoxes inside it keep
+  their native Windows-style dropdown rendering -- a `QWidget`
+  QSS selector cascades into children and re-skins the combos
+  flat, which an earlier rc2 attempt did and got noticed; palette
+  propagation respects native widget styling. Earlier rc2
+  iterations went through a high-contrast white-on-black workflow
+  accent, a saturated cool-tone dark palette, and a teal/rose
+  pastel before settling on this mint/apricot variant; the dark
+  versions read as gaudy next to a dark figure canvas and the
+  teal/rose felt off-key.
+- `datanavigator/_qt.py` (via dnav 1.4.0rc2): `_QtStatevarsWidget`
+  no longer renders the bold "State variables:" title row -- the
+  trailing double separator and per-row dividers already delimit
+  the section. The widget paints itself with a slightly darker
+  background than the parent dock (palette `base.darker(120)`,
+  theme-adaptive) so the statevars area is visually distinct from
+  the buttons column above it. DUSTrack inherits both changes
+  without a code change of its own.
 - `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project`
   (**Train DLC model**) no longer closes the figure and re-opens it
   after training. On a Qt backend (the default for
