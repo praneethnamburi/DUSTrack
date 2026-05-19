@@ -28,8 +28,10 @@ itself.
   (top-to-bottom):
     1. **Workflow** -- Create DLC Project → Train DLC model → Apply
        manual corrections → Reduce jitter → Save annotation as...
-    2. **Display / trace** -- Toggle enhance → Trace: line →
-       Trace: dot → Freeze plot axes → Unfreeze plot axes
+    2. **Display / trace** -- Toggle enhance → [Trace: line |
+       Trace: dot] → [Freeze plot axes | Unfreeze plot axes]
+       (the bracketed pairs render as one row each via
+       `Buttons.add_multi`; see the next bullet)
     3. **Niche op** -- Replace existing from overlay *(flagged for
        a future decision: keep the button or replace with a
        keyboard-only shortcut to reclaim the slot)*
@@ -42,6 +44,16 @@ itself.
   separator for free via dnav's `_QtStatevarsWidget`. Users no
   longer have to scan for group boundaries in a long flat list of
   buttons.
+- `dustrack/dlcinterface.py`: the **Trace: line / Trace: dot** and
+  **Freeze plot axes / Unfreeze plot axes** pairs in the Display /
+  trace group now render as side-by-side two-button rows via dnav
+  1.4.0rc2's new `Buttons.add_multi(*specs)`. Each pair consumed two
+  vertical sidebar slots pre-rc2-polish; now each consumes one, so
+  the Display group occupies 3 column slots instead of 5. Labels
+  kept verbatim (half-column width is comfortable and the existing
+  keybind muscle memory wins). Both calls still extend
+  `_btns_display` so the per-button color styling and any future
+  keybinding wiring continue to apply per-button.
 - `dustrack/dlcinterface.py`: `DUSTrack._add_default_buttons()`
   overrides the dnav 1.4.0rc2 hook to a no-op. Pre-fix, dnav's
   `VideoPointAnnotator.__init__` installed "Refresh UI" at slot 0

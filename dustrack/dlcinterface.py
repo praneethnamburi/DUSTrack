@@ -540,13 +540,15 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self.buttons.add_separator(style="double")
 
         # --- Display / trace controls -----------------------------------
-        _btns_display = [
-            self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement),
-            self.buttons.add(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self)),
-            self.buttons.add(text="Trace: dot", action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self)),
-            self.buttons.add(text="Freeze plot axes", action_func=self.freeze_plot_axes),
-            self.buttons.add(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes),
-        ]
+        _btns_display = [self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)]
+        _btns_display.extend(self.buttons.add_multi(
+            dict(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self)),
+            dict(text="Trace: dot",  action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self)),
+        ))
+        _btns_display.extend(self.buttons.add_multi(
+            dict(text="Freeze plot axes",   action_func=self.freeze_plot_axes),
+            dict(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes),
+        ))
         self.buttons.add_separator(style="double")
 
         # Niche operation; flagged for a future decision -- should this
