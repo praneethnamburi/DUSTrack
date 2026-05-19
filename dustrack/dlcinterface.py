@@ -1081,9 +1081,14 @@ class DUSTrack(dnav.VideoPointAnnotator):
         _ax_lims (dict): Stores axis limits when plot axes are frozen.
     
     Example:
-        >>> # Basic usage
-        >>> tracker = DUSTrack('video.mp4', "pn") # pn is the name of the annotation layer, that can be saved as {video_name}_annotations_pn.json
-        >>> 
+        >>> # Basic usage -- annotation_names defaults to "iteration-0",
+        >>> # the canonical seed name for the DLC pipeline (the next
+        >>> # DLC training round lands as iteration-1).
+        >>> tracker = DUSTrack('video.mp4')
+        >>>
+        >>> # Explicit layer name -- saved as {video_name}_annotations_pn.json
+        >>> tracker = DUSTrack('video.mp4', "pn")
+        >>>
         >>> # With multiple annotation layers
         >>> tracker = DUSTrack('video.mp4', {
         ...     'manual': 'manual_labels.json',
@@ -1100,7 +1105,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
     # source.
     CORRECTIONS_LAYER_NAME = "dlccorr"
 
-    def __init__(self, *args,
+    def __init__(self, vid_name, annotation_names="iteration-0", *args,
                  clahe_clip=1.0, clahe_grid=8, gamma=1.0, brightness=0,
                  dark_mode=False, **kwargs):
         # Store enhancement settings. Defaults now correspond to "no
@@ -1156,7 +1161,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # appearance is reproducible across Qt bindings + OS themes.
         # See :func:`_pin_qt_palette` for the rationale.
         _pin_qt_palette(dark_mode)
-        super().__init__(*args, **kwargs)
+        super().__init__(vid_name, annotation_names, *args, **kwargs)
 
         for ann in self.annotations:
             ann.__class__ = VideoAnnotation
@@ -2526,7 +2531,8 @@ class DUSTrack(dnav.VideoPointAnnotator):
     def _restructure_annotation_order(self) -> None:
         """Regroup ``self.annotations`` into the canonical layer order
         produced by :meth:`DLCProject.annotate` at fresh load:
-        ``manuals -> labeled_data -> dlc_* -> dlccorr* -> buffer``.
+        ``manuals -> manual_corrections -> labeled_data -> dlc_* ->
+        dlccorr* -> buffer``.
 
         In-session adds (post-train :meth:`_refresh_dlc_layers`,
         Reduce-jitter / :meth:`apply_manual_corrections` via
@@ -2536,7 +2542,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         re-runs after those paths so the dropdown rotation matches the
         fresh-load order regardless of how the session got here.
 
-        Five groups, classified by layer name:
+        Six groups, classified by layer name:
 
         - ``buffer`` -- the scratch layer, always last.
         - ``labeled_data`` -- DLC training-input HDF5.
@@ -2552,14 +2558,24 @@ class DUSTrack(dnav.VideoPointAnnotator):
           incorporates live in a separate active layer), and isn't
           folded into the ``dlc_*`` group either since it isn't a model
           inference.
+        - ``*_manual_corrections`` (suffix) -- the source-of-corrections
+          layer (typically ``iteration-N_manual_corrections``) that
+          :meth:`apply_manual_corrections` renames the patch layer to
+          on a successful splice. Distinct from the regular manuals
+          block: it's the canonical "this was the live correction
+          source for the dlccorr that exists" marker, and grouped
+          right after manuals so the relationship to its
+          ``iteration-N`` prefix peer stays visually adjacent.
         - manuals -- everything else, i.e. ``*_annotations_*.json``-
-          backed layers that aren't ``buffer`` / ``dlccorr*``.
+          backed layers that aren't ``buffer`` / ``dlccorr*`` /
+          ``*_manual_corrections``.
 
         Intra-group order is preserved (so the user's current ordering
         within each group survives a refresh). Active layer and overlay
         are preserved by name across the reorder.
         """
         manuals: list[str] = []
+        manual_corr: list[str] = []
         labeled: list[str] = []
         dlc: list[str] = []
         dlccorr: list[str] = []
@@ -2574,10 +2590,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 dlccorr.append(name)
             elif name.startswith("dlc_"):
                 dlc.append(name)
+            elif name.endswith("_manual_corrections"):
+                manual_corr.append(name)
             else:
                 manuals.append(name)
 
-        target = manuals + labeled + dlc + dlccorr + buf
+        target = manuals + manual_corr + labeled + dlc + dlccorr + buf
         if target == self.annotations.names:
             return
 
@@ -2949,6 +2967,15 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 merged[label].update(patch_data[label])
         return merged
 
+    # Suffix appended to the source-of-corrections layer's name on a
+    # successful :meth:`apply_manual_corrections` run. The full new name
+    # is ``{old_name}_manual_corrections`` -- typically
+    # ``iteration-N_manual_corrections`` -- so the rename is visually
+    # adjacent to its ``iteration-N`` peer in the layer dropdown and
+    # picked up by the ``_manual_corrections`` suffix branch in
+    # :meth:`_restructure_annotation_order`.
+    MANUAL_CORRECTIONS_SUFFIX = "_manual_corrections"
+
     def apply_manual_corrections(self, event=None):
         """Splice the active layer's manual entries into the overlay to produce/refresh the ``dlccorr`` layer.
 
@@ -2965,15 +2992,30 @@ class DUSTrack(dnav.VideoPointAnnotator):
         excluded from DLC training input (the ``_dlccorr`` filter in
         :func:`_extract_frames`) -- this is a terminal output.
 
+        **Preflight save.** If the active (patch) layer has any
+        unsaved in-memory edits, they are written to disk before the
+        splice runs. The user has explicitly clicked Apply, so
+        "intent to commit" is signalled; saving the source as a side
+        effect keeps the on-disk state coherent with ``dlccorr``
+        (which is always saved by this method).
+
+        **Source-layer rename.** On a successful splice the patch
+        layer is renamed in place from ``<old_name>`` to
+        ``<old_name>_manual_corrections`` (the file is moved on disk
+        too, old file deleted). The rename marks "this is the layer
+        whose manual entries the on-disk ``dlccorr`` was spliced from"
+        so the relationship survives reload. No-op if the patch is
+        already named ``*_manual_corrections`` (idempotent re-apply).
+
         **Post-apply state.** The corrections layer becomes the
-        active annotation layer and the manual layer (previously
-        active) becomes the overlay so you can see where your hand
-        was. To iterate, switch the active layer back to your manual
-        layer, set the overlay back to the DLC trace, add more
-        points, click again. Each click regenerates the corrections
-        layer from the current ``(overlay, active)`` pair, so adding
-        annotations directly to the corrections layer is not
-        recommended -- they'll be discarded on the next apply.
+        active annotation layer and the (now-renamed) manual layer
+        becomes the overlay so you can see where your hand was. To
+        iterate, switch the active layer back to your manual layer,
+        set the overlay back to the DLC trace, add more points, click
+        again. Each click regenerates the corrections layer from the
+        current ``(overlay, active)`` pair, so adding annotations
+        directly to the corrections layer is not recommended --
+        they'll be discarded on the next apply.
 
         **Idempotency.** If a ``dlccorr`` layer is already present in
         the session, its in-memory data is replaced wholesale (with
@@ -3005,6 +3047,24 @@ class DUSTrack(dnav.VideoPointAnnotator):
                 "the corrections layer is a derived output and shouldn't be the "
                 "splice input."
             )
+
+        # Preflight: save the patch layer if it has unsaved edits, so
+        # the on-disk file matches the in-memory data the splice is
+        # about to consume. Scoped to the patch layer only -- the
+        # overlay is typically a dlc_* h5 trace and isn't editable
+        # interactively. See the apply_manual_corrections docstring
+        # ("Preflight save") for the rationale.
+        if patch.fname is not None:
+            mem_data = self._normalize_layer_data(patch.data)
+            disk_data = self._load_layer_disk_data(patch.fname)
+            diff = self._diff_ann_vs_disk(mem_data, disk_data)
+            if any(diff.values()):
+                patch.save()
+                print(
+                    f"Apply manual corrections: auto-saved {patch_name!r} "
+                    "(had unsaved edits) before splicing."
+                )
+
         source = self.annotations[overlay_name]
 
         merged_data = self._merge_overlay_with_patch(source.data, patch.data)
@@ -3030,9 +3090,82 @@ class DUSTrack(dnav.VideoPointAnnotator):
             new_ann.save()
             self._adopt_layer(new_ann)
 
+        # Rename the patch layer to <old>_manual_corrections so the
+        # source-of-corrections is identifiable on reload. Skip if
+        # already suffixed (idempotent re-apply -- e.g. user re-clicked
+        # Apply without changing the active layer back to the renamed
+        # one in the overlay flip).
+        if not patch_name.endswith(self.MANUAL_CORRECTIONS_SUFFIX):
+            new_patch_name = patch_name + self.MANUAL_CORRECTIONS_SUFFIX
+            self._rename_annotation_layer(patch_name, new_patch_name)
+            patch_name = new_patch_name
+
         self.statevariables["annotation_layer"].set_state(self.CORRECTIONS_LAYER_NAME)
         self.statevariables["annotation_overlay"].set_state(patch_name)
+        self._restructure_annotation_order()
         self.update()
+
+    def _rename_annotation_layer(self, old_name: str, new_name: str) -> None:
+        """Rename an annotation layer in-place: ``.name`` + ``.fname`` +
+        on-disk file. The old on-disk file is deleted after the new file
+        is written so a crash mid-rename leaves at least one copy on
+        disk. Statevariable rotations and the active/overlay selections
+        are resynced; selections that pointed at the old name are
+        re-pinned to the new name.
+
+        Used by :meth:`apply_manual_corrections` to tag the
+        source-of-corrections layer with the ``_manual_corrections``
+        suffix on a successful splice; written as a general helper
+        because the rename mechanics (file move + statevar resync +
+        selection preservation) are independent of that workflow.
+        """
+        if old_name not in self.annotations.names:
+            raise KeyError(f"No annotation layer named {old_name!r}.")
+        if new_name in self.annotations.names:
+            raise ValueError(
+                f"Cannot rename {old_name!r} -> {new_name!r}: a layer with "
+                f"the target name already exists."
+            )
+
+        ann = self.annotations[old_name]
+        old_fname = ann.fname
+        # ``make_annotation_file_name`` produces
+        # ``<video>_annotations_<new_name>.json`` so the on-disk filename
+        # stem-after-``_annotations_`` equals the layer name -- the same
+        # invariant :meth:`VideoFileManager.canonical_layer_name` relies
+        # on when round-tripping a name from disk.
+        new_fname = make_annotation_file_name(self.fname, new_name)
+
+        # Write the new file before unlinking the old, so an
+        # interrupted rename leaves the data on disk.
+        ann.save(new_fname)
+        ann.fname = new_fname
+        ann.name = new_name
+        if old_fname is not None and Path(old_fname).exists() and str(old_fname) != str(new_fname):
+            try:
+                Path(old_fname).unlink()
+            except OSError as exc:
+                # Don't strand the user with a broken rename: log and
+                # continue. The new file is in place; the stale old
+                # file at worst gets picked up by the next training
+                # pass alongside the new one (extract_frames will
+                # merge them), which is recoverable.
+                print(
+                    f"Warning: could not delete old annotation file "
+                    f"{old_fname!r} after rename to {new_fname!r}: {exc}"
+                )
+
+        # Resync statevariable rotations + preserve selections that
+        # pointed at the old name.
+        self._refresh_annotation_state_lists()
+        if "annotation_layer" in self.statevariables.names:
+            sv = self.statevariables["annotation_layer"]
+            if sv.current_state == old_name:
+                sv.set_state(new_name)
+        if "annotation_overlay" in self.statevariables.names:
+            sv = self.statevariables["annotation_overlay"]
+            if sv.current_state == old_name:
+                sv.set_state(new_name)
 
     def save_annotation_as(self, event=None):
         """Save the active annotation layer to a user-chosen path.
@@ -4160,9 +4293,13 @@ def open(path, layer_name=None, **dustrack_kwargs):
 
     Args:
         path: Video file, ``config.yaml``, or DLC project folder.
-        layer_name: Annotation layer name. **Required** for Phase 1
-            (e.g. ``'manual'``). Optional for Phase 2; defaults to
-            ``iteration-{N+1}`` (next-iteration suffix) when omitted.
+        layer_name: Annotation layer name. Optional in both phases:
+            Phase 1 defaults to ``'iteration-0'`` (the canonical seed
+            name for the rest of the DLC pipeline -- the next DLC
+            training iteration lands as ``iteration-1``); Phase 2
+            defaults to ``iteration-{N+1}`` (the next-iteration suffix
+            derived from the project's training history). Callers can
+            still pass an explicit name to override.
         **dustrack_kwargs: Forwarded to the underlying :class:`DUSTrack`
             constructor (``dark_mode``, ``fast_render``, ``clahe_clip``,
             ``gamma``, ``brightness``, etc.).
@@ -4172,16 +4309,15 @@ def open(path, layer_name=None, **dustrack_kwargs):
 
     Raises:
         FileNotFoundError: If ``path`` doesn't exist.
-        ValueError: Phase 1 entry without ``layer_name``, or a
-            directory that isn't a DLC project.
+        ValueError: Path is a directory that isn't a DLC project.
         ImportError: Phase 2 entry on a system without ``deeplabcut``
             installed.
 
     Examples:
-        Fresh annotation::
+        Fresh annotation (default layer name ``'iteration-0'``)::
 
             import dustrack
-            tracker = dustrack.open('video.mp4', 'manual')
+            tracker = dustrack.open('video.mp4')
 
         Resume after closing the UI mid-workflow (any of these work)::
 
@@ -4200,7 +4336,11 @@ def open(path, layer_name=None, **dustrack_kwargs):
     config_path = _find_dlc_config(p)
 
     if config_path is None:
-        # Phase 1: no DLC project context.
+        # Phase 1: no DLC project context. ``layer_name`` defaults to
+        # ``iteration-0`` so a bare-video session seeds the canonical
+        # DLC iteration-N naming -- the next DLC training round lands
+        # as ``iteration-1`` rather than colliding with whatever ad-hoc
+        # name the user picked.
         if not p.is_file():
             raise ValueError(
                 f"dustrack.open: {path!s} is a directory but doesn't look like "
@@ -4208,11 +4348,7 @@ def open(path, layer_name=None, **dustrack_kwargs):
                 "Pass a video file or a DLC project folder."
             )
         if layer_name is None:
-            raise ValueError(
-                "dustrack.open: layer_name is required when opening a video "
-                "outside a DLC project. Example: "
-                "dustrack.open('video.mp4', 'manual')."
-            )
+            layer_name = "iteration-0"
         return DUSTrack(str(p), layer_name, **dustrack_kwargs)
 
     # Phase 2: project found.

@@ -129,11 +129,33 @@ class TestOpenDispatchErrors:
         with pytest.raises(FileNotFoundError):
             dustrack.open(tmp_path / "no_such_file.mp4")
 
-    def test_phase1_without_layer_name_raises(self, tmp_path):
+    def test_phase1_without_layer_name_defaults_to_iteration_0(
+        self, tmp_path, monkeypatch
+    ):
+        """Phase 1 entry without ``layer_name`` resolves to
+        ``'iteration-0'`` (was: ValueError pre-rc2-2026-05-19).
+        Verified by capturing the ``layer_name`` ``dustrack.open``
+        hands to the ``DUSTrack`` constructor.
+        """
         vid = tmp_path / "sample.mp4"
         vid.write_bytes(b"")
-        with pytest.raises(ValueError, match="layer_name"):
-            dustrack.open(vid)
+
+        captured = {}
+
+        def _fake_dustrack(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return object()  # stand-in; open() returns the constructor result
+
+        # Patch the symbol the open() function actually resolves --
+        # ``dustrack.dlcinterface.DUSTrack``.
+        monkeypatch.setattr("dustrack.dlcinterface.DUSTrack", _fake_dustrack)
+
+        result = dustrack.open(vid)
+        assert result is not None
+        # ``open`` invokes ``DUSTrack(str(p), layer_name, **kwargs)`` so
+        # the second positional arg is the resolved layer name.
+        assert captured["args"][1] == "iteration-0"
 
     def test_plain_directory_raises(self, tmp_path):
         folder = tmp_path / "plain_dir"

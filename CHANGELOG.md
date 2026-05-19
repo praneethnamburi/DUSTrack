@@ -177,22 +177,43 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   fails).
 - **Canonical layer regrouping** -- new
   `DUSTrack._restructure_annotation_order()` partitions
-  `self.annotations` into five groups and regroups via dnav 1.4.0rc2's
+  `self.annotations` into six groups and regroups via dnav 1.4.0rc2's
   new `VideoAnnotations.reorder(names)`, preserving intra-group
-  order: `manuals -> labeled_data -> dlc_* -> dlccorr* -> buffer`.
-  Wired into `DLCProject.annotate` (fresh-open), `_refresh_dlc_layers`
-  (post-train), and `_adopt_layer` (Reduce-jitter /
-  `apply_manual_corrections`) so all three entry points end at the
-  same canonical order. Pre-rc2 those paths appended new layers to
-  the tail of `self.annotations`, which interleaved manuals with
-  prior DLC traces and pushed the next-iteration manual layer behind
-  the previous iteration's dlc_* outputs in the layer dropdown.
-  Active layer + overlay are preserved by name across the reorder.
-  `dlccorr` (and its derived `dlccorr_lkmovavg_*` LK outputs) gets
-  its own group at the tail of the DLC chain rather than folded into
-  manuals -- the manual entries it incorporates live in a separate
-  active layer; `dlccorr` itself is the spliced output, not a hand-
-  edited layer.
+  order: `manuals -> manual_corrections -> labeled_data -> dlc_* ->
+  dlccorr* -> buffer`. Wired into `DLCProject.annotate` (fresh-open),
+  `_refresh_dlc_layers` (post-train), and `_adopt_layer`
+  (Reduce-jitter / `apply_manual_corrections`) so all three entry
+  points end at the same canonical order. Pre-rc2 those paths
+  appended new layers to the tail of `self.annotations`, which
+  interleaved manuals with prior DLC traces and pushed the next-
+  iteration manual layer behind the previous iteration's dlc_*
+  outputs in the layer dropdown. Active layer + overlay are
+  preserved by name across the reorder. `dlccorr` (and its derived
+  `dlccorr_lkmovavg_*` LK outputs) gets its own group at the tail of
+  the DLC chain rather than folded into manuals -- the manual
+  entries it incorporates live in a separate active layer; `dlccorr`
+  itself is the spliced output, not a hand-edited layer. The new
+  `manual_corrections` group sits right after manuals so the
+  source-of-corrections layer (see `apply_manual_corrections`
+  rename entry below) stays adjacent to its `iteration-N` peer.
+- **Apply manual corrections: preflight save + source-layer rename.**
+  `apply_manual_corrections` now (a) auto-saves the active patch
+  layer before splicing if it has any unsaved diff (so the on-disk
+  state stays coherent with the `dlccorr` it's about to write),
+  and (b) renames the patch layer to `<old_name>_manual_corrections`
+  on success -- in-memory `.name` + `.fname` plus an on-disk file
+  move (write-new-before-unlink-old so an interrupted rename leaves
+  data recoverable). For the canonical `iteration-N` patch the new
+  name is `iteration-N_manual_corrections`, picked up by the new
+  `manual_corrections` group in `_restructure_annotation_order`'s
+  classifier. Idempotent: re-applying when the patch is already
+  suffixed skips the rename. New helper
+  `DUSTrack._rename_annotation_layer(old, new)` factors the
+  file-move + statevar resync + selection-preservation mechanics so
+  the rename machinery is independent of the corrections workflow.
+  New class constant `DUSTrack.MANUAL_CORRECTIONS_SUFFIX`
+  (`"_manual_corrections"`) is the single source of truth for the
+  suffix string.
 
 ### Fixed
 - Latent shadowing bug in `_load_layer_disk_data`: was calling the
@@ -206,6 +227,18 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   same reason.
 
 ### Changed
+- **`DUSTrack(...)` annotation layer name default** is now
+  `"iteration-0"` (was: required positional or empty string from
+  dnav). `dustrack.open(path)` no longer raises when called without
+  `layer_name` on a bare video (Phase 1); the constructor default
+  takes over. `iteration-0` seeds the canonical DLC iteration-N
+  naming so the next DLC training round lands as `iteration-1`
+  rather than colliding with whatever ad-hoc name the user picked.
+  Constructor signature shifts from `__init__(self, *args, ...)` to
+  `__init__(self, vid_name, annotation_names="iteration-0", *args,
+  ...)`; existing positional callers (e.g.
+  `DLCProject.annotate`'s `DUSTrack(video, annotation_names,
+  height_ratios=...)`) are unaffected.
 - `dustrack/dlcinterface.py`: button-column separators promoted from
   single to **double** (dnav 1.4.0rc2's new
   `Buttons.add_separator(style="double")`) to mark the major
