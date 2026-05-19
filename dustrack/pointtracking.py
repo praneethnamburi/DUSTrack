@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import weakref
 from pathlib import Path
 from typing import Callable, Mapping, Any
 from tqdm import tqdm
@@ -1298,6 +1299,92 @@ class VideoPointAnnotator(VideoBrowser):
                 writer.grab_frame()
 
 
+class _TrackedFrameDict(dict):
+    """Per-label frame→location dict that bumps the parent's ``_revision`` on mutation.
+
+    Makes the trace-display cache invariant load-bearing: any write to
+    ``ann.data[label][frame]`` (direct or via :meth:`VideoAnnotation.add`)
+    is observable to consumers keyed on ``_revision``. The previous
+    discipline — "always route writes through :meth:`VideoAnnotation.add` /
+    :meth:`VideoAnnotation.remove` / :meth:`VideoAnnotation.add_at_frame`" —
+    is now enforced by the data structure itself; the two historical bypass
+    sites (``check_labels_with_lk`` and DUSTrack's
+    ``copy_existing_annotations_from_overlay``) would no longer have
+    silently shipped a stale UI.
+
+    Parent reference is a :class:`weakref.ref` so the per-frame dict
+    does not extend the lifetime of its owning :class:`VideoAnnotation`.
+    """
+
+    def __init__(self, *args, _parent=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._parent_ref = None if _parent is None else weakref.ref(_parent)
+
+    def _bump(self):
+        if self._parent_ref is None:
+            return
+        parent = self._parent_ref()
+        if parent is None:
+            return
+        # _revision is hoisted before the data setter fires, so it
+        # exists by the time any mutation routes through here. The
+        # getattr guard is belt-and-suspenders for partially-constructed
+        # parents (e.g. classmethod factory paths).
+        if hasattr(parent, "_revision"):
+            parent._revision += 1
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._bump()
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._bump()
+
+    def pop(self, key, *args):
+        had = key in self
+        result = super().pop(key, *args)
+        if had:
+            self._bump()
+        return result
+
+    def popitem(self):
+        result = super().popitem()
+        self._bump()
+        return result
+
+    def clear(self):
+        if not self:
+            return
+        super().clear()
+        self._bump()
+
+    def update(self, *args, **kwargs):
+        before = len(self)
+        super().update(*args, **kwargs)
+        # Bump unconditionally if anything was passed; cheap and avoids
+        # missing in-place value changes for already-present keys.
+        if args or kwargs:
+            self._bump()
+        else:
+            # update() with no args is a no-op
+            _ = before
+
+    def setdefault(self, key, default=None):
+        was_missing = key not in self
+        result = super().setdefault(key, default)
+        if was_missing:
+            self._bump()
+        return result
+
+    def __reduce__(self):
+        # For pickle / dill round-tripping: drop the weakref and
+        # restore as a parent-less :class:`_TrackedFrameDict`. The
+        # owning :class:`VideoAnnotation` (if pickled too) rewraps
+        # via its property setter on restore.
+        return (_TrackedFrameDict, (dict(self),))
+
+
 class VideoAnnotation:
     """
     Manage one point annotation layer in a video.
@@ -1358,6 +1445,14 @@ class VideoAnnotation:
         else:
             self.video = None
 
+        # Bumped on every mutation of self.data. Consumers (e.g.
+        # VideoPointAnnotator.update_frame_marker) read this to invalidate
+        # caches keyed on per-label trace contents. Over-invalidates on
+        # ordering-only changes (sort_labels / sort_data); under-invalidates
+        # would be a correctness bug. Hoisted before the data setter so
+        # _TrackedFrameDict._bump can find it during initial wrapping.
+        self._revision = 0
+
         preloaded_json = kwargs.pop("preloaded_json", None)
         if preloaded_json is None:
             self.data = self.load(n_annotations=n_labels)
@@ -1374,13 +1469,43 @@ class VideoAnnotation:
             "ax_list_trace_y": kwargs.pop("ax_list_trace_y", []),
         }
         self._plot_type = "dot" # line or dot
-        # Bumped on every mutation of self.data. Consumers (e.g.
-        # VideoPointAnnotator.update_frame_marker) read this to invalidate
-        # caches keyed on per-label trace contents. Over-invalidates on
-        # ordering-only changes (sort_labels / sort_data); under-invalidates
-        # would be a correctness bug.
-        self._revision = 0
         self.setup_display()
+
+    @property
+    def data(self) -> dict[str, _TrackedFrameDict]:
+        """Per-label frame→location dictionary.
+
+        Reads behave like a normal ``dict[str, dict[int, list[float]]]``.
+        Writes through ``ann.data[label][frame] = ...`` automatically
+        bump :attr:`_revision`, keeping consumers' caches consistent.
+        See :class:`_TrackedFrameDict`.
+        """
+        return self._data
+
+    @data.setter
+    def data(self, value: dict) -> None:
+        self._data = self._wrap_label_dicts(value)
+
+    def _wrap_label_dicts(self, raw: dict) -> dict[str, _TrackedFrameDict]:
+        """Wrap each per-label inner dict as a :class:`_TrackedFrameDict`
+        bound to ``self``.
+
+        Idempotent: an inner dict already bound to ``self`` is reused
+        as-is; a foreign-bound or bare dict is rewrapped. Inner-dict
+        wrapping is what makes the cache invariant load-bearing — the
+        outer-dict reassignment (``ann.data = {...}``) is already
+        disciplined via the wholesale-replacement sites that bump
+        :attr:`_revision` explicitly.
+        """
+        out = {}
+        for label, frames in raw.items():
+            if isinstance(frames, _TrackedFrameDict):
+                parent = None if frames._parent_ref is None else frames._parent_ref()
+                if parent is self:
+                    out[label] = frames
+                    continue
+            out[label] = _TrackedFrameDict(frames, _parent=self)
+        return out
 
     @classmethod
     def from_multiple_files(
@@ -1395,11 +1520,17 @@ class VideoAnnotation:
         labels = sorted(list({label for ann in ann_list for label in ann.labels}))
 
         ret = cls(fname=fname_merged, vname=ann_list[-1].video.fname, name=name)
-        ret.data = {label: {} for label in labels}
-        for label in labels:
-            ret.data[label] = functools.reduce(
+        # Assemble the merged dict in one shot so the property setter
+        # wraps each per-label dict (per-label assignment via
+        # ``ret.data[label] = ...`` would write a bare dict into the
+        # outer container and break future _revision bumps on direct
+        # writes).
+        ret.data = {
+            label: functools.reduce(
                 lambda x, y: {**x, **y}, [ann.data.get(label, {}) for ann in ann_list]
             )
+            for label in labels
+        }
 
         return ret
 
@@ -1902,7 +2033,12 @@ class VideoAnnotation:
         assert len(color) == 3
         assert all([0 <= x <= 1 for x in color])
 
-        self.data[label] = {}
+        # Use the data setter (not self.data[label] = {}) so the new
+        # per-label dict is wrapped as a _TrackedFrameDict and future
+        # direct writes through ann.data[label][frame] correctly bump
+        # _revision. Direct assignment to the outer dict would leave a
+        # bare dict in place.
+        self.data = {**self._data, label: {}}
         self.sort_labels()  # bumps _revision
 
         self.re_setup_display()
@@ -2219,12 +2355,14 @@ class VideoAnnotation:
 
     def clip_labels(self, start_frame: int, end_frame: int) -> None:
         """Remove annotations outside the clip range. Clip range includes start and end frame."""
-        for label in self.labels:
-            self.data[label] = {
+        self.data = {
+            label: {
                 k: v
                 for k, v in self.data[label].items()
                 if start_frame <= k <= end_frame
             }
+            for label in self.labels
+        }
         self._revision += 1
 
     def keep_overlapping_continuous_frames(self) -> None:
@@ -2238,10 +2376,12 @@ class VideoAnnotation:
                 "You're trying to remove all frames! Saving you from yourself by aborting."
             )
             return
-        for label in self.labels:
-            self.data[label] = {
+        self.data = {
+            label: {
                 k: v for k, v in self.data[label].items() if k in frames_to_keep
             }
+            for label in self.labels
+        }
         self._revision += 1
 
     def keep_overlapping_frames(self) -> None:
@@ -2259,10 +2399,12 @@ class VideoAnnotation:
                 "You're trying to remove all frames! Saving you from yourself by aborting."
             )
             return
-        for label in self.labels:
-            self.data[label] = {
+        self.data = {
+            label: {
                 k: v for k, v in self.data[label].items() if k in frames_to_keep
             }
+            for label in self.labels
+        }
         self._revision += 1
 
     def get_area(

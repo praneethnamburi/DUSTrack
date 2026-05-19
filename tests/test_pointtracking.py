@@ -1917,4 +1917,180 @@ def test_video_point_annotator_render(video_fname):
     # check that the video is rendered correctly
     assert len(datanavigator.Video(out_vid_name)) == 11
 
+
+# --- _TrackedFrameDict mutation-guard tests -----------------------------------
+# Cover the "direct ann.data[label][frame] = ..." bug class that bit
+# datanavigator 1.4.0rc1 via check_labels_with_lk and DUSTrack's
+# copy_existing_annotations_from_overlay. Both sites were fixed via the
+# public add() API in 1.4.0rc2; the data-structure-level guard below
+# makes the next bypass unrepresentable: any write to an inner per-label
+# dict bumps _revision regardless of which API path the caller took.
+
+from datanavigator.pointtracking import _TrackedFrameDict
+
+
+def test_inner_dict_is_tracked_frame_dict(ann_object):
+    """Each per-label inner dict is a _TrackedFrameDict bound to its parent."""
+    for label in ann_object.labels:
+        inner = ann_object.data[label]
+        assert isinstance(inner, _TrackedFrameDict)
+        assert inner._parent_ref is not None
+        assert inner._parent_ref() is ann_object
+
+
+def test_direct_setitem_bumps_revision(ann_object):
+    """Direct ann.data[label][frame] = ... bumps _revision (the bypass we close)."""
+    before = ann_object._revision
+    label = ann_object.labels[0]
+    ann_object.data[label][9999] = [1.0, 2.0]
+    assert ann_object._revision > before
+    assert ann_object.data[label][9999] == [1.0, 2.0]
+
+
+def test_direct_delitem_bumps_revision(ann_object):
+    """``del ann.data[label][frame]`` bumps _revision."""
+    label = ann_object.labels[0]
+    frame = next(iter(ann_object.data[label]))
+    before = ann_object._revision
+    del ann_object.data[label][frame]
+    assert ann_object._revision > before
+    assert frame not in ann_object.data[label]
+
+
+def test_pop_bumps_revision_only_when_key_existed(ann_object):
+    """pop() bumps only on actual removal, not on default-fallback."""
+    label = ann_object.labels[0]
+    frame = next(iter(ann_object.data[label]))
+    rev0 = ann_object._revision
+    ann_object.data[label].pop(frame)
+    assert ann_object._revision > rev0
+    rev1 = ann_object._revision
+    ann_object.data[label].pop(999999, None)  # not present
+    assert ann_object._revision == rev1
+
+
+def test_update_bumps_revision(ann_object):
+    """dict.update() on an inner dict bumps _revision."""
+    label = ann_object.labels[0]
+    before = ann_object._revision
+    ann_object.data[label].update({12345: [3.0, 4.0], 12346: [5.0, 6.0]})
+    assert ann_object._revision > before
+
+
+def test_setdefault_bumps_revision_only_on_insert(ann_object):
+    """setdefault() bumps when inserting a new key, not when reading existing."""
+    label = ann_object.labels[0]
+    frame_existing = next(iter(ann_object.data[label]))
+    rev0 = ann_object._revision
+    ann_object.data[label].setdefault(frame_existing, [0.0, 0.0])  # existing
+    assert ann_object._revision == rev0
+    ann_object.data[label].setdefault(99998, [7.0, 8.0])  # new
+    assert ann_object._revision > rev0
+
+
+def test_wholesale_data_reassignment_rewraps(ann_object):
+    """Setting ann.data = {...} rewraps inner dicts; subsequent direct writes bump."""
+    ann_object.data = {"0": {1: [1.0, 2.0]}, "1": {2: [3.0, 4.0]}}
+    for label, inner in ann_object._data.items():
+        assert isinstance(inner, _TrackedFrameDict)
+        assert inner._parent_ref() is ann_object
+    before = ann_object._revision
+    ann_object.data["0"][42] = [9.0, 9.0]
+    assert ann_object._revision > before
+
+
+def test_add_label_wraps_new_inner_dict(ann_object):
+    """add_label() places a _TrackedFrameDict, not a bare dict, at the new key."""
+    new_label = str(int(max(ann_object.labels)) + 1) if ann_object.labels else "0"
+    if new_label in ann_object.labels:
+        new_label = "9"
+    if new_label in ann_object.labels:
+        pytest.skip("no free label slot")
+    ann_object.add_label(label=new_label)
+    inner = ann_object.data[new_label]
+    assert isinstance(inner, _TrackedFrameDict)
+    assert inner._parent_ref() is ann_object
+    before = ann_object._revision
+    inner[5] = [1.0, 1.0]
+    assert ann_object._revision > before
+
+
+def test_sort_data_preserves_wrapping(ann_object):
+    """sort_data() rebuilds inner dicts but the result is rewrapped via the setter."""
+    ann_object.sort_data()
+    for label in ann_object.labels:
+        inner = ann_object.data[label]
+        assert isinstance(inner, _TrackedFrameDict)
+        assert inner._parent_ref() is ann_object
+
+
+def test_clip_labels_preserves_wrapping(ann_object):
+    """clip_labels() reassigns via setter; inner dicts stay wrapped."""
+    frames_present = sorted(ann_object.data[ann_object.labels[0]].keys())
+    if len(frames_present) < 2:
+        pytest.skip("need >=2 annotated frames")
+    ann_object.clip_labels(frames_present[0], frames_present[-1])
+    for label in ann_object.labels:
+        inner = ann_object.data[label]
+        assert isinstance(inner, _TrackedFrameDict)
+        assert inner._parent_ref() is ann_object
+    # And mutation of the post-clip inner still bumps:
+    label = ann_object.labels[0]
+    before = ann_object._revision
+    ann_object.data[label][77777] = [0.5, 0.5]
+    assert ann_object._revision > before
+
+
+def test_keep_overlapping_frames_preserves_wrapping(ann_object):
+    """keep_overlapping_frames() reassigns via setter; inner dicts stay wrapped."""
+    ann_object.keep_overlapping_frames()
+    for label in ann_object.labels:
+        inner = ann_object.data[label]
+        assert isinstance(inner, _TrackedFrameDict)
+
+
+def test_clear_bumps_revision_only_when_nonempty(ann_object):
+    """clear() bumps only when the dict had contents."""
+    label = ann_object.labels[0]
+    # First clear: bump expected.
+    rev0 = ann_object._revision
+    ann_object.data[label].clear()
+    assert ann_object._revision > rev0
+    # Second clear: no-op, no bump.
+    rev1 = ann_object._revision
+    ann_object.data[label].clear()
+    assert ann_object._revision == rev1
+
+
+def test_revision_consumers_invalidate_on_direct_mutation(video_fname, ann_fname):
+    """Trace-display cache key is (labels, _revision); direct mutation invalidates."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=[Path(ann_fname).stem]
+    )
+    ann = v.annotations[Path(ann_fname).stem]
+    v.update()  # populate cache
+    cache_before = getattr(ann, "_trace_display_cache_key", None)
+    if cache_before is None:
+        pytest.skip("trace cache not exercised on this build")
+    # Direct mutation (the bug pattern the guard closes). Use a frame
+    # within the video's n_frames so to_trace's ndarray write succeeds.
+    label = ann.labels[0]
+    target_frame = min(100, ann.n_frames - 1)
+    ann.data[label][target_frame] = [10.0, 10.0]
+    v.update()
+    cache_after = ann._trace_display_cache_key
+    assert cache_after != cache_before
     plt.close(v.figure)
+
+
+def test_tracked_dict_survives_pickle_roundtrip():
+    """_TrackedFrameDict round-trips through pickle as a parent-less instance."""
+    import pickle
+    d = _TrackedFrameDict({1: [1.0, 2.0], 2: [3.0, 4.0]})
+    restored = pickle.loads(pickle.dumps(d))
+    assert isinstance(restored, _TrackedFrameDict)
+    assert dict(restored) == {1: [1.0, 2.0], 2: [3.0, 4.0]}
+    assert restored._parent_ref is None  # weakref dropped, as designed
+    # Restored dict still mutable, just doesn't bump anything (no parent):
+    restored[3] = [5.0, 6.0]
+    assert restored[3] == [5.0, 6.0]
