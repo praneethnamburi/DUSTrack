@@ -27,7 +27,9 @@ def ann_fname(video_fname):
     """Fixture to create a temporary JSON file with annotations in the first 10 frames, 3 labels per frame."""
     video = datanavigator.Video(video_fname)
     height, width = video[0].shape[:2]
-    ann = datanavigator.VideoAnnotation(vname=video_fname)
+    # n_labels=3 declares "0", "1", "2" up front; the default became 1
+    # in 1.4.0rc2 when labels were promoted to first-class schema.
+    ann = datanavigator.VideoAnnotation(vname=video_fname, n_labels=3)
     for frame_count in range(10):
         for label in range(3):
             ann.add(
@@ -39,9 +41,6 @@ def ann_fname(video_fname):
                 frame_number=frame_count,
             )
     ann.save()
-    # load it again to get rid of the empty labels
-    ann = datanavigator.VideoAnnotation(fname=ann.fname)
-    ann.save()
     return ann.fname
 
 
@@ -50,7 +49,7 @@ def ann2_fname(video_fname):
     """Fixture to create a second temporary JSON file with 9 annotated frames, 3 labels per frame."""
     video = datanavigator.Video(video_fname)
     height, width = video[0].shape[:2]
-    ann2 = datanavigator.VideoAnnotation()
+    ann2 = datanavigator.VideoAnnotation(n_labels=3)
     for frame_count in range(9):
         for label in range(3):
             ann2.add(
@@ -64,9 +63,6 @@ def ann2_fname(video_fname):
     ann2.fname = os.path.join(
         Path(video_fname).parent, Path(video_fname).stem + "_annotations_pn.json"
     )
-    ann2.save()
-    # loading removes empty labels
-    ann2 = datanavigator.VideoAnnotation(fname=ann2.fname)
     ann2.save()
     return ann2.fname
 
@@ -103,7 +99,7 @@ def ann_object_overlapping(video_fname):
     """Fixture with annotations where all labels overlap for some frames."""
     video = datanavigator.Video(video_fname)
     height, width = video[0].shape[:2]
-    ann = datanavigator.VideoAnnotation(vname=video_fname, name="overlapping")
+    ann = datanavigator.VideoAnnotation(vname=video_fname, name="overlapping", n_labels=3)
     # Frames 5, 6, 7 have all 3 labels
     for frame_count in range(5, 8):
         for label in range(3):
@@ -121,7 +117,6 @@ def ann_object_overlapping(video_fname):
     ann.add(location=[10, 10], label="0", frame_number=9)
     ann.add(location=[20, 20], label="1", frame_number=9)
     ann.save()
-    # load it again to get rid of the empty labels and ensure correct state
     ann = datanavigator.VideoAnnotation(fname=ann.fname)
     yield ann
     os.remove(ann.fname)  # Clean up
@@ -518,8 +513,11 @@ def test_video_annotation_to_signal(mock_pysampled, ann_object, ann_object_no_vi
 
 
 def test_video_annotation_add_label():
+    # 1.4.0rc2: the default-label bootstrap shrank from 10 to 1.
+    # Labels are first-class schema now; users grow the set via
+    # explicit add_label / add_annotation_layers extension.
     ann = datanavigator.VideoAnnotation()
-    assert ann.labels == [str(i) for i in range(10)]  # Starts with 10 empty labels
+    assert ann.labels == ["0"]
 
     # Add data to existing label
     ann.add([1, 1], "0", 0)
@@ -767,7 +765,8 @@ def test_video_annotation_display_setup(video_fname):
 
     # Setup trace
     ann.setup_display_trace(ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y])
-    # Called 10 times for x and 10 times for y (for labels 0-9)
+    # One handle per declared label per axis. With the 1.4.0rc2 default
+    # of n_labels=1, only label "0" is declared.
     assert "trace_in_axx0_label0" in ann.plot_handles
     assert "trace_in_axy0_label0" in ann.plot_handles
 
@@ -860,7 +859,7 @@ def test_video_point_annotator_ylim_manual_policy(video_fname):
     autoscale, restoring a one-shot refit.
     """
     v = datanavigator.VideoPointAnnotator(
-        vid_name=video_fname, annotation_names=["test"]
+        vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     # The annotator's __init__ runs update() once with the empty annotation;
     # all-NaN trace data leaves ylim at the matplotlib default.
@@ -1594,7 +1593,7 @@ def test_video_point_annotator_frames_of_interest(video_fname):
 def test_video_point_annotator_copy_annotations(video_fname):
     """Test the feature of copying annotations between layers."""
     v = datanavigator.VideoPointAnnotator(
-        vid_name=video_fname, annotation_names=["pn4", "pn5"]
+        vid_name=video_fname, annotation_names=["pn4", "pn5"], n_labels=5,
     )
     # testing c - copy current annotaion from overlay to the current annotation layer
     # add a label to pn4
@@ -1816,7 +1815,7 @@ def test_video_point_annotator_lucas_kanade(video_fname):
 
 def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
     v = datanavigator.VideoPointAnnotator(
-        vid_name=video_fname, annotation_names=["pn7"]
+        vid_name=video_fname, annotation_names=["pn7"], n_labels=2,
     )
     # add annotation in frames 5 and 8
     v.annotations["pn7"].add([10, 10], "0", 5)
@@ -2116,8 +2115,10 @@ def test_video_annotation_reload_with_file_on_disk(ann_fname):
 def test_video_annotation_reload_without_file(tmp_path):
     """``reload()`` with no file restores the empty per-label shape."""
     missing_fname = str(tmp_path / "nonexistent_annotations.json")
+    # 1.4.0rc2 dropped the legacy 10-empty-labels bootstrap to a
+    # single label "0". The fallback shape is now one inner dict;
+    # the test still works on whatever count load() defaults to.
     ann = datanavigator.VideoAnnotation(fname=missing_fname)
-    # Empty fallback shape from load(): one inner dict per label, default 10.
     n_labels_before = len(ann.labels)
     assert n_labels_before > 0
     ann.add(location=[10.0, 20.0], label=ann.labels[0], frame_number=3)
@@ -2129,6 +2130,181 @@ def test_video_annotation_reload_without_file(tmp_path):
     assert all(len(ann.data[label]) == 0 for label in ann.labels)
     assert len(ann.labels) == n_labels_before
     assert ann._revision > rev_after_mutate
+
+
+def test_video_annotation_default_n_labels_is_one():
+    """1.4.0rc2: default-label bootstrap is a single empty ``"0"``.
+
+    Pre-rc2 ``VideoAnnotation()`` slated 10 placeholders so the user
+    could call ``ann.add(label=str(N), ...)`` without a prior
+    ``add_label``. The implicit-prune-on-save then removed whichever
+    of the 10 the user didn't touch. With labels promoted to
+    first-class schema (no implicit prune on save), defaulting to 10
+    would write a full slate of empties to disk on every fresh
+    save -- so the default shrinks to 1.
+    """
+    ann = datanavigator.VideoAnnotation()
+    assert ann.labels == ["0"]
+    assert ann.data["0"] == {}
+
+    ann_three = datanavigator.VideoAnnotation(n_labels=3)
+    assert ann_three.labels == ["0", "1", "2"]
+
+
+def test_video_annotation_save_preserves_empty_labels(video_fname, tmp_path):
+    """``save()`` now round-trips empty-but-declared labels.
+
+    Pre-1.4.0rc2 ``save()`` called ``remove_empty_labels()`` on the
+    way out, dropping any label whose dict was ``{}`` from the
+    on-disk JSON. The schema then shrank to "labels-with-data",
+    which broke any consumer that iterated a declared label set
+    across layers (notably
+    :meth:`VideoPointAnnotator.update_frame_marker`, which crashed
+    DUSTrack's ``apply_manual_corrections`` when the user had
+    corrected only one of two labels).
+    """
+    fname = str(tmp_path / "preserves_empty_annotations_pe.json")
+    ann = datanavigator.VideoAnnotation(fname=fname, vname=video_fname, n_labels=2)
+    ann.add(location=[10.0, 20.0], label="0", frame_number=3)
+    # label "1" is declared but never populated -- the apply-manual-corrections shape.
+    assert ann.labels == ["0", "1"]
+    assert ann.data["1"] == {}
+
+    ann.save()
+
+    on_disk = datanavigator.VideoAnnotation._load_json(fname)
+    assert set(on_disk.keys()) == {"0", "1"}, (
+        f"Saved JSON dropped a declared label: {set(on_disk.keys())}"
+    )
+    assert on_disk["1"] == {}, "Empty label should serialize as an empty dict"
+
+    # Reload and confirm round-trip.
+    ann_back = datanavigator.VideoAnnotation(fname=fname, vname=video_fname)
+    assert ann_back.labels == ["0", "1"]
+    assert ann_back.data["1"] == {}
+    assert ann_back.data["0"][3] == [10.0, 20.0]
+
+    # remove_empty_labels still works as an explicit cleanup (called
+    # by DUSTrack pre-flight before DLC training); the test asserts
+    # it's available, not that save uses it.
+    ann_back.remove_empty_labels()
+    assert ann_back.labels == ["0"]
+
+
+def test_to_trace_returns_nan_for_missing_label(video_fname, tmp_path):
+    """``to_trace`` is schema-tolerant: an absent label returns the
+    full NaN array.
+
+    Lets ``update_frame_marker`` iterate every layer with one shared
+    active label even when a particular layer doesn't carry that
+    label (freshly created corrections layer; user-renamed schema
+    drift between layers; the apply-manual-corrections-shaped
+    crash from the rc1 era). Semantics match the docstring: an
+    unannotated frame is NaN; an unannotated *label* is every frame
+    unannotated.
+    """
+    # Use an isolated fname so we don't load the ann_fname fixture's
+    # data via the shared <video>_annotations.json path.
+    fname = str(tmp_path / "to_trace_missing_annotations_tt.json")
+    ann = datanavigator.VideoAnnotation(fname=fname, vname=video_fname)
+    # Default n_labels=1: only "0" is declared, "1" is missing entirely.
+    assert "1" not in ann.data
+
+    trace_missing = ann.to_trace("1")
+    assert trace_missing.shape == (ann.n_frames, 2)
+    assert np.all(np.isnan(trace_missing))
+
+    # Declared-but-empty is the same shape as missing -- the for-loop
+    # over an empty inner dict simply doesn't fire.
+    ann.add_label("2")
+    trace_empty = ann.to_trace("2")
+    assert trace_empty.shape == (ann.n_frames, 2)
+    assert np.all(np.isnan(trace_empty))
+
+
+def test_corrections_layer_shaped_update_frame_marker(video_fname, tmp_path):
+    """Regression for the DUSTrack ``apply_manual_corrections`` crash.
+
+    Build a two-layer scenario where one layer carries the active
+    label and the other doesn't (the pre-rc2 corrections-layer
+    shape after the patch overlay had been save-pruned of its
+    unpopulated label). ``update_frame_marker`` walks every layer
+    in ``self.annotations._list`` and calls
+    ``ann.to_trace(self._current_label).T`` on each; pre-fix this
+    asserted ``label in self.labels`` and crashed for any layer
+    missing the label. Post-fix the missing-label layer contributes
+    a NaN trace and ``np.hstack`` of the layer stack succeeds.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname,
+        annotation_names=["base", "corrections"],
+        n_labels=2,
+    )
+    base = v.annotations["base"]
+    corrections = v.annotations["corrections"]
+
+    # base has both labels populated, corrections has only "0"
+    # populated -- the post-merge state when the user only
+    # manually corrected the first label.
+    base.add(location=[10.0, 20.0], label="0", frame_number=2)
+    base.add(location=[30.0, 40.0], label="1", frame_number=2)
+    corrections.add(location=[11.0, 21.0], label="0", frame_number=2)
+    # corrections.data["1"] stays empty.
+
+    # Drive the current label to "1" -- the layer-missing-label case.
+    v.statevariables["annotation_label"].set_state("1")
+
+    # update() routes through update_frame_marker; pre-rc2 this
+    # crashed with `AssertionError: label in self.labels`.
+    v.update()
+
+    # Confirm the bookkeeping survived: corrections' empty "1"
+    # contributes a NaN block, the layer-stack hstack succeeds, and
+    # the layer set is intact.
+    assert "1" in corrections.labels
+    assert corrections.data["1"] == {}
+    nan_trace = corrections.to_trace("1")
+    assert nan_trace.shape == (corrections.n_frames, 2)
+    assert np.all(np.isnan(nan_trace))
+
+    plt.close(v.figure)
+
+
+def test_add_annotation_layers_unions_declared_labels(video_fname):
+    """``add_annotation_layers`` synthesis extends each layer to the
+    union of every declared label, including empty-but-declared.
+
+    Pre-1.4.0rc2 the synthesis filtered to labels-with-data because
+    save pruned empties anyway. Post-rc2 labels are first-class --
+    an empty label on disk is a real declaration that should flow
+    back into the layer set on reload, and a layer missing a peer's
+    declared label gets it added (the same auto-extend rule as
+    before, just sourced from declarations rather than data).
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["alpha", "beta"], n_labels=1,
+    )
+    # Declare three labels on alpha, two on beta -- one is shared.
+    v.annotations["alpha"].add_label("1")
+    v.annotations["alpha"].add_label("2")
+    v.annotations["beta"].add_label("1")
+    # Populate alpha's "2" with data; leave its "1" empty.
+    v.annotations["alpha"].add(location=[1.0, 2.0], label="2", frame_number=0)
+    v.annotations["alpha"].save()
+    v.annotations["beta"].save()
+    plt.close(v.figure)
+
+    # Reopen and confirm both layers carry the full union of declared
+    # labels, including alpha's empty "1".
+    v2 = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["alpha", "beta"],
+    )
+    for layer_name in ("alpha", "beta"):
+        labels = set(v2.annotations[layer_name].labels)
+        assert {"0", "1", "2"} <= labels, (
+            f"layer {layer_name} missing declared label(s): {labels}"
+        )
+    plt.close(v2.figure)
 
 
 def test_asset_container_remove_happy_path_and_keyerror():

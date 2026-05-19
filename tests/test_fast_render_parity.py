@@ -54,7 +54,7 @@ def test_tier1_scatter_offsets_match_data_coords(video_fname, tmp_path):  # noqa
     from datanavigator.pointtracking import VideoAnnotation
 
     fig, ax = plt.subplots()
-    ann = VideoAnnotation(vname=video_fname, name="parity")
+    ann = VideoAnnotation(vname=video_fname, name="parity", n_labels=2)
     # add two labels with known positions
     coords = [(10.5, 20.5), (100.0, 200.0)]
     for label, (x, y) in enumerate(coords):

@@ -55,7 +55,7 @@ class VideoPointAnnotator(VideoBrowser):
         self,
         vid_name: Path,
         annotation_names: list[str] | Mapping[str, Path] | list[VideoAnnotation] = "",
-        n_labels: int = 10,
+        n_labels: int = 1,
         titlefunc: Callable = None,
         image_process_func: Callable = lambda im: im,
         height_ratios: tuple = (10, 1, 1),  # depends on your screen size
@@ -208,9 +208,9 @@ class VideoPointAnnotator(VideoBrowser):
         return cls(video_names.pop(), annotations, *args, **kwargs)
 
     def add_annotation_layers(
-        self, 
+        self,
         annotation_names: list[str] | dict[str, Path] | list[VideoAnnotation],
-        n_labels: int = 10
+        n_labels: int = 1
     ) -> None:
         """Load data from annotation files if they exist, otherwise initialize annotation layers."""
         if isinstance(annotation_names, (str, VideoAnnotation)):
@@ -257,13 +257,17 @@ class VideoPointAnnotator(VideoBrowser):
                 n_labels=n_labels,
             )
 
-        # same set of non-empty labels in all the loaded annotations
-        all_labels = []
-        for ann in self.annotations._list:
-            all_labels += [
-                label for label, label_data in ann.data.items() if label_data
-            ]
-        all_labels = sorted(list(set(all_labels)))
+        # same set of labels in all the loaded annotations -- union of
+        # every layer's declared labels, including empty-but-declared
+        # ones. Pre-1.4.0rc2 this filtered to labels-with-data only,
+        # because `VideoAnnotation.save` pruned empties on the way out
+        # (the historical "10 default labels, drop what the user didn't
+        # use" contract). 1.4.0rc2 makes labels first-class schema --
+        # save no longer prunes, so an empty label on disk is a real
+        # declaration that should round-trip.
+        all_labels = sorted(
+            {label for ann in self.annotations._list for label in ann.labels}
+        )
         if not all_labels:
             # when starting without any annotations, initialize a full set of empty annotations
             all_labels = [str(x) for x in range(n_labels)]
@@ -271,10 +275,6 @@ class VideoPointAnnotator(VideoBrowser):
             for label in all_labels:
                 if label not in ann.labels:
                     ann.add_label(label)
-            for label in ann.labels:
-                if label not in all_labels:
-                    assert not ann.data[label]
-                    del ann.data[label]
             ann.sort_labels()
             ann.re_setup_display()
 
@@ -1290,6 +1290,7 @@ class VideoPointAnnotator(VideoBrowser):
         rstc_path = lucas_kanade_rstc(
             video, start_frame, end_frame, start_points, end_points
         )
+        self._ensure_target_has_labels(self.ann, label_list)
         for frame_count, frame_number in enumerate(range(start_frame, end_frame + 1)):
             for label_count, label in enumerate(label_list):
                 location = list(rstc_path[frame_count, label_count, :])
@@ -1312,11 +1313,27 @@ class VideoPointAnnotator(VideoBrowser):
         start_points = [ann_overlay.data[label][start_frame] for label in label_list]
         # end_points = [ann_overlay.data[label][end_frame] for label in label_list]
         rstc_path = lucas_kanade(video, start_frame, end_frame, start_points)
+        self._ensure_target_has_labels(self.ann, label_list)
         for frame_count, frame_number in enumerate(range(start_frame, end_frame + 1)):
             for label_count, label in enumerate(label_list):
                 location = list(rstc_path[frame_count, label_count, :])
                 self._add_annotation(location, frame_number, label)
         self.update()
+
+    @staticmethod
+    def _ensure_target_has_labels(target_ann, labels) -> None:
+        """Declare each label on ``target_ann`` if not already present.
+
+        Pre-1.4.0rc2 every annotation layer carried 10 empty default
+        labels, so cross-layer copy paths (the LK family below, plus
+        :meth:`check_labels_with_lk`) could blindly ``add(label, ...)``
+        against any label in 0-9. The 1.4.0rc2 first-class-label
+        schema dropped that bootstrap to a single ``"0"``; cross-layer
+        copies now declare missing labels on the target explicitly.
+        """
+        for label in labels:
+            if label not in target_ann.labels:
+                target_ann.add_label(label)
 
     def check_labels_with_lk(self, mode: str = "minimal") -> None:
         """Interpolate between all labeled frames.
@@ -1344,6 +1361,13 @@ class VideoPointAnnotator(VideoBrowser):
             label_list = source_ann.labels
         else:
             label_list = [self._current_label]
+
+        # 1.4.0rc2: with labels first-class and n_labels=1 by default,
+        # the target layer (typically "buffer") may not yet hold every
+        # label the source carries. Pre-rc2 the 10-default-empty
+        # bootstrap made this implicit. Declare here so target_ann.add
+        # below doesn't KeyError on a missing label slot.
+        self._ensure_target_has_labels(target_ann, label_list)
 
         rstc_paths = {
             label: np.full((source_ann.n_frames, 2), np.nan) for label in label_list
@@ -1510,7 +1534,7 @@ class VideoAnnotation:
         fname: str | None = None,
         vname: str | None = None,
         name: str | None = None,
-        n_labels: int = 10,
+        n_labels: int = 1,
         **kwargs
     ) -> None:
         self.fname, vname = self._parse_inp(fname, vname, name)
@@ -1664,7 +1688,7 @@ class VideoAnnotation:
             fname, vname = fname_inp, vname_inp  # do nothing
         return fname, vname
 
-    def load(self, n_annotations: int = 10, **h5_kwargs) -> dict:
+    def load(self, n_annotations: int = 1, **h5_kwargs) -> dict:
         """Load annotations from a json file, dlc h5 file, or initialize an annotation dictionary if a file doesn't exist.
 
         DUSTrack-shaped: the DeepLabCut ``.h5`` branch exists in the
@@ -1875,12 +1899,21 @@ class VideoAnnotation:
         rewraps but does not itself bump (mirrors :meth:`sort_data` and
         :meth:`remove_empty_labels`).
         """
-        n = len(self.labels) or 10
+        n = len(self.labels) or 1
         self.data = self.load(n_annotations=n)
         self._revision += 1
 
     def save(self, fname: str | None = None) -> None:
-        """Save the annotations json file. self.fname should be a valid file path."""
+        """Save the annotations json file. self.fname should be a valid file path.
+
+        Empty-but-declared labels are preserved (written as
+        ``"label": {}``). 1.4.0rc2 promoted labels from a derived
+        property of "which keys have data" to first-class schema; the
+        previous implicit ``self.remove_empty_labels()`` call here is
+        gone. Callers that want a lean export (e.g. DUSTrack pre-flight
+        before DLC training) still drive :meth:`remove_empty_labels`
+        explicitly.
+        """
         if fname is None:
             assert self.fname is not None
             fname = self.fname
@@ -1888,7 +1921,6 @@ class VideoAnnotation:
         if Path(fname).suffix != ".json":
             raise ValueError("Supply a json file name.")
         self.sort_data()
-        self.remove_empty_labels()
         # cast data due to json dump issues
         data = {
             label: {
@@ -2072,9 +2104,24 @@ class VideoAnnotation:
         Returns:
             np.ndarray: 2d numpy array of number of frames x 2.
                 xy position values of uannotated frames will be filled with np.nan.
+
+        Schema-tolerant: a label absent from :attr:`data` is treated as
+        all-frames-unannotated and returns the full NaN array. Lets
+        cross-layer trace consumers
+        (e.g. :meth:`VideoPointAnnotator.update_frame_marker`, which
+        iterates every annotation layer with one shared label) survive
+        a layer that legitimately doesn't carry the active label --
+        either a freshly created layer or a layer where the user
+        hasn't placed any points for that label yet. 1.4.0rc2: prior
+        to the schema-tolerant relaxation this asserted, which
+        crashed the corrections-layer flow when the patch had been
+        saved with one of its labels empty (save then pruned that
+        label, so it disappeared from :attr:`labels` and the assert
+        fired).
         """
-        assert label in self.labels
         ret = np.full([self.n_frames, 2], np.nan)
+        if label not in self.data:
+            return ret
         for frame_number, frame_xy in self.data[label].items():
             ret[frame_number, :] = frame_xy
         return ret
