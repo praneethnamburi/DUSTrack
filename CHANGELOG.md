@@ -51,21 +51,33 @@ itself.
   vertical sidebar slots pre-rc2-polish; now each consumes one, so
   the Display group occupies 3 column slots instead of 5. Labels
   kept verbatim (half-column width is comfortable and the existing
-  keybind muscle memory wins). Both calls still extend
-  `_btns_display` so the per-button color styling and any future
-  keybinding wiring continue to apply per-button.
+  keybind muscle memory wins). Each spec carries `style_tag="display"`
+  so the per-button color styling is applied uniformly across the
+  row (see the styling bullet below).
 - `dustrack/dlcinterface.py`: `DUSTrack._add_default_buttons()`
   overrides the dnav 1.4.0rc2 hook to a no-op. Pre-fix, dnav's
   `VideoPointAnnotator.__init__` installed "Refresh UI" at slot 0
   of the buttons column; DUSTrack now places "Refresh UI" itself
   next to "Keyboard shortcuts" as a utility pair just above
   "Swap layers" (see the column order above).
-- `dustrack/dlcinterface.py`: per-group color styling via
-  `DUSTrack._style_sidebar_buttons` + `_SIDEBAR_PALETTE` (Qt path
-  only; mpl fallback no-ops). Applied unconditionally so users on
-  the default `dark_mode=False` still see the coordinated rc2
-  sidebar. Pastel analogous band (cool -> warm -> neutral) with a
-  single dark-slate text color across all groups so the eye
+- `dustrack/dlcinterface.py`: per-group color styling now rides
+  dnav 1.4.0rc2's new `Buttons.register_style` / `style_tag=` API.
+  A per-group styler closure is built from `_SIDEBAR_PALETTE` via
+  the new module-level `_make_group_styler(spec)` helper and
+  registered on `self.buttons` once at the top of the rc2 sidebar
+  block; each `add` / `add_multi` call then declares its
+  `style_tag="workflow"` (etc.) inline, and the styler runs
+  per-button at add-time inside dnav's `_finalize_button`. The
+  pre-rc2 intermediate machinery (`_btns_workflow / _btns_display /
+  _btns_niche / _btns_utilities / _btns_swap` collection lists
+  walked by an end-of-setup `_style_sidebar_buttons` batch pass) is
+  gone; each sidebar button now lives in one place (its `add`
+  call) with its styling tag right there. Qt path only -- the
+  styler closure no-ops when `_qt_btn` is absent, matching the
+  pre-refactor mpl-fallback behavior. Applied unconditionally so
+  users on the default `dark_mode=False` still see the coordinated
+  rc2 sidebar. Pastel analogous band (cool -> warm -> neutral)
+  with a single dark-slate text color across all groups so the eye
   doesn't retune contrast row-to-row:
     - **Workflow** (5 btns) -- powder blue `#cfdef3`; primary
       pipeline, coolest end of the band.
@@ -85,12 +97,16 @@ itself.
   their native Windows-style dropdown rendering -- a `QWidget`
   QSS selector cascades into children and re-skins the combos
   flat, which an earlier rc2 attempt did and got noticed; palette
-  propagation respects native widget styling. Earlier rc2
-  iterations went through a high-contrast white-on-black workflow
-  accent, a saturated cool-tone dark palette, and a teal/rose
-  pastel before settling on this mint/apricot variant; the dark
-  versions read as gaudy next to a dark figure canvas and the
-  teal/rose felt off-key.
+  propagation respects native widget styling. The statevars
+  palette logic lives in a small `_paint_statevars_widget` helper
+  called once after all `add` calls -- it can't ride the
+  `Buttons` styling registry because the registry is per-button
+  (QSS-only), and the statevars widget needs a sibling-of-buttons
+  palette pass. Earlier rc2 iterations went through a
+  high-contrast white-on-black workflow accent, a saturated
+  cool-tone dark palette, and a teal/rose pastel before settling
+  on this mint/apricot variant; the dark versions read as gaudy
+  next to a dark figure canvas and the teal/rose felt off-key.
 - `datanavigator/_qt.py` (via dnav 1.4.0rc2): `_QtStatevarsWidget`
   no longer renders the bold "State variables:" title row -- the
   trailing double separator and per-row dividers already delimit

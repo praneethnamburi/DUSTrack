@@ -118,6 +118,43 @@ def _is_dense_layer_name(name: str) -> bool:
     )
 
 
+def _qss_for_group(spec: dict) -> str:
+    """Build the per-group QSS string from a ``_SIDEBAR_PALETTE`` entry.
+
+    Lifted to module-level so :func:`_make_group_styler` can close over
+    it without dragging the whole ``DUSTrack`` class into the styler
+    closure. Inputs are color-hex strings keyed by ``bg/fg/border/
+    hover/pressed``.
+    """
+    return (
+        f"QPushButton {{ background-color: {spec['bg']}; "
+        f"color: {spec['fg']}; border: 1px solid {spec['border']}; "
+        f"padding: 4px; }} "
+        f"QPushButton:hover {{ background-color: {spec['hover']}; }} "
+        f"QPushButton:pressed {{ background-color: {spec['pressed']}; }}"
+    )
+
+
+def _make_group_styler(spec: dict):
+    """Factory for a per-button styler closed over a palette ``spec``.
+
+    Returned closure is registered on a :class:`Buttons` container via
+    :meth:`datanavigator.assets.Buttons.register_style` and runs once
+    per button at add-time inside ``_finalize_button``. No-op on the
+    mpl fallback (``_qt_btn`` is absent there) -- pre-refactor
+    behavior matched: the per-group palette only ever landed on the
+    Qt path.
+    """
+    qss = _qss_for_group(spec)
+
+    def _styler(b) -> None:
+        qbtn = getattr(b, "_qt_btn", None)
+        if qbtn is not None:
+            qbtn.setStyleSheet(qss)
+
+    return _styler
+
+
 class VideoAnnotation(dnav.VideoAnnotation):
     """
     Enhanced VideoAnnotation with integrated post-processing.
@@ -528,35 +565,44 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # action. dnav's _QtStatevarsWidget appends its own trailing
         # double separator below the statevars section, so we don't add
         # one after Swap layers.
+        #
+        # rc2 styling: per-group palette is plumbed through dnav's
+        # ``Buttons.register_style`` / ``style_tag=`` API -- one styler
+        # registered per palette key, then each ``add()`` / ``add_multi``
+        # declares its tag inline. The pre-rc2 ``_btns_*`` collection
+        # lists + ``_style_sidebar_buttons`` batch pass are gone; styling
+        # auto-applies at add-time inside ``_finalize_button``. The
+        # statevars widget palette still wants direct palette
+        # manipulation (QSS on a parent flattens child QComboBoxes), so
+        # that one piece lives in ``_paint_statevars_widget`` below.
+        for _group, _spec in self._SIDEBAR_PALETTE.items():
+            self.buttons.register_style(_group, _make_group_styler(_spec))
 
         # --- Workflow group: end-to-end annotation pipeline -------------
-        _btns_workflow = []
         if HAS_DLC:
-            _btns_workflow.append(self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project))
-            _btns_workflow.append(self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project))
-            _btns_workflow.append(self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections))
-            _btns_workflow.append(self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk))
-        _btns_workflow.append(self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as))
+            self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project, style_tag="workflow")
+            self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project, style_tag="workflow")
+            self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections, style_tag="workflow")
+            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk, style_tag="workflow")
+        self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as, style_tag="workflow")
         self.buttons.add_separator(style="double")
 
         # --- Display / trace controls -----------------------------------
-        _btns_display = [self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement)]
-        _btns_display.extend(self.buttons.add_multi(
-            dict(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self)),
-            dict(text="Trace: dot",  action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self)),
-        ))
-        _btns_display.extend(self.buttons.add_multi(
-            dict(text="Freeze plot axes",   action_func=self.freeze_plot_axes),
-            dict(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes),
-        ))
+        self.buttons.add(text="Toggle enhance", action_func=self._toggle_enhancement, style_tag="display")
+        self.buttons.add_multi(
+            dict(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self), style_tag="display"),
+            dict(text="Trace: dot",  action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self), style_tag="display"),
+        )
+        self.buttons.add_multi(
+            dict(text="Freeze plot axes",   action_func=self.freeze_plot_axes, style_tag="display"),
+            dict(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes, style_tag="display"),
+        )
         self.buttons.add_separator(style="double")
 
         # Niche operation; flagged for a future decision -- should this
         # button be replaced by a keyboard-only shortcut to reclaim the
         # vertical slot? Track usage before removing.
-        _btns_niche = [
-            self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay),
-        ]
+        self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay, style_tag="niche")
         self.buttons.add_separator(style="double")
 
         # --- Utilities + Swap layers -----------------------------------
@@ -565,22 +611,16 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # no-op (see _add_default_buttons below) so this slot keeps the
         # button next to Keyboard shortcuts as a "utility" pair just
         # above Swap layers.
-        _btns_utilities = [
-            self.buttons.add(text="Refresh UI", action_func=self.refresh),
-            self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self)),
-        ]
+        self.buttons.add(text="Refresh UI", action_func=self.refresh, style_tag="utilities")
+        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self), style_tag="utilities")
         self.buttons.add_separator(style="double")
 
-        _btns_swap = [self.buttons.add(text="Swap annotation layers", action_func=self.swap_active_and_overlay)]
+        self.buttons.add(text="Swap annotation layers", action_func=self.swap_active_and_overlay, style_tag="swap")
 
-        # Per-group color styling (Qt path + dark_mode only; otherwise no-op).
-        self._style_sidebar_buttons({
-            "workflow": _btns_workflow,
-            "display": _btns_display,
-            "niche": _btns_niche,
-            "utilities": _btns_utilities,
-            "swap": _btns_swap,
-        })
+        # Statevars widget palette -- can't ride the Buttons styling
+        # path because QSS on a QWidget parent flattens child
+        # QComboBoxes (Windows-native dropdown rendering goes away).
+        self._paint_statevars_widget()
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
         
@@ -632,44 +672,18 @@ class DUSTrack(dnav.VideoPointAnnotator):
         },
     }
 
-    @staticmethod
-    def _qss_for_group(spec: dict) -> str:
-        return (
-            f"QPushButton {{ background-color: {spec['bg']}; "
-            f"color: {spec['fg']}; border: 1px solid {spec['border']}; "
-            f"padding: 4px; }} "
-            f"QPushButton:hover {{ background-color: {spec['hover']}; }} "
-            f"QPushButton:pressed {{ background-color: {spec['pressed']}; }}"
-        )
+    def _paint_statevars_widget(self) -> None:
+        """Paint the statevars widget bg/fg to match the rc2 sidebar palette.
 
-    def _style_sidebar_buttons(self, btn_groups: dict) -> None:
-        """Apply per-group color stylesheets + paint the statevars widget.
-
-        The palette is hand-tuned for the dim-room dark-theme use case
-        but is applied unconditionally (not gated on ``self._dark_mode``)
-        because users routinely run with the default
-        ``dark_mode=False`` -- gating the styling there leaves them
-        with a system-native sidebar that defeats the point of the
-        rc2 polish pass. No-op on the mpl fallback path (no
-        ``_qt_btn``) and when the Qt main window can't be located.
-
-        The statevars widget bg is set via palette manipulation
-        (not QSS) so child QComboBoxes inside it keep their native
-        Windows-style dropdown rendering; QSS on a `QWidget` selector
-        cascades into children and replaces the native combo paint
-        with a flat CSS box. Palette propagation respects native
-        widget styling.
+        Lives outside the ``Buttons.register_style`` machinery because
+        the statevars widget needs *palette* manipulation, not QSS:
+        QSS on a ``QWidget`` selector cascades into child
+        ``QComboBox``\ es and replaces the native Windows dropdown
+        paint with a flat CSS box, which is the opposite of what we
+        want. ``QPalette.setColor`` respects native widget styling
+        and only the parent bg/fg shifts. No-op when the Qt main
+        window / left column can't be located (mpl-fallback path).
         """
-        for group_name, btns in btn_groups.items():
-            spec = self._SIDEBAR_PALETTE.get(group_name)
-            if spec is None:
-                continue
-            qss = self._qss_for_group(spec)
-            for btn in btns:
-                qbtn = getattr(btn, "_qt_btn", None)
-                if qbtn is not None:
-                    qbtn.setStyleSheet(qss)
-
         qt_window = self._find_qt_window()
         if qt_window is None:
             return
@@ -683,8 +697,9 @@ class DUSTrack(dnav.VideoPointAnnotator):
         pal.setColor(sv.foregroundRole(), QColor(self._SIDEBAR_TEXT_COLOR))
         sv.setPalette(pal)
         sv.setAutoFillBackground(True)
-        # Clear any stylesheet we set on prior iterations so palette
-        # changes actually take effect (QSS wins over palette).
+        # Clear any stylesheet that may have been set on a prior pass
+        # so the palette change actually takes effect (QSS wins over
+        # palette).
         sv.setStyleSheet("")
 
     def _apply_dark_theme(self):
