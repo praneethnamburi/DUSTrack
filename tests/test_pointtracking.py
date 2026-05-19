@@ -653,6 +653,50 @@ def test_video_annotation_keep_overlapping_continuous_frames(ann_object_overlapp
     assert ann.frames == [0, 2]
 
 
+def test_video_annotation_keep_overlapping_frames(ann_object_overlapping):
+    # Original frames: [5, 6, 7, 8, 9]; overlapping: [5, 6, 7]
+    assert set(ann_object_overlapping.frames) == {5, 6, 7, 8, 9}
+    assert ann_object_overlapping.frames_overlapping == [5, 6, 7]
+    ann_object_overlapping.keep_overlapping_frames()
+    assert set(ann_object_overlapping.frames) == {5, 6, 7}
+    for label in ann_object_overlapping.labels:
+        assert 8 not in ann_object_overlapping.data[label]
+        assert 9 not in ann_object_overlapping.data[label]
+
+
+def test_video_annotation_keep_overlapping_frames_keeps_non_continuous():
+    """Distinguishes keep_overlapping_frames from the continuous variant:
+    isolated fully-labeled frames survive here, but are dropped by
+    keep_overlapping_continuous_frames."""
+    ann = datanavigator.VideoAnnotation()
+    ann.data = {}
+    ann.add_label("0")
+    ann.add_label("1")
+    # Frames 5 and 10 fully labeled but non-consecutive
+    ann.add([1, 1], "0", 5)
+    ann.add([2, 2], "1", 5)
+    ann.add([3, 3], "0", 10)
+    ann.add([4, 4], "1", 10)
+    # Frame 7 incomplete (label 0 only)
+    ann.add([5, 5], "0", 7)
+    assert ann.frames == [5, 7, 10]
+    ann.keep_overlapping_frames()
+    assert ann.frames == [5, 10]
+
+
+def test_video_annotation_keep_overlapping_frames_no_overlap_aborts():
+    """No fully-labeled frame -> abort, data untouched (mirrors the
+    continuous variant's safeguard)."""
+    ann = datanavigator.VideoAnnotation()
+    ann.data = {}
+    ann.add_label("0")
+    ann.add_label("1")
+    ann.add([1, 1], "0", 0)
+    ann.add([1, 1], "1", 5)
+    ann.keep_overlapping_frames()
+    assert ann.frames == [0, 5]
+
+
 @patch("datanavigator.pointtracking.pysampled", create=True)  # Mock pysampled
 def test_video_annotation_get_area(mock_pysampled, ann_object, ann_object_no_video):
     mock_data = MagicMock()
@@ -1448,6 +1492,34 @@ def test_video_point_annotator_keep_overlapping_continuous_frames(video_fname):
 
     v(simulate_key_press(v.figure, key="alt+q"))  # keep overlapping continuous frames
     assert len(v.annotations["pn8"].frames) == 31  # all frames should be kept
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_keep_overlapping_frames(video_fname):
+    """Wrapper drops incomplete frames + bumps the revision via update().
+
+    Unlike :meth:`keep_overlapping_continuous_frames` (alt+q), no
+    keybinding is wired -- DUSTrack's "Train DLC model" pre-flight
+    is the only caller.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["pn_kof"]
+    )
+    v.ann.data = {}
+    v.ann.add_label("0")
+    v.ann.add_label("1")
+    v.ann.add_label("2")
+
+    # Three non-consecutive fully-labeled frames
+    for frame in (5, 10, 15):
+        for label in ("0", "1", "2"):
+            v.annotations["pn_kof"].add([frame, frame], label, frame)
+    # One incomplete frame (label 0 only)
+    v.annotations["pn_kof"].add([20, 20], "0", 20)
+    assert set(v.annotations["pn_kof"].frames) == {5, 10, 15, 20}
+
+    v.keep_overlapping_frames()
+    assert set(v.annotations["pn_kof"].frames) == {5, 10, 15}
     plt.close(v.figure)
 
 

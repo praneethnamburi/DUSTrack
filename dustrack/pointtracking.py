@@ -909,6 +909,10 @@ class VideoPointAnnotator(VideoBrowser):
         self.ann.keep_overlapping_continuous_frames()
         self.update()
 
+    def keep_overlapping_frames(self) -> None:
+        self.ann.keep_overlapping_frames()
+        self.update()
+
     def predict_points_with_lucas_kanade(
         self,
         labels: str | list[str] = "all",
@@ -2016,6 +2020,27 @@ class VideoAnnotation:
             set([item for a, b in zip(x, x[1:]) if (b - a) == 1 for item in (a, b)])
         )
         if len(frames_to_keep) == 0:
+            print(
+                "You're trying to remove all frames! Saving you from yourself by aborting."
+            )
+            return
+        for label in self.labels:
+            self.data[label] = {
+                k: v for k, v in self.data[label].items() if k in frames_to_keep
+            }
+        self._revision += 1
+
+    def keep_overlapping_frames(self) -> None:
+        """Keep data only from frames where every label is annotated.
+
+        Sibling of :meth:`keep_overlapping_continuous_frames` without
+        the consecutive-runs constraint: fully-labeled but isolated
+        frames are preserved. Motivating use case is DLC training
+        pre-flight, where partial frames degrade the trained model
+        even though DLC tolerates per-bodypart NaN in its CSV.
+        """
+        frames_to_keep = set(self.frames_overlapping)
+        if not frames_to_keep:
             print(
                 "You're trying to remove all frames! Saving you from yourself by aborting."
             )
