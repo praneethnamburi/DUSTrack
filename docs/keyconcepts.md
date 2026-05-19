@@ -117,6 +117,45 @@ tracker = dustrack.open('video.mp4', {
 
 **The Buffer Layer**: Every DUSTrack session includes a special `"buffer"` layer for temporary storage and experimentation. It serves as a scratch space.
 
+**Derived / dense layers**: a few layers are produced *from* other layers by built-in operations and are rendered as continuous lines (not dots) by default:
+- `dlc_iteration-N_M` — DLC inference for iteration `N` at step `M`. Produced by **Train DLC model**; added live to the session after training completes.
+- `dlccorr` — Applied-manual-corrections layer. Produced by **Apply manual corrections**: the active sparse manual layer's edits are spliced into the current DLC overlay's per-frame trace, yielding a dense annotation. Excluded from DLC training input.
+- `lkmovavg_<window>` — Lucas-Kanade RSTC jitter-reduction output. Produced by **Reduce jitter** on a dense source layer (typical input: `dlccorr` after corrections).
+
+The line-vs-dot rendering picks itself: any layer whose name starts with `dlc_`, equals `dlccorr`, or contains `lkmovavg` renders as a line; everything else (manual annotations) renders as dots.
+
+---
+
+## Workflow buttons and sidebar groups
+
+The workflow panel groups its buttons by task into five sections separated by horizontal lines, with a pastel per-group palette so visual scanning matches the workflow phase:
+
+| Group | Buttons | What they do |
+|-------|---------|--------------|
+| **Workflow** | Create DLC project · Train DLC model · Apply manual corrections · Reduce jitter · Save annotation as... | The five-step pipeline: scaffold a DLC project from your manual annotations → train ResNet → splice manual corrections into DLC predictions → smooth jitter with LK-RSTC → export. |
+| **Display** | Trace: line / Trace: dot · Freeze/Unfreeze plot axes · (EnhanceWidget) | Visual controls. The **EnhanceWidget** is two sliders — CLAHE clip and Gamma — plus a `[None | Auto]` row; *None* resets to raw image (pass-through), *Auto* infers per-frame heuristics from the current frame histogram. |
+| **Niche** | Replace existing from overlay · Remove layer | Layer-mutating affordances. *Replace existing from overlay* copies the overlay's annotations into the current layer at frames the current layer is missing. *Remove layer* drops a layer from the session (file on disk is **not** deleted — to fully discard, save annotation as... then delete the original). |
+| **Utilities** | Refresh UI (F5) · Keyboard shortcuts | *Refresh UI* re-renders all annotations from `.data` — recovery affordance if you mutated data from the Python REPL behind DUSTrack's back. *Keyboard shortcuts* opens the live cheatsheet (modeless dialog, grouped by section). |
+| **Swap layers** | (single button) | Toggles foreground ↔ overlay. Positioned directly above the statevars widget it manipulates so the cause/effect is one glance. |
+
+The workflow order in the **Workflow** group matches the steady-state DUSTrack workflow:
+1. Manually annotate sparse frames (no button — use the GUI directly).
+2. **Create DLC project** — scaffolds `config.yaml`, `videos/`, `labeled-data/`. Migrates your manual-annotation layer files to the project folder.
+3. **Train DLC model** — runs DLC `extract_frames → train → evaluate → analyze_videos` in a worker thread under a modal progress overlay (DLC stdout/stderr stream live into the overlay log and to the launching terminal). On completion the new `dlc_iteration-N_M` trace layer is added live to the session and a fresh `iteration-{N+1}` manual layer is created as the destination for the next round of corrections.
+4. **Apply manual corrections** — splices the active manual layer's sparse edits into the DLC overlay's dense per-frame trace, producing a `dlccorr` layer.
+5. **Reduce jitter** — runs LK-RSTC over a dense source layer (usually `dlccorr`), producing `lkmovavg_<window>`.
+6. **Save annotation as...** — Qt file dialog seeded with `{video_stem}_annotations_{layer_name}.json`; useful for one-off exports outside the auto-save pattern.
+
+### Discarding unsaved annotations
+
+If you've made manual edits to the active layer but want to revert without closing the window, click **Discard unsaved annotations** (or use the keyboard shortcut from the cheatsheet). DUSTrack confirms via a severity-aware modal (the title is red if the diff is destructive), then either reloads the layer's JSON from disk or — if no backing file exists — resets the layer to empty.
+
+This is for **manually authored** layers; the operation refuses on `dlccorr` / `dlc_*` / dense layers, which are regenerable from upstream and should be removed and re-applied rather than reloaded.
+
+### Closing the window with unsaved changes
+
+DUSTrack guards window close (X button, Alt+F4, `plt.close()`) by scanning every manual annotation layer for in-memory diffs vs disk. If any layer has unsaved changes, a modal lists the per-layer breakdown (`+added / -removed / ~modified` counts) and offers **Save all / Discard / Cancel** — with *Cancel* as the default, so accidental Enter/Esc won't lose data.
+
 ---
 
 ## Video Frame Indexing
