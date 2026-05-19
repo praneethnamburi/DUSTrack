@@ -919,6 +919,180 @@ def test_video_point_annotator_ylim_manual_policy(video_fname):
     plt.close(v.figure)
 
 
+def test_r_keybinding_cursor_aware_dispatch(video_fname):
+    """Cursor-aware ``r``: image-pane / trace / fallback, traces to full video.
+
+    The Tier 2 ``r`` binding (``_reset_view_all``) dispatches on
+    ``event.inaxes`` set by :meth:`_patch_event_for_image_pane`:
+
+    - Cursor over ``_ax_image`` (Tier 2: aliased to ``_image_pane``) →
+      ``_image_pane.reset_view()`` only; trace axes untouched.
+    - Cursor over ``_ax_trace_x`` or ``_ax_trace_y`` → trace x reset to
+      ``(0, n_frames)``, y autoscaled (via scoped ``reset_axes(axis="y",
+      axes=[trace_x, trace_y])``); image pane untouched. Setting x to
+      the full video range keeps frames outside the current annotation
+      extent visible — the usual case when extending annotations to a
+      new region. ``alt+r`` (the ``_reset_view_to_data_extent`` sibling)
+      covers the "shrink to data extent" use case.
+    - Cursor undetectable (``event is None`` / ``event.inaxes is None``)
+      → reset everything: image pane reset AND the same trace treatment
+      (x = full-video, y = autoscale).
+
+    Agg-headless tests don't actually build a Qt image pane, so this
+    test stubs ``_image_pane`` and ``_ax_image`` onto the annotator
+    and intercepts ``reset_axes`` to record the scope kwarg per call.
+    Trace ``set_xlim`` is NOT intercepted; we read back the real xlim
+    to verify the full-video pin.
+    """
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    n_frames = v.ann.n_frames
+
+    mock_pane = MagicMock()
+    v._image_pane = mock_pane
+    # In fast_render, _ax_image is mirrored to _image_pane after super().__init__.
+    v._ax_image = mock_pane
+
+    reset_axes_calls = []
+    orig_reset_axes = v.reset_axes
+
+    def record_reset(axis="both", event=None, axes=None):
+        reset_axes_calls.append({"axis": axis, "axes": axes})
+
+    v.reset_axes = record_reset
+
+    try:
+        # Branch 1: cursor over image pane -> reset_view only, traces untouched.
+        v._ax_trace_x.set_xlim(15, 40)
+        event_img = simulate_key_press(v.figure, key="r", inaxes=mock_pane)
+        v._reset_view_all(event_img)
+        assert mock_pane.reset_view.call_count == 1
+        assert reset_axes_calls == [], (
+            f"Image-pane branch must not call reset_axes; got {reset_axes_calls}"
+        )
+        assert v._ax_trace_x.get_xlim() == (15, 40), (
+            "Image-pane branch must NOT touch trace xlim"
+        )
+
+        # Branch 2a: cursor over _ax_trace_x -> xlim=(0, n_frames), reset_axes(y).
+        event_tx = simulate_key_press(v.figure, key="r", inaxes=v._ax_trace_x)
+        v._reset_view_all(event_tx)
+        assert mock_pane.reset_view.call_count == 1, (
+            "Trace branch must not touch the image pane"
+        )
+        assert len(reset_axes_calls) == 1
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "y"
+        assert v._ax_trace_x.get_xlim() == (0, n_frames), (
+            f"Trace branch must pin xlim to (0, {n_frames}); "
+            f"got {v._ax_trace_x.get_xlim()}"
+        )
+
+        # Branch 2b: cursor over _ax_trace_y -> same treatment.
+        v._ax_trace_x.set_xlim(10, 20)
+        event_ty = simulate_key_press(v.figure, key="r", inaxes=v._ax_trace_y)
+        v._reset_view_all(event_ty)
+        assert mock_pane.reset_view.call_count == 1
+        assert len(reset_axes_calls) == 2
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "y"
+        assert v._ax_trace_x.get_xlim() == (0, n_frames)
+
+        # Branch 3a: event is None -> reset everything, traces to full video.
+        v._ax_trace_x.set_xlim(10, 20)
+        v._reset_view_all(None)
+        assert mock_pane.reset_view.call_count == 2
+        assert len(reset_axes_calls) == 3
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "y"
+        assert v._ax_trace_x.get_xlim() == (0, n_frames)
+
+        # Branch 3b: event with inaxes=None -> same fallback.
+        v._ax_trace_x.set_xlim(10, 20)
+        event_none = simulate_key_press(v.figure, key="r", inaxes=None)
+        v._reset_view_all(event_none)
+        assert mock_pane.reset_view.call_count == 3
+        assert len(reset_axes_calls) == 4
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "y"
+        assert v._ax_trace_x.get_xlim() == (0, n_frames)
+    finally:
+        v.reset_axes = orig_reset_axes
+        plt.close(v.figure)
+
+
+def test_alt_r_keybinding_cursor_aware_data_extent_dispatch(video_fname):
+    """Cursor-aware ``alt+r``: traces autoscale to data extent (sibling of ``r``).
+
+    ``_reset_view_to_data_extent`` mirrors ``_reset_view_all``'s
+    dispatch structure but the trace branch and the fallback autoscale
+    both x and y to the data extent instead of pinning x to the full
+    video range. Useful when the annotated region is much narrower than
+    the full video and the user wants to zoom in to it.
+    """
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    n_frames = v.ann.n_frames
+
+    mock_pane = MagicMock()
+    v._image_pane = mock_pane
+    v._ax_image = mock_pane
+
+    reset_axes_calls = []
+    orig_reset_axes = v.reset_axes
+
+    def record_reset(axis="both", event=None, axes=None):
+        reset_axes_calls.append({"axis": axis, "axes": axes})
+
+    v.reset_axes = record_reset
+
+    try:
+        # Branch 1: cursor over image pane -> reset_view only.
+        v._ax_trace_x.set_xlim(15, 40)
+        event_img = simulate_key_press(v.figure, key="alt+r", inaxes=mock_pane)
+        v._reset_view_to_data_extent(event_img)
+        assert mock_pane.reset_view.call_count == 1
+        assert reset_axes_calls == []
+        assert v._ax_trace_x.get_xlim() == (15, 40), (
+            "Image-pane branch must NOT touch trace xlim"
+        )
+
+        # Branch 2a: cursor over _ax_trace_x -> reset_axes(both) scoped, no pin.
+        event_tx = simulate_key_press(v.figure, key="alt+r", inaxes=v._ax_trace_x)
+        v._reset_view_to_data_extent(event_tx)
+        assert mock_pane.reset_view.call_count == 1
+        assert len(reset_axes_calls) == 1
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "both"
+        # alt+r must NOT pin xlim to (0, n_frames) — the whole point is to
+        # let reset_axes autoscale x to the data extent.
+        assert v._ax_trace_x.get_xlim() != (0, n_frames)
+
+        # Branch 2b: cursor over _ax_trace_y -> same.
+        event_ty = simulate_key_press(v.figure, key="alt+r", inaxes=v._ax_trace_y)
+        v._reset_view_to_data_extent(event_ty)
+        assert mock_pane.reset_view.call_count == 1
+        assert len(reset_axes_calls) == 2
+        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
+        assert reset_axes_calls[-1]["axis"] == "both"
+
+        # Branch 3: event is None -> reset everything, traces autoscale both.
+        v._reset_view_to_data_extent(None)
+        assert mock_pane.reset_view.call_count == 2
+        assert len(reset_axes_calls) == 3
+        assert reset_axes_calls[-1]["axes"] is None
+        assert reset_axes_calls[-1]["axis"] == "both"
+
+        # Branch 3b: event with inaxes=None -> same fallback.
+        event_none = simulate_key_press(v.figure, key="alt+r", inaxes=None)
+        v._reset_view_to_data_extent(event_none)
+        assert mock_pane.reset_view.call_count == 3
+        assert len(reset_axes_calls) == 4
+        assert reset_axes_calls[-1]["axes"] is None
+        assert reset_axes_calls[-1]["axis"] == "both"
+    finally:
+        v.reset_axes = orig_reset_axes
+        plt.close(v.figure)
+
+
 def test_video_annotation_display_update_visibility(video_fname):
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
 

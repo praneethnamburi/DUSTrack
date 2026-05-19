@@ -493,20 +493,93 @@ class VideoPointAnnotator(VideoBrowser):
 
         if self._fast_render:
             # Overwrite the inherited 'r' binding (GenericBrowser.reset_axes)
-            # so a single keystroke resets BOTH the trace axes AND the
-            # Tier-2 image-pane zoom/pan, matching the pre-1.5.0
-            # matplotlib UX where 'r' was the catch-all "give me my view
-            # back" key. Tier 1 keeps the inherited binding (no image
-            # zoom to reset).
+            # so a single keystroke resets the pane under the cursor (image
+            # OR traces, not both), with a fall-through to the pre-rc2
+            # "reset everything" behaviour when the cursor is undetectable
+            # — preserving the catch-all muscle memory. Tier 1 keeps the
+            # inherited binding (no image zoom to reset).
             self.add_key_binding(
-                "r", self._reset_view_all, "Reset image zoom + trace axes",
+                "r", self._reset_view_all,
+                "Reset view under cursor (traces use full-video x)",
+            )
+            self.add_key_binding(
+                "alt+r", self._reset_view_to_data_extent,
+                "Reset view under cursor (traces fit to data extent)",
             )
 
     def _reset_view_all(self, event: Any | None = None) -> None:
-        """Reset both the Qt image pane (zoom/pan -> fit) and the
-        matplotlib trace axes (`reset_axes("both")`)."""
+        """Cursor-aware ``r`` dispatch (Tier 2 only); traces use full-video x.
+
+        Three branches, keyed on ``event.inaxes`` after
+        :meth:`_patch_event_for_image_pane` has patched the event in
+        :meth:`__call__`:
+
+        - Cursor over the Tier 2 image pane (``inaxes == self._ax_image``,
+          which mirrors ``self._image_pane``) → image-pane zoom/pan reset
+          only; trace axes untouched.
+        - Cursor over a trace axis (``inaxes in (self._ax_trace_x,
+          self._ax_trace_y)``) → trace x set to ``(0, ann.n_frames)`` and
+          y autoscaled to data. Image pane untouched. Setting x to the
+          full video range (rather than autoscaling to the annotation
+          data extent) keeps frames *outside* the current annotation
+          envelope visible, which is the usual case when extending
+          annotations to a new region. See ``_reset_view_to_data_extent``
+          for the autoscale-x sibling, bound to ``alt+r``.
+        - Cursor anywhere else / event undetectable (``event is None`` or
+          ``event.inaxes is None`` or some unrelated mpl axis) → reset
+          everything: image pane reset AND the same trace treatment
+          (x = full-video, y = autoscale). Preserves muscle memory for
+          users who hit ``r`` while hovering a button or off-figure.
+        """
+        inaxes = getattr(event, "inaxes", None) if event is not None else None
+        if inaxes is self._ax_image:
+            self._image_pane.reset_view()
+            return
+        if inaxes is self._ax_trace_x or inaxes is self._ax_trace_y:
+            self._reset_traces_to_full_video(event=event)
+            return
+        self._image_pane.reset_view()
+        self._reset_traces_to_full_video(event=event)
+
+    def _reset_view_to_data_extent(self, event: Any | None = None) -> None:
+        """Cursor-aware ``alt+r`` dispatch (Tier 2 only); traces autoscale to data.
+
+        Same dispatch structure as :meth:`_reset_view_all`, but the trace
+        branch and the fallback autoscale both x and y to the data extent
+        instead of pinning x to the full video range. Useful for shrinking
+        the trace view to the annotated region when the full video is
+        much longer than the annotated window.
+        """
+        inaxes = getattr(event, "inaxes", None) if event is not None else None
+        if inaxes is self._ax_image:
+            self._image_pane.reset_view()
+            return
+        if inaxes is self._ax_trace_x or inaxes is self._ax_trace_y:
+            self.reset_axes(
+                axis="both",
+                event=event,
+                axes=[self._ax_trace_x, self._ax_trace_y],
+            )
+            return
         self._image_pane.reset_view()
         self.reset_axes(axis="both", event=event)
+
+    def _reset_traces_to_full_video(self, event: Any | None = None) -> None:
+        """Trace pair: x = ``(0, ann.n_frames)``, y autoscaled to data.
+
+        Helper for the ``r`` dispatch trace + fallback branches. Setting
+        xlim flips ``autoscalex_on`` to ``False`` on the shared trace
+        pair (via mpl's sharex propagation); calling ``reset_axes`` with
+        ``axis="y"`` re-enables ``autoscaley_on`` and refits y from the
+        current annotation data, dovetailing with the rc2 Manual
+        y-policy fix (one-shot refit on the next mutation).
+        """
+        self._ax_trace_x.set_xlim(0, self.ann.n_frames)
+        self.reset_axes(
+            axis="y",
+            event=event,
+            axes=[self._ax_trace_x, self._ax_trace_y],
+        )
 
     def _add_default_buttons(self) -> None:
         """Install the default action buttons appended after ``__init__``.
