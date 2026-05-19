@@ -1672,7 +1672,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
             *args: Additional positional arguments forwarded to
                 :meth:`DLCProject.process`.
             **kwargs: Additional keyword arguments forwarded to
-                :meth:`DLCProject.process`.
+                :meth:`DLCProject.process`. Note that ``create_video``
+                defaults to ``False`` on this UI path (vs. ``True`` for
+                direct :meth:`DLCProject.process` calls) -- the
+                annotate -> train -> review -> annotate loop doesn't
+                need a labeled mp4 each pass. Pass ``create_video=True``
+                explicitly to override.
 
         Returns:
             DUSTrack: ``self`` on the Qt path (training is asynchronous;
@@ -1690,6 +1695,12 @@ class DUSTrack(dnav.VideoPointAnnotator):
             raise ImportError('deeplabcut is not installed. Cannot process DLC project.')
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
+
+        # UI-only default: skip labeled-video generation. The
+        # annotate -> train -> review -> annotate loop doesn't need a
+        # labeled mp4 each pass; CLI callers of DLCProject.process()
+        # still default to create_video=True.
+        kwargs.setdefault('create_video', False)
 
         qt_window = self._find_qt_window()
         if qt_window is None:
@@ -2462,6 +2473,7 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self._normalize_dlc_layer_display(scope=new_layers.keys())
         if new_suffix in self.annotations.names:
             self.statevariables["annotation_layer"].set_state(new_suffix)
+        self._restructure_annotation_order()
         self.update()
 
     def _normalize_dlc_layer_display(self, scope=None):
@@ -2510,6 +2522,80 @@ class DUSTrack(dnav.VideoPointAnnotator):
         dlc_names = [n for n in names if n.startswith("dlc_")]
         if dlc_names:
             self.statevariables["annotation_overlay"].set_state(dlc_names[-1])
+
+    def _restructure_annotation_order(self) -> None:
+        """Regroup ``self.annotations`` into the canonical layer order
+        produced by :meth:`DLCProject.annotate` at fresh load:
+        ``manuals -> labeled_data -> dlc_* -> dlccorr* -> buffer``.
+
+        In-session adds (post-train :meth:`_refresh_dlc_layers`,
+        Reduce-jitter / :meth:`apply_manual_corrections` via
+        :meth:`_adopt_layer`) append to the end of ``self.annotations``,
+        which interleaves manuals with prior DLC layers and breaks the
+        grouping a returning user would see on close+reopen. This helper
+        re-runs after those paths so the dropdown rotation matches the
+        fresh-load order regardless of how the session got here.
+
+        Five groups, classified by layer name:
+
+        - ``buffer`` -- the scratch layer, always last.
+        - ``labeled_data`` -- DLC training-input HDF5.
+        - ``dlc_*`` (prefix) -- DLC inference traces and any LK-RSTC
+          smoothed version of one. Names emitted only by
+          :meth:`VideoFileManager.canonical_layer_name` for files under
+          ``videos/iteration-*/``.
+        - ``dlccorr*`` (prefix) -- the manual-corrections splice
+          produced by :meth:`apply_manual_corrections` and any
+          downstream LK output of it (``dlccorr_lkmovavg_*``). Its own
+          group at the tail of the DLC chain rather than folded into
+          manuals: it isn't a hand-edited layer (the manual entries it
+          incorporates live in a separate active layer), and isn't
+          folded into the ``dlc_*`` group either since it isn't a model
+          inference.
+        - manuals -- everything else, i.e. ``*_annotations_*.json``-
+          backed layers that aren't ``buffer`` / ``dlccorr*``.
+
+        Intra-group order is preserved (so the user's current ordering
+        within each group survives a refresh). Active layer and overlay
+        are preserved by name across the reorder.
+        """
+        manuals: list[str] = []
+        labeled: list[str] = []
+        dlc: list[str] = []
+        dlccorr: list[str] = []
+        buf: list[str] = []
+        for ann in self.annotations._list:
+            name = ann.name
+            if name == "buffer":
+                buf.append(name)
+            elif name == "labeled_data":
+                labeled.append(name)
+            elif name.startswith("dlccorr"):
+                dlccorr.append(name)
+            elif name.startswith("dlc_"):
+                dlc.append(name)
+            else:
+                manuals.append(name)
+
+        target = manuals + labeled + dlc + dlccorr + buf
+        if target == self.annotations.names:
+            return
+
+        active = None
+        overlay = None
+        if "annotation_layer" in self.statevariables.names:
+            active = self.statevariables["annotation_layer"].current_state
+        if "annotation_overlay" in self.statevariables.names:
+            overlay = self.statevariables["annotation_overlay"].current_state
+
+        self.annotations.reorder(target)
+        self._refresh_annotation_state_lists()
+
+        if active is not None and active in self.annotations.names:
+            self.statevariables["annotation_layer"].set_state(active)
+        if "annotation_overlay" in self.statevariables.names:
+            if overlay is None or overlay in self.annotations.names:
+                self.statevariables["annotation_overlay"].set_state(overlay)
 
     def _adopt_layer(
         self,
@@ -2586,6 +2672,8 @@ class DUSTrack(dnav.VideoPointAnnotator):
             self.statevariables["annotation_overlay"].set_state(set_overlay)
         if set_active:
             self.statevariables["annotation_layer"].set_state(name)
+        if not already_loaded:
+            self._restructure_annotation_order()
         return None if already_loaded else name
 
     def process_with_lk(self, event=None, *args, **kwargs):
@@ -3934,6 +4022,14 @@ class DLCProject:
         # the fresh-construction path (this method) and the in-place
         # refresh path (DUSTrack._refresh_dlc_layers).
         ret._normalize_dlc_layer_display()
+        # Fold dlccorr (saved as ``*_annotations_dlccorr.json``, so it
+        # rides the manuals block out of get_all_annotation_layers) into
+        # its own group at the tail of the DLC chain. Without this, a
+        # fresh open of a re-entered project would show dlccorr mixed
+        # with manuals while a post-train refresh would show it grouped
+        # with the DLC chain -- _restructure_annotation_order keeps the
+        # two paths in lockstep.
+        ret._restructure_annotation_order()
         ret.update()
 
         return ret

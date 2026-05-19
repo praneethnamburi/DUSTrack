@@ -175,6 +175,24 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   which under Qt 6.5+ Fusion follows the OS color scheme and
   defeats the pin. No-op on the mpl-only path (qtpy import
   fails).
+- **Canonical layer regrouping** -- new
+  `DUSTrack._restructure_annotation_order()` partitions
+  `self.annotations` into five groups and regroups via dnav 1.4.0rc2's
+  new `VideoAnnotations.reorder(names)`, preserving intra-group
+  order: `manuals -> labeled_data -> dlc_* -> dlccorr* -> buffer`.
+  Wired into `DLCProject.annotate` (fresh-open), `_refresh_dlc_layers`
+  (post-train), and `_adopt_layer` (Reduce-jitter /
+  `apply_manual_corrections`) so all three entry points end at the
+  same canonical order. Pre-rc2 those paths appended new layers to
+  the tail of `self.annotations`, which interleaved manuals with
+  prior DLC traces and pushed the next-iteration manual layer behind
+  the previous iteration's dlc_* outputs in the layer dropdown.
+  Active layer + overlay are preserved by name across the reorder.
+  `dlccorr` (and its derived `dlccorr_lkmovavg_*` LK outputs) gets
+  its own group at the tail of the DLC chain rather than folded into
+  manuals -- the manual entries it incorporates live in a separate
+  active layer; `dlccorr` itself is the spliced output, not a hand-
+  edited layer.
 
 ### Fixed
 - Latent shadowing bug in `_load_layer_disk_data`: was calling the
@@ -346,6 +364,18 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   pattern, while any genuinely unsaved manual edits surface in
   the modal regardless of which layer is active. Non-Qt fallback
   path (no QMainWindow) skips the modal -- no GUI to host it.
+- `dustrack/dlcinterface.py`: `DUSTrack.process_dlc_project` now
+  defaults `create_video=False` (via `kwargs.setdefault`) on both
+  the Qt and the non-Qt fallback paths -- the **Train DLC model**
+  button no longer calls `deeplabcut.create_labeled_video` after
+  inference. The annotate -> train -> review -> annotate loop reads
+  the new predictions through the refreshed DLC trace layers, so
+  the labeled mp4 is wasted work on every UI-driven training pass.
+  Direct callers of `DLCProject.process(...)` (CLI / notebook) keep
+  the pre-existing `create_video=True` default; UI callers can
+  still pass `create_video=True` explicitly to override. A
+  user-facing toggle is parked for the planned 1.x training-control
+  pass (dnav-versioned 1.6.0).
 - `dustrack/dlcinterface.py`: `DUSTrack.process_with_lk`
   (**Reduce jitter**) joins the overlay path on a Qt backend (no
   more UI freeze during long LK-RSTC passes). The overlay log
