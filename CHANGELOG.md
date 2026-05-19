@@ -84,26 +84,67 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   `Discard unsaved annotations` for the "reset contents" semantic.
   Requires dnav 1.4.0rc2 for the underlying
   `remove_annotation_layer` surface.
-- **Two-slider `EnhanceWidget`** -- new
+- **Two-slider `EnhanceWidget` + `[None | Auto]` row** -- new
   `_make_enhance_widget_class` factory + new
   `DUSTrack._add_enhance_widget()` that mounts the widget below the
   statevars widget in the rc2 left-column dock. Two `QSlider`
   controls with live numeric labels: **CLAHE clip** maps to
-  `[1.0, 4.0]` and **Gamma** maps to `[1.0, 1.5]`. CLAHE grid (`8`)
-  stays at the `__init__` default. Slider values update
-  `self._clahe_clip` / `self._gamma` and call `self.update()` on
-  every value change so the image redraws live. Sliders are integer
-  `0..100`; pure-function slider<->param maps
-  (`_slider_to_clahe_clip` / `_slider_to_gamma` / inverses) live at
-  module scope and are unit-tested in
-  `tests/test_enhance_widget_mapping.py`. **Sliders-at-minimum is
-  the true bypass**: `_enhance_is_passthrough(clip, gamma)` returns
-  `True` when both sliders sit at their leftmost position (clip=1.0
-  AND gamma=1.0); the image processor short-circuits and returns
-  the raw frame untouched (skipping the CLAHE pass and the
-  RGB->gray->RGB roundtrip). Replaces the originally-rc2 `Toggle
-  enhance` button -- with slider-driven bypass at min, a separate
-  toggle is redundant. Constructor defaults shifted to
+  `[1.0, 4.0]` and **Gamma** maps to `[1.0, 2.0]` (extended from
+  the originally-proposed `[1.0, 1.5]` to give headroom for darker
+  ultrasound footage where the 1.5 ceiling was being hit by Auto).
+  CLAHE grid (`8`) stays at the `__init__` default. Slider values
+  update `self._clahe_clip` / `self._gamma` and call
+  `self.update()` on every value change so the image redraws live.
+  Two trigger buttons below the sliders:
+  - **None**: snap both sliders to leftmost (the
+    `_enhance_is_passthrough` bypass position). Convenience undo
+    for Auto / manual enhancement.
+  - **Auto**: one-shot inference of slider values from the
+    current raw frame via the new module-level
+    `_auto_enhance_params(image)` helper. Heuristic on grayscale
+    histogram percentiles -- low p95-p5 dynamic range pushes
+    CLAHE clip up; low p50 (dark midtones) pushes gamma up; both
+    clamped to slider extents. Slider values stay where Auto
+    put them across frame navigation -- the heuristic only runs
+    on click, not per-frame. Anchors tuned in four passes against
+    real ultrasound footage; the pass-4 anchors
+    (`LOW=0`/`HIGH=75`/`DARK=0`/`MID=25`) are calibrated against
+    the S-corpus DUSTrack clip (inferred stats dyn~61, p50~20) so
+    the user-target clip~1.6 / gamma~1.3 falls in range. Anchors
+    deliberately make "typical brightish" ultrasound
+    (p50~60, dyn~80) a near-bypass; Auto only kicks in noticeably
+    for dark + low-contrast frames.
+
+  **Per-slider bypass for smooth left-end transitions.** Image
+  processor has three paths now: both at min -> raw image; clip at
+  min + gamma off -> `_apply_gamma_only(im, gamma)` (per-channel
+  `cv.LUT`, no CLAHE, no `cvtColor` roundtrip) so the gamma slider
+  transitions visually continuously from raw; clip off min -> full
+  `enhance_ultrasound_image`. The clip slider still has a step at
+  left-end zero because CLAHE startup at clip=1.0 isn't a true
+  identity, but moving the gamma slider alone no longer drags the
+  CLAHE pipeline along for the ride. Pre-fix, moving either
+  slider one tick off zero triggered CLAHE@1.0 + `cvtColor`
+  roundtrip -- visibly noticeable jump.
+
+  Shared helper `EnhanceWidget._apply_param_pair(clip, gamma)`
+  factors the signal-blocking + integer-quantization + label sync
+  + single-redraw tail used by both `None` and `Auto`. Sliders are
+  integer `0..100`; pure-function helpers
+  (`_slider_to_clahe_clip` / `_slider_to_gamma` / inverses,
+  `_enhance_is_passthrough`, `_apply_gamma_only`,
+  `_auto_enhance_params`) live at module scope and are
+  unit-tested in `tests/test_enhance_widget_mapping.py`
+  (42 cases).
+
+  **Sliders-at-minimum is the true bypass**:
+  `_enhance_is_passthrough(clip, gamma)` returns `True` when both
+  sliders sit at their leftmost position (clip=1.0 AND gamma=1.0);
+  the image processor short-circuits and returns the raw frame
+  untouched (skipping the CLAHE pass and the RGB->gray->RGB
+  roundtrip). Replaces the originally-rc2 `Toggle enhance`
+  button -- with slider-driven bypass at min, a separate toggle is
+  redundant. Constructor defaults shifted to
   `clahe_clip=1.0` (was 2.0), `gamma=1.0` (was 1.2),
   `brightness=0` (was 10) so DUSTrack opens with the raw frame and
   the user dials enhancement in via the sliders. Dropping the
@@ -115,6 +156,25 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   available for callers who want to seed the sliders to non-default
   positions. mpl-fallback path: `_add_enhance_widget` is a no-op
   and the constructor defaults stand.
+- **Pinned Qt palette** -- new module-level helper
+  `_pin_qt_palette(dark: bool)` called from `DUSTrack.__init__` so
+  the GUI looks the same regardless of Qt binding + Windows system
+  theme. Sets `QApplication.setStyle("Fusion")` and writes an
+  explicit `QPalette` (light or dark variant keyed off the
+  `dark_mode` kwarg) so PySide6 6.5+ on Windows -- which honors
+  the OS color scheme by default while PyQt6 does not -- can't
+  silently flip DUSTrack to dark mode just because the host
+  machine is in dark mode. Both bindings are in play across
+  portfolio envs (DLC mandates PySide6 via
+  `deeplabcut/gui/__init__.py:14` setting `QT_API=pyside6`, while
+  matplotlib/older envs prefer PyQt6), so without the pin the
+  same DUSTrack code paints differently on different machines --
+  including dnav's built-in stylers, which sample the live
+  palette via `datanavigator.styles._is_dark_mode`. The explicit
+  light palette also avoids `app.style().standardPalette()`,
+  which under Qt 6.5+ Fusion follows the OS color scheme and
+  defeats the pin. No-op on the mpl-only path (qtpy import
+  fails).
 
 ### Fixed
 - Latent shadowing bug in `_load_layer_disk_data`: was calling the

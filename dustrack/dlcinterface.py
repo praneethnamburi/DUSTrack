@@ -155,6 +155,63 @@ def _make_group_styler(spec: dict):
     return _styler
 
 
+def _pin_qt_palette(dark: bool) -> None:
+    """Pin the ``QApplication`` palette so DUSTrack looks the same
+    regardless of Qt binding and Windows system theme.
+
+    Why: PySide6 6.5+ on Windows honors the OS color scheme by default;
+    PyQt6 does not. With both bindings now in play across portfolio
+    envs (DLC mandates PySide6 via ``deeplabcut/gui/__init__.py:14``
+    setting ``QT_API=pyside6``, while matplotlib/older envs prefer
+    PyQt6), the same DUSTrack code would otherwise paint light on one
+    machine and dark on another -- including dnav's built-in stylers,
+    which sample the live palette via
+    :func:`datanavigator.styles._is_dark_mode`. We force a Fusion-
+    styled palette keyed off the explicit ``dark_mode`` kwarg so the
+    appearance is deterministic; dnav's heuristic samples this pinned
+    palette and stays in sync.
+
+    No-op on the mpl-only path (qtpy import fails).
+    """
+    try:
+        from qtpy.QtWidgets import QApplication
+        from qtpy.QtGui import QPalette, QColor
+    except ImportError:
+        return
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    pal = QPalette()
+    if dark:
+        pal.setColor(QPalette.Window,          QColor(45, 45, 45))
+        pal.setColor(QPalette.WindowText,      QColor(220, 220, 220))
+        pal.setColor(QPalette.Base,            QColor(30, 30, 30))
+        pal.setColor(QPalette.AlternateBase,   QColor(45, 45, 45))
+        pal.setColor(QPalette.Text,            QColor(220, 220, 220))
+        pal.setColor(QPalette.Button,          QColor(60, 60, 60))
+        pal.setColor(QPalette.ButtonText,      QColor(220, 220, 220))
+        pal.setColor(QPalette.ToolTipBase,     QColor(45, 45, 45))
+        pal.setColor(QPalette.ToolTipText,     QColor(220, 220, 220))
+        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
+        pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    else:
+        # Explicit light palette. Do NOT use ``app.style().standardPalette()``
+        # -- in Qt 6.5+ Fusion's standard palette follows the OS color
+        # scheme, so on a Windows-dark-mode machine it returns dark
+        # colors and the whole point of the pin is lost.
+        pal.setColor(QPalette.Window,          QColor(240, 240, 240))
+        pal.setColor(QPalette.WindowText,      QColor(0, 0, 0))
+        pal.setColor(QPalette.Base,            QColor(255, 255, 255))
+        pal.setColor(QPalette.AlternateBase,   QColor(245, 245, 245))
+        pal.setColor(QPalette.Text,            QColor(0, 0, 0))
+        pal.setColor(QPalette.Button,          QColor(240, 240, 240))
+        pal.setColor(QPalette.ButtonText,      QColor(0, 0, 0))
+        pal.setColor(QPalette.ToolTipBase,     QColor(255, 255, 220))
+        pal.setColor(QPalette.ToolTipText,     QColor(0, 0, 0))
+        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
+        pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(pal)
+
+
 class VideoAnnotation(dnav.VideoAnnotation):
     """
     Enhanced VideoAnnotation with integrated post-processing.
@@ -684,7 +741,7 @@ def _make_confirm_overlay_class():
 _CLAHE_CLIP_MIN = 1.0
 _CLAHE_CLIP_MAX = 4.0
 _GAMMA_MIN = 1.0
-_GAMMA_MAX = 1.5
+_GAMMA_MAX = 2.0  # extended 2026-05-19 (was 1.5) for darker ultrasound footage
 _SLIDER_TICKS = 100  # integer slider range; sliders use 0..100
 
 
@@ -718,6 +775,33 @@ def _gamma_to_slider(gamma: float) -> int:
     return max(0, min(_SLIDER_TICKS, round(t * _SLIDER_TICKS)))
 
 
+def _apply_gamma_only(image, gamma: float):
+    """Apply a gamma LUT to ``image`` without touching CLAHE or
+    grayscale conversion.
+
+    Per-slider bypass for the EnhanceWidget: when the user moves the
+    gamma slider off zero with the clip slider still at zero, we
+    don't want to spin up the full CLAHE pipeline (which forces an
+    RGB->gray->RGB roundtrip + a CLAHE histogram pass at clip=1.0
+    that *isn't* a true identity). This helper operates per-channel
+    on the input directly via ``cv.LUT``, so moving gamma off 1.0
+    transitions smoothly from raw -- the inverse-gamma LUT at
+    gamma=1.0+epsilon differs from the identity LUT by less than 1
+    unit in any bin, so the rendered frame is visually continuous
+    with the bypassed state.
+
+    Mirrors the gamma branch inside :func:`enhance_ultrasound_image`
+    but operates on the original (possibly RGB) array rather than
+    the grayscale intermediate.
+    """
+    import cv2 as cv
+    inv_gamma = 1.0 / float(gamma)
+    table = np.array(
+        [((i / 255.0) ** inv_gamma) * 255 for i in range(256)]
+    ).astype("uint8")
+    return cv.LUT(image, table)
+
+
 def _enhance_is_passthrough(clahe_clip: float, gamma: float) -> bool:
     """True if the enhancement pipeline should be bypassed entirely.
 
@@ -732,6 +816,81 @@ def _enhance_is_passthrough(clahe_clip: float, gamma: float) -> bool:
     toggle that the deleted "Toggle enhance" button flipped.
     """
     return float(clahe_clip) <= _CLAHE_CLIP_MIN and float(gamma) <= _GAMMA_MIN
+
+
+# Anchor points for the auto-enhance heuristic. Tuned 2026-05-19
+# against real ultrasound footage in four passes; each pass was the
+# user's "too aggressive" reaction to the previous one:
+#
+# - Pass 1 (LOW=40 / HIGH=180, DARK=50 / MID=130).
+# - Pass 2 (LOW=0 / HIGH=120, DARK=20 / MID=90).
+# - Pass 3 (LOW=0 / HIGH=100, DARK=20 / MID=75).
+# - Pass 4 (current, LOW=0 / HIGH=75, DARK=0 / MID=25): bundled with
+#   the gamma-max extension to 2.0. Calibrated against the S-corpus
+#   DUSTrack clip where the user-target was clip~1.6, gamma~1.3 and
+#   pass-3 was producing clip=2.17, gamma=1.5(capped). Inferred
+#   stats: dyn-range ~61, p50 ~20. With pass-4 anchors and
+#   gamma_max=2.0 those stats land at clip~1.56, gamma~1.20 --
+#   below user target but close enough that the user dials up from
+#   there. Anchors deliberately make "typical" ultrasound
+#   (p50~60, dyn~80) a near-bypass (clip~1.0, gamma=1.0); Auto
+#   only kicks in noticeably for dark + low-contrast frames.
+# Adjust here, not in callers.
+_AUTO_DYN_RANGE_LOW = 0.0     # at this dyn range, suggest clip=max
+_AUTO_DYN_RANGE_HIGH = 75.0   # at this dyn range, suggest clip=min
+_AUTO_MEDIAN_DARK = 0.0       # at this median, suggest gamma=max
+_AUTO_MEDIAN_MID = 25.0       # at this median, suggest gamma=min
+
+
+def _auto_enhance_params(image) -> tuple[float, float]:
+    """Heuristic ``(clip, gamma)`` from the current frame.
+
+    One-shot inference, called by :class:`EnhanceWidget`'s ``Auto``
+    button. Reads the grayscale histogram of ``image`` and maps
+    two robust statistics to slider-range parameters:
+
+    - **CLAHE clip** is driven by the 5th-to-95th percentile dynamic
+      range. Narrow dynamic range (a flat-looking frame) suggests
+      pushing clip high; wide dynamic range (already-contrasty
+      frame) suggests leaving clip low. Current anchors (pass 4):
+      ``dyn=0 -> clip=_CLAHE_CLIP_MAX``,
+      ``dyn=75 -> clip=_CLAHE_CLIP_MIN``.
+    - **Gamma** is driven by the 50th percentile (median). A dark
+      frame (low median) suggests pushing gamma high to lift the
+      midtones; a balanced frame suggests gamma=1.0. Current
+      anchors (pass 4):
+      ``p50=0 -> gamma=_GAMMA_MAX``,
+      ``p50=25 -> gamma=_GAMMA_MIN``.
+
+    Both outputs are clamped to their slider ranges
+    (``[_CLAHE_CLIP_MIN, _CLAHE_CLIP_MAX]`` and
+    ``[_GAMMA_MIN, _GAMMA_MAX]``) so a degenerate frame (all-zero,
+    all-white) can't drive the sliders past their ends.
+
+    Pure function -- accepts a uint8 RGB or grayscale numpy array,
+    returns ``(clip, gamma)`` floats. Lives at module scope so
+    :file:`tests/test_enhance_widget_mapping.py` can unit-test the
+    heuristic without standing up a Qt main loop.
+    """
+    import cv2 as cv  # localized import: keeps the test path importable on no-cv2 envs
+    if image.ndim == 3:
+        gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+    else:
+        gray = image
+    p5, p50, p95 = (float(x) for x in np.percentile(gray, [5, 50, 95]))
+
+    dyn_range = p95 - p5
+    t_clip = (_AUTO_DYN_RANGE_HIGH - dyn_range) / (
+        _AUTO_DYN_RANGE_HIGH - _AUTO_DYN_RANGE_LOW
+    )
+    t_clip = max(0.0, min(1.0, t_clip))
+    clip = _CLAHE_CLIP_MIN + t_clip * (_CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN)
+
+    t_gamma = (_AUTO_MEDIAN_MID - p50) / (_AUTO_MEDIAN_MID - _AUTO_MEDIAN_DARK)
+    t_gamma = max(0.0, min(1.0, t_gamma))
+    gamma = _GAMMA_MIN + t_gamma * (_GAMMA_MAX - _GAMMA_MIN)
+
+    return float(clip), float(gamma)
 
 
 def _make_enhance_widget_class():
@@ -749,7 +908,8 @@ def _make_enhance_widget_class():
     """
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QHBoxLayout, QLabel, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+        QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider,
+        QVBoxLayout, QWidget,
     )
 
     class EnhanceWidget(QWidget):
@@ -810,6 +970,26 @@ def _make_enhance_widget_class():
             self._gamma_slider.valueChanged.connect(self._on_gamma_changed)
             outer.addWidget(self._gamma_slider)
 
+            # One-shot trigger row: [None | Auto].
+            # - None: snap both sliders to leftmost (passthrough).
+            # - Auto: infer clip + gamma from the current frame's
+            #   grayscale histogram, set the sliders once, redraw
+            #   once. Subsequent frame navigations don't re-trigger
+            #   Auto -- slider values stay put until the user
+            #   (or another button click) moves them.
+            button_row = QHBoxLayout()
+            button_row.setContentsMargins(0, 0, 0, 0)
+            button_row.setSpacing(4)
+            self._none_button = QPushButton("None", self)
+            self._none_button.setFocusPolicy(Qt.NoFocus)
+            self._none_button.clicked.connect(self._on_none_clicked)
+            button_row.addWidget(self._none_button)
+            self._auto_button = QPushButton("Auto", self)
+            self._auto_button.setFocusPolicy(Qt.NoFocus)
+            self._auto_button.clicked.connect(self._on_auto_clicked)
+            button_row.addWidget(self._auto_button)
+            outer.addLayout(button_row)
+
         def _on_clip_changed(self, value: int) -> None:
             clip = _slider_to_clahe_clip(value)
             self._owner._clahe_clip = clip
@@ -821,6 +1001,62 @@ def _make_enhance_widget_class():
             self._owner._gamma = gamma
             self._gamma_label.setText(f"Gamma: {gamma:.2f}")
             self._owner.update()
+
+        def _apply_param_pair(self, clip: float, gamma: float) -> None:
+            """Set both sliders to (clip, gamma); one redraw at the end.
+
+            Shared tail for the ``None`` and ``Auto`` button handlers.
+            Slider signals are blocked during the dual ``setValue`` so
+            the two ``valueChanged`` callbacks don't each fire
+            ``owner.update()``; the redraw happens once. Slider
+            positions are integer-quantized, so the actually-applied
+            values are read back off the sliders to keep the labels
+            + the owner's enhancement params in sync with the slider
+            UI state of truth.
+            """
+            self._clip_slider.blockSignals(True)
+            self._gamma_slider.blockSignals(True)
+            self._clip_slider.setValue(_clahe_clip_to_slider(clip))
+            self._gamma_slider.setValue(_gamma_to_slider(gamma))
+            self._clip_slider.blockSignals(False)
+            self._gamma_slider.blockSignals(False)
+
+            actual_clip = _slider_to_clahe_clip(self._clip_slider.value())
+            actual_gamma = _slider_to_gamma(self._gamma_slider.value())
+            self._owner._clahe_clip = actual_clip
+            self._owner._gamma = actual_gamma
+            self._clip_label.setText(f"Clip: {actual_clip:.2f}")
+            self._gamma_label.setText(f"Gamma: {actual_gamma:.2f}")
+            self._owner.update()
+
+        def _on_none_clicked(self) -> None:
+            """Snap both sliders to leftmost (= passthrough).
+
+            Convenience: undoes any Auto/manual enhancement in one
+            click. The image processor's
+            :func:`_enhance_is_passthrough` short-circuit fires after
+            the redraw, so the next frame renders raw.
+            """
+            self._apply_param_pair(_CLAHE_CLIP_MIN, _GAMMA_MIN)
+
+        def _on_auto_clicked(self) -> None:
+            """One-shot auto-enhance from the current raw frame.
+
+            Reads ``owner.data[owner._current_idx]`` (the same raw
+            frame the image processor sees), runs
+            :func:`_auto_enhance_params`, and applies the result.
+            """
+            owner = self._owner
+            try:
+                raw = owner.data[owner._current_idx].asnumpy()
+            except Exception:
+                # No frame available (e.g. video reader torn down):
+                # surface nothing, leave sliders alone. Auto is best-
+                # effort UI; a failure here shouldn't crash the
+                # session.
+                return
+            clip, gamma = _auto_enhance_params(raw)
+            self._apply_param_pair(clip, gamma)
 
     return EnhanceWidget
 
@@ -883,13 +1119,27 @@ class DUSTrack(dnav.VideoPointAnnotator):
         self._brightness = brightness
         self._dark_mode = dark_mode
 
-        # Create image processor function. Both sliders at their
-        # minimum (clip=1.0 AND gamma=1.0) is the bypass: return the
-        # raw image untouched, skipping the CLAHE pass + grayscale
-        # roundtrip. Any non-min slider runs the full pipeline.
+        # Create image processor function with per-slider bypass to
+        # smooth the transition at the left end of each slider:
+        #
+        # - Both at min -> raw image, no cvtColor, no CLAHE.
+        # - clip at min, gamma > min -> gamma LUT applied per-channel
+        #   on the RGB frame; no CLAHE, no cvtColor roundtrip. At
+        #   gamma=1.0+epsilon the LUT is near-identity so the
+        #   transition off bypass is visually continuous.
+        # - clip > min -> full CLAHE pipeline (which inherently
+        #   includes the RGB->gray->RGB roundtrip and the gamma
+        #   branch inside enhance_ultrasound_image). The clip-slider
+        #   transition off zero is still a step (CLAHE startup is
+        #   not a fade-in operation) but only happens once now,
+        #   instead of being triggered by either slider.
         def image_processor(im):
-            if _enhance_is_passthrough(self._clahe_clip, self._gamma):
+            skip_clahe = self._clahe_clip <= _CLAHE_CLIP_MIN
+            skip_gamma = self._gamma <= _GAMMA_MIN
+            if skip_clahe and skip_gamma:
                 return im
+            if skip_clahe:
+                return _apply_gamma_only(im, self._gamma)
             return enhance_ultrasound_image(
                 im, self._clahe_clip, self._clahe_grid,
                 self._gamma, self._brightness
@@ -902,6 +1152,10 @@ class DUSTrack(dnav.VideoPointAnnotator):
         # matplotlib Axes on the image region (no in-tree subclass
         # does today; this is forward-looking).
         kwargs.setdefault('fast_render', True)
+        # Pin the QApplication palette before any widget is built so
+        # appearance is reproducible across Qt bindings + OS themes.
+        # See :func:`_pin_qt_palette` for the rationale.
+        _pin_qt_palette(dark_mode)
         super().__init__(*args, **kwargs)
 
         for ann in self.annotations:
