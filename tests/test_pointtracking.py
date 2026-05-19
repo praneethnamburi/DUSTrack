@@ -774,6 +774,151 @@ def test_video_annotation_display_setup(video_fname):
     plt.close(fig)
 
 
+def test_setup_display_trace_xlim_guard(video_fname):
+    """`setup_display_trace` must claim xlim only when no one else has.
+
+    Bug B in the 2026-05-19 trace-scaling audit: pre-fix, every
+    `VideoAnnotation` constructed on the same axes ran
+    `ax_x.set_xlim(0, n_frames)`, wiping any user pan/zoom or any
+    prior layer's xlim claim. Each in-session `_adopt_layer` call
+    (DUSTrack Reduce jitter, post-train DLC refresh, Apply manual
+    corrections first-time) blew away the trace time-axis.
+
+    The fix guards the call with ``ax_x.get_autoscalex_on()``: the
+    first annotation claims xlim (flipping autoscale off); subsequent
+    setups are a no-op.
+    """
+    # First annotation claims xlim.
+    fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
+    ann1 = datanavigator.VideoAnnotation(vname=video_fname, name="ann1")
+    ann1.setup_display(
+        ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
+    )
+    assert ax_x.get_xlim() == (0, ann1.n_frames), (
+        f"First annotation should claim xlim=(0, n_frames); got {ax_x.get_xlim()}"
+    )
+    assert ax_x.get_autoscalex_on() is False, (
+        "After claiming xlim, autoscalex_on should be False"
+    )
+
+    # User pans the trace x-axis after first setup.
+    ax_x.set_xlim(20, 50)
+
+    # Second annotation on the same axes must NOT clobber the user's pan.
+    ann2 = datanavigator.VideoAnnotation(vname=video_fname, name="ann2")
+    ann2.setup_display(
+        ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
+    )
+    assert ax_x.get_xlim() == (20, 50), (
+        f"Second annotation must preserve user's xlim; got {ax_x.get_xlim()}"
+    )
+
+    plt.close(fig)
+
+
+def test_video_point_annotator_xlim_preserved_across_layer_add(video_fname):
+    """End-to-end: `_adopt_layer`-shaped flow preserves user's trace x-zoom.
+
+    Concrete repro of the DUSTrack-side complaint that drove Bug B:
+    open the annotator, pan/zoom the trace time-axis, then add a new
+    annotation layer via `add_annotation_layers` (the exact call used
+    by DUSTrack's `_adopt_layer` after Reduce jitter / DLC refresh).
+    Pre-fix, the trace xlim resets to (0, n_frames). Post-fix, it
+    stays where the user put it.
+    """
+    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    n_frames = v.ann.n_frames
+
+    # Initial setup leaves xlim at (0, n_frames).
+    assert v._ax_trace_x.get_xlim() == (0, n_frames)
+
+    # User pans to a sub-range.
+    v._ax_trace_x.set_xlim(15, 40)
+
+    # Mid-session layer add (the path DUSTrack._adopt_layer follows).
+    v.add_annotation_layers({"smoothed": None})
+
+    assert v._ax_trace_x.get_xlim() == (15, 40), (
+        f"Mid-session layer add must preserve user's xlim; "
+        f"got {v._ax_trace_x.get_xlim()}"
+    )
+    plt.close(v.figure)
+
+
+def test_video_point_annotator_ylim_manual_policy(video_fname):
+    """Manual y-policy: ylim refits once, then stays put across mutations.
+
+    Bug A in the 2026-05-19 trace-scaling audit: pre-fix,
+    `update_frame_marker`'s cache-miss branch unconditionally
+    re-applied ``set_ylim(nanlim(trace_data))`` on every mutation,
+    every label switch, every FOI toggle. The user's hand-zoomed
+    trace y-view was wiped whenever they touched the data.
+
+    Post-fix, the first cache miss with real data fits ylim (claiming
+    autoscaley_on=False as a side effect); subsequent cache misses
+    are no-ops. Pressing `r` (= `reset_axes("both")`) re-enables
+    autoscale, restoring a one-shot refit.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"]
+    )
+    # The annotator's __init__ runs update() once with the empty annotation;
+    # all-NaN trace data leaves ylim at the matplotlib default.
+
+    # First real annotation -> first cache miss with non-NaN data ->
+    # one-shot fit (autoscale flips off).
+    v.ann.add([100.0, 200.0], "0", 0)
+    v.update()
+    ylim_after_first_fit_x = v._ax_trace_x.get_ylim()
+    ylim_after_first_fit_y = v._ax_trace_y.get_ylim()
+    assert v._ax_trace_x.get_autoscaley_on() is False
+    assert v._ax_trace_y.get_autoscaley_on() is False
+    # Fit should bracket the data (allow margin from nanlim's *0.9 / *1.1).
+    assert ylim_after_first_fit_x[0] <= 100.0 <= ylim_after_first_fit_x[1]
+    assert ylim_after_first_fit_y[0] <= 200.0 <= ylim_after_first_fit_y[1]
+
+    # User manually zooms y after the auto-fit.
+    v._ax_trace_x.set_ylim(0, 500)
+    v._ax_trace_y.set_ylim(0, 500)
+
+    # Adding more annotations must NOT clobber the user's zoom, even
+    # though the cache misses on _revision bump.
+    v.ann.add([800.0, 900.0], "0", 1)  # Wildly outside (0, 500)
+    v.update()
+    assert v._ax_trace_x.get_ylim() == (0, 500), (
+        f"Manual y-policy: user's ylim_x must survive mutation; "
+        f"got {v._ax_trace_x.get_ylim()}"
+    )
+    assert v._ax_trace_y.get_ylim() == (0, 500), (
+        f"Manual y-policy: user's ylim_y must survive mutation; "
+        f"got {v._ax_trace_y.get_ylim()}"
+    )
+
+    # Label switch also causes a cache miss; ylim must still survive.
+    v.statevariables["annotation_label"].set_state("1")
+    v.update()
+    assert v._ax_trace_x.get_ylim() == (0, 500)
+    assert v._ax_trace_y.get_ylim() == (0, 500)
+
+    # FOI toggle: another cache-miss path; ylim must still survive.
+    v.frames_of_interest.append(0)
+    v.update()
+    assert v._ax_trace_x.get_ylim() == (0, 500)
+    assert v._ax_trace_y.get_ylim() == (0, 500)
+
+    # Pressing `r` re-enables autoscale, so the NEXT cache miss refits.
+    v.reset_axes(axis="both")
+    assert v._ax_trace_x.get_autoscaley_on() is True
+    # Trigger a cache miss by mutating again.
+    v.ann.add([50.0, 60.0], "0", 2)
+    v.update()
+    # ylim should have been refit (no longer (0, 500)).
+    assert v._ax_trace_x.get_ylim() != (0, 500), (
+        f"After `r`, next mutation should refit ylim; got {v._ax_trace_x.get_ylim()}"
+    )
+    plt.close(v.figure)
+
+
 def test_video_annotation_display_update_visibility(video_fname):
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
 

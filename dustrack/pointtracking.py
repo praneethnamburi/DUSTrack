@@ -741,8 +741,24 @@ class VideoPointAnnotator(VideoBrowser):
             self._plot_frames_of_interest_y.set_data(
                 *utils.ticks_from_times(self.frames_of_interest, yl)
             )
-            if not np.any(np.isnan(xl)):
+            # Manual y-policy: refit ylim only while autoscale is still
+            # claimed (mpl-default + no prior set_ylim). After the first
+            # cache miss with real data, set_ylim flips autoscaley_on off
+            # and subsequent mutations / label switches / FOI toggles
+            # leave the user's view alone. Pressing `r` re-enables
+            # autoscale via reset_axes, restoring a one-shot refit.
+            #
+            # `have_*_data` guards against the all-NaN case: nanlim()
+            # falls back to the current ylim then, and calling
+            # set_ylim(current_ylim) would still flip autoscale off as a
+            # side effect, locking the view at the mpl default before
+            # any real data lands. Only consume the autoscale claim when
+            # there is actually data to fit.
+            have_x_data = not np.all(np.isnan(trace_data_x))
+            have_y_data = not np.all(np.isnan(trace_data_y))
+            if have_x_data and self._ax_trace_x.get_autoscaley_on():
                 self._ax_trace_x.set_ylim(xl)
+            if have_y_data and self._ax_trace_y.get_autoscaley_on():
                 self._ax_trace_y.set_ylim(yl)
 
             self._frame_marker_cache = (cache_key, xls, yls)
@@ -1926,7 +1942,13 @@ class VideoAnnotation:
                         x, dummy_y, plot_type, color=color
                     )
 
-            ax_x.set_xlim(0, self.n_frames)
+            # Claim xlim only if no one has explicitly set it yet:
+            # set_xlim flips autoscalex_on off, so this is a no-op for any
+            # subsequent VideoAnnotation constructed on the same axes (and
+            # for axes the user has panned/zoomed). Pressing `r` re-enables
+            # autoscale, which restores the first-time-fit behaviour.
+            if ax_x.get_autoscalex_on():
+                ax_x.set_xlim(0, self.n_frames)
 
     def setup_display(
         self,
