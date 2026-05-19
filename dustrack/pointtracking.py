@@ -278,13 +278,105 @@ class VideoPointAnnotator(VideoBrowser):
             ann.sort_labels()
             ann.re_setup_display()
 
+        self._refresh_annotation_state_lists()
+
+    def _refresh_annotation_state_lists(self) -> None:
+        """Resync the ``annotation_layer`` / ``annotation_overlay``
+        statevariables' rotations to match the current
+        ``self.annotations.names``.
+
+        Single source of truth for the dropdown-states refresh shared by
+        :meth:`add_annotation_layers` (extending the rotation) and
+        :meth:`remove_annotation_layer` (shrinking it). On shrink, also
+        clamps each statevariable's ``_current_state_idx`` so the
+        position is never out-of-bounds after the underlying
+        ``states`` list shortens; the caller is responsible for picking
+        a sensible new selection *before* calling this method, the
+        clamp here is the last-resort safety net.
+        """
         if "annotation_layer" in self.statevariables.names:
-            self.statevariables["annotation_layer"].states = self.annotations.names
+            sv = self.statevariables["annotation_layer"]
+            sv.states = self.annotations.names
+            if sv._current_state_idx >= len(sv.states):
+                sv._current_state_idx = max(0, len(sv.states) - 1)
         if "annotation_overlay" in self.statevariables.names:
-            self.statevariables["annotation_overlay"].states = [
-                None
-            ] + self.annotations.names
-    
+            sv = self.statevariables["annotation_overlay"]
+            sv.states = [None] + self.annotations.names
+            if sv._current_state_idx >= len(sv.states):
+                sv._current_state_idx = 0  # None
+
+    def remove_annotation_layer(self, name: str) -> None:
+        """Remove an annotation layer from the active session.
+
+        Tears down the layer's plot artists (scatter + per-label trace
+        lines on x/y trace axes) via :meth:`VideoAnnotation.clear_display`,
+        drops the layer from :attr:`annotations` via
+        :meth:`AssetContainer.remove`, then resyncs the
+        ``annotation_layer`` / ``annotation_overlay`` statevariables
+        through :meth:`_refresh_annotation_state_lists` so the dropdown
+        rotations + current selections stay valid.
+
+        Pre-flight:
+        - ``name`` must be an existing layer name.
+        - Refuses if it would leave the container empty (callers needing
+          a "reset to single empty layer" semantic should use
+          :meth:`VideoAnnotation.reload` on the surviving layer instead).
+
+        Active-layer handoff: if ``name`` is currently the primary
+        layer (``annotation_layer.current_state``), the previous layer
+        in the rotation becomes the new primary (or the first one if
+        the removed layer was at index 0). If ``name`` is currently the
+        overlay, the overlay clears to ``None``.
+
+        Note: ``"buffer"`` is *not* excluded here -- the dnav layer
+        treats every named layer the same. Consumers (DUSTrack)
+        enforce buffer-exclusion at the UI layer.
+        """
+        assert name in self.annotations.names, (
+            f"layer {name!r} not in {self.annotations.names!r}"
+        )
+        if len(self.annotations) <= 1:
+            raise ValueError(
+                f"refusing to remove the only remaining annotation layer "
+                f"{name!r}; use VideoAnnotation.reload() to reset its "
+                f"contents instead."
+            )
+
+        # Pick the new primary / overlay selections *before* mutating
+        # the container so we can name them by string rather than by
+        # post-removal index.
+        layer_sv = self.statevariables["annotation_layer"]
+        overlay_sv = self.statevariables["annotation_overlay"]
+        current_primary = layer_sv.current_state
+        current_overlay = overlay_sv.current_state
+
+        names = list(self.annotations.names)
+        removed_idx = names.index(name)
+        survivors = [n for n in names if n != name]
+        if current_primary == name:
+            # Prefer the previous-in-rotation layer; if the removed
+            # layer was at index 0, fall through to survivors[0].
+            new_primary = survivors[max(removed_idx - 1, 0)]
+        else:
+            new_primary = current_primary
+
+        # Tear down the artists this layer owns. clear_display() walks
+        # ax_list_scatter + ax_list_trace_x and calls .remove() on each
+        # handle the layer registered in setup_display.
+        ann = self.annotations[name]
+        ann.clear_display()
+        self.annotations.remove(name)
+
+        layer_sv.states = survivors
+        layer_sv.set_state(new_primary)
+        if current_overlay == name:
+            overlay_sv.states = [None] + survivors
+            overlay_sv.set_state(0)  # None
+        else:
+            # Just resync the rotation; current selection stays.
+            overlay_sv.states = [None] + survivors
+            if current_overlay is not None:
+                overlay_sv.set_state(current_overlay)
 
     def set_key_bindings(self) -> None:
         """Set the keyboard actions.
@@ -1768,6 +1860,24 @@ class VideoAnnotation:
         """Return a list of frames that are annotated with the current label."""
         assert label in self.labels
         return list(self.data[label].keys())
+
+    def reload(self) -> None:
+        """Drop in-memory state and reload from disk (or start fresh).
+
+        Inverse of :meth:`save`. If :attr:`fname` is ``None`` or the
+        file doesn't exist, restores the empty
+        ``{str(i): {} for i in range(n)}`` shape via the existing
+        :meth:`load` fallback (see the file-missing branch). Wholesale-
+        replaces ``self.data`` so the property setter rewraps every
+        per-label inner dict as a :class:`_TrackedFrameDict`, and bumps
+        :attr:`_revision` explicitly so per-frame caches keyed on
+        ``(label_list, _revision)`` invalidate -- the outer setter
+        rewraps but does not itself bump (mirrors :meth:`sort_data` and
+        :meth:`remove_empty_labels`).
+        """
+        n = len(self.labels) or 10
+        self.data = self.load(n_annotations=n)
+        self._revision += 1
 
     def save(self, fname: str | None = None) -> None:
         """Save the annotations json file. self.fname should be a valid file path."""

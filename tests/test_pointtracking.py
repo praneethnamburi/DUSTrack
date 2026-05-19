@@ -2094,3 +2094,130 @@ def test_tracked_dict_survives_pickle_roundtrip():
     # Restored dict still mutable, just doesn't bump anything (no parent):
     restored[3] = [5.0, 6.0]
     assert restored[3] == [5.0, 6.0]
+
+
+def test_video_annotation_reload_with_file_on_disk(ann_fname):
+    """``reload()`` drops in-memory edits and re-syncs from disk."""
+    ann = datanavigator.VideoAnnotation(fname=ann_fname)
+    rev_before = ann._revision
+    disk_label0 = dict(ann.data["0"])
+    # In-memory mutation that diverges from disk.
+    ann.add(location=[999.0, 999.0], label="0", frame_number=42)
+    assert ann.data["0"].get(42) == [999.0, 999.0]
+    rev_after_mutate = ann._revision
+    assert rev_after_mutate > rev_before
+
+    ann.reload()
+    assert 42 not in ann.data["0"]
+    assert dict(ann.data["0"]) == disk_label0
+    assert ann._revision > rev_after_mutate
+
+
+def test_video_annotation_reload_without_file(tmp_path):
+    """``reload()`` with no file restores the empty per-label shape."""
+    missing_fname = str(tmp_path / "nonexistent_annotations.json")
+    ann = datanavigator.VideoAnnotation(fname=missing_fname)
+    # Empty fallback shape from load(): one inner dict per label, default 10.
+    n_labels_before = len(ann.labels)
+    assert n_labels_before > 0
+    ann.add(location=[10.0, 20.0], label=ann.labels[0], frame_number=3)
+    assert ann.data[ann.labels[0]].get(3) == [10.0, 20.0]
+    rev_after_mutate = ann._revision
+
+    ann.reload()
+    # After reload, every label maps to an empty dict and the count is preserved.
+    assert all(len(ann.data[label]) == 0 for label in ann.labels)
+    assert len(ann.labels) == n_labels_before
+    assert ann._revision > rev_after_mutate
+
+
+def test_asset_container_remove_happy_path_and_keyerror():
+    """``AssetContainer.remove(name)`` pops by name, preserves order, then raises."""
+    from datanavigator.assets import AssetContainer
+
+    class _Named:
+        def __init__(self, name):
+            self.name = name
+
+    container = AssetContainer(parent=None)
+    a, b, c = _Named("a"), _Named("b"), _Named("c")
+    container.add(a)
+    container.add(b)
+    container.add(c)
+    assert container.names == ["a", "b", "c"]
+
+    popped = container.remove("b")
+    assert popped is b
+    assert container.names == ["a", "c"]
+
+    with pytest.raises(KeyError):
+        container.remove("b")
+
+
+def test_remove_annotation_layer_swaps_active_and_clears_overlay(video_fname):
+    """Removing the active layer auto-selects a survivor; overlay clears.
+
+    Three named layers + the implicit ``buffer`` -> remove the middle
+    named layer (which is the primary on construction default
+    ``annotation_layer`` state) and the overlay (set to the removed
+    layer beforehand). After: primary points at a survivor, overlay
+    is ``None``, and both statevars' rotation lists no longer contain
+    the removed name.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
+    )
+    # Sanity: rotation includes all three plus the implicit buffer slot.
+    assert set(v.statevariables["annotation_layer"].states) >= {
+        "alpha", "beta", "gamma", "buffer",
+    }
+
+    v.statevariables["annotation_layer"].set_state("beta")
+    v.statevariables["annotation_overlay"].set_state("beta")
+    assert v._current_layer == "beta"
+
+    v.remove_annotation_layer("beta")
+
+    assert "beta" not in v.annotations.names
+    assert "beta" not in v.statevariables["annotation_layer"].states
+    assert "beta" not in v.statevariables["annotation_overlay"].states
+    # Primary handed off to a survivor (the rotation-previous, "alpha").
+    assert v._current_layer == "alpha"
+    # Overlay was pointing at the removed layer -> cleared to None.
+    assert v.statevariables["annotation_overlay"].current_state is None
+    plt.close(v.figure)
+
+
+def test_remove_annotation_layer_refuses_only_layer(video_fname):
+    """``remove_annotation_layer`` raises ValueError when one layer remains.
+
+    Starts with one user layer + the implicit ``"buffer"`` (n=2); after
+    removing the user layer the container holds only ``"buffer"``, and
+    a second remove must refuse. The dnav layer treats every named
+    entry the same -- the buffer-exclusion is a DUSTrack UI concern.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["solo"],
+    )
+    assert set(v.annotations.names) == {"solo", "buffer"}
+    v.remove_annotation_layer("solo")
+    assert v.annotations.names == ["buffer"]
+    with pytest.raises(ValueError):
+        v.remove_annotation_layer("buffer")
+    plt.close(v.figure)
+
+
+def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
+    """Overlay stays put when a non-overlay, non-primary layer is removed."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
+    )
+    v.statevariables["annotation_layer"].set_state("alpha")
+    v.statevariables["annotation_overlay"].set_state("gamma")
+
+    v.remove_annotation_layer("beta")
+
+    assert "beta" not in v.annotations.names
+    assert v._current_layer == "alpha"
+    assert v.statevariables["annotation_overlay"].current_state == "gamma"
+    plt.close(v.figure)
