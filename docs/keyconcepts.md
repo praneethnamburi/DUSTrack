@@ -291,20 +291,30 @@ With event intervals + overlay system:
 
 ## Architecture: Building on datanavigator
 
-DUSTrack is built on top of the `datanavigator` package, which provides the foundational video browsing and annotation framework. Understanding this relationship helps when extending DUSTrack or troubleshooting issues. More importantly, to develop a better understanding of design concepts in DUSTrack's user iterface, you need to dig into the `datanavigator` package.
+DUSTrack is built on top of the `datanavigator` package, which provides the foundational video browsing and annotation framework -- specifically `datanavigator.VideoBrowser`, the asset-manager + button-row + state-variable widgets, and the events / `_qt` scaffolding. Understanding this relationship helps when extending DUSTrack or troubleshooting issues. More importantly, to develop a better understanding of design concepts in DUSTrack's user interface, you need to dig into the `datanavigator` package.
 
 ### Inheritance Hierarchy
 
 ```python
-datanavigator.VideoPointAnnotator  # Parent class: GUI framework
-    └── dustrack.DUSTrack           # Child class: Adds DLC integration
+datanavigator.VideoBrowser           # Foundational video-browsing GUI
+    └── dustrack.pointtracking._DUSTrackBase   # Internal: point-annotation
+        │                                       # primitives (no DLC)
+        └── dustrack.DUSTrack                   # Public: DLC workflow + UI
 
-datanavigator.VideoAnnotation      # Parent class: Annotation data structure
-    └── dustrack.VideoAnnotation    # Child class: Adds postprocess() method
+dustrack.VideoAnnotation             # Annotation data container; ships with
+                                     # the LK-RSTC postprocess hook attached
+                                     # at import time
 ```
 
 Since DUSTrack inherits from datanavigator:
 - All datanavigator keyboard shortcuts work in DUSTrack
 - datanavigator documentation applies to basic operations
+
+Note: the point-annotation UI primitives (formerly
+`datanavigator.VideoPointAnnotator`) relocated to `dustrack` in
+1.2.0a1 and the class was renamed to `_DUSTrackBase`. Use
+`dustrack.DUSTrack` directly; direct construction of the internal
+base is discouraged (it's the implementation of DUSTrack, not a
+public API).
 
 ---
