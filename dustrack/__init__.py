@@ -67,6 +67,38 @@ from .pointtracking import VideoAnnotation, VideoAnnotations
 from .postprocess import lk_moving_average_filter
 from .dlcinterface import DUSTrack, DLCProject, open
 
+# ``_dlc_patch`` exposes two independent runtime patches for DLC:
+#
+#   * ``patch_dlc()`` -- multi-threaded preprocessing + force-on
+#     autocast + non_blocking H2D. NOT applied automatically. The
+#     2026-05-20 multirun benchmark
+#     (``S:/_corpus/dustrack/dlc_inference_bench_2026-05-20/``) showed
+#     this patch is a net regression on DLC 3.0.0rc13/rc14 because
+#     DLC's own refactor (``_batch_list`` + ``queue_length=4`` default)
+#     captured most of the available win. On rc10 the patch is
+#     approximately neutral on peak fps with a small high-bs floor
+#     improvement. Call manually if running on rc10 and inference is
+#     preprocessing-bound.
+#
+#   * ``patch_dlc_decoder()`` -- replaces DLC's
+#     ``cv2.VideoCapture``-backed ``VideoReader`` with a dnav PyAV+TOC
+#     reader so annotation, training-frame extraction, and inference
+#     all go through one decode path. NOT applied automatically. The
+#     2026-05-20 parity test confirmed bit-exact agreement with cv2 on
+#     a 500-frame CFR clip (so this is a coherence improvement, not a
+#     correctness *fix* on our files), but the end-to-end
+#     ``decoder_patch_bench_rc14.py`` measured a -42% inference
+#     regression on the same clip. Root cause: the test (and the
+#     pia02 production video) is encoded with avg ~1 frame/packet,
+#     which puts dnav's ``PyAVReaderIndexed._seek_packet`` on a
+#     per-frame path that creates a fresh ``container.demux()``
+#     iterator on every call. The 154 fps inference ceiling is decode-
+#     bound when the reader streams at ~175 fps. Call manually with
+#     ``patch_dlc_decoder()`` to opt in to unified-decoder semantics
+#     when the perf cost is acceptable or when reading codecs whose
+#     cv2 vs PyAV indexing might diverge.
+from . import _dlc_patch as _dlc_patch  # noqa: F401
+
 # Attach lk_moving_average_filter as VideoAnnotation's default postprocess
 # hook. Done here (not in pointtracking.py) so pointtracking stays free of
 # DLC-aware post-processing concerns; dustrack owns its DLC story.

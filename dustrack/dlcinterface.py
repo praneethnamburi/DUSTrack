@@ -3988,6 +3988,15 @@ class DLCProject:
         
         save_as_csv = kwargs.pop('save_as_csv', True)
 
+        # DeepLabCut's PyTorch backend defaults to batch_size=1 when neither
+        # the kwarg nor the project config sets one, which leaves an RTX-class
+        # GPU heavily under-utilised. The throughput knee for ResNet-50 BU on
+        # a 706x558 video on DLC 3.0.0rc14 + RTX 4090 is batchsize~4 (median
+        # 154 fps; see S:/_corpus/dustrack/dlc_inference_bench_2026-05-20/).
+        # Respect the project config if it sets ``batch_size`` explicitly.
+        if 'batchsize' not in kwargs and self.config.get('batch_size') is None:
+            kwargs['batchsize'] = 4
+
         if "videos" in kwargs:
             assert isinstance(kwargs["videos"], list)
             # if kwargs["videos"] is a list of integers, convert to list of video paths using self.video_list
