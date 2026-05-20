@@ -194,6 +194,47 @@ def test_video_annotation_init_with_video_3(video_fname):
     assert ann.video.fname == video_fname
 
 
+def test_video_annotation_accepts_passed_video(video_fname):
+    """1.2.0a2: passing ``video=`` reuses the caller's open reader instead
+    of constructing a fresh ``utils.Video``. Identity-checked so a shared
+    reader is genuinely shared, not copied."""
+    shared = datanavigator.Video(video_fname)
+    ann = dustrack.VideoAnnotation(vname=video_fname, video=shared)
+    assert ann.video is shared
+
+
+def test_video_annotation_shared_video_skips_extra_av_opens(video_fname):
+    """1.2.0a2 cold-open win: passing ``video=`` skips the per-layer
+    ``utils.Video(vname)`` construction (3 av.opens) and the OpenCV
+    ``is_video`` probe. Six annotation layers should add 0 av.opens
+    beyond the one ``VideoReader`` instantiation the caller already paid
+    for. This pins the optimisation that drops ``g.annotate()`` cold-open
+    from 21 av.opens to 3 on the pia02 interosseous_pn24-x benchmark.
+    """
+    import av
+
+    shared = datanavigator.Video(video_fname)
+
+    real_open = av.open
+    count = {"n": 0}
+
+    def counting_open(*args, **kwargs):
+        count["n"] += 1
+        return real_open(*args, **kwargs)
+
+    av.open = counting_open
+    try:
+        for _ in range(6):
+            dustrack.VideoAnnotation(vname=video_fname, video=shared)
+    finally:
+        av.open = real_open
+
+    assert count["n"] == 0, (
+        f"expected 0 av.opens when video= is shared across 6 layers; got "
+        f"{count['n']}. Regression in the cold-open sharing path."
+    )
+
+
 def test_video_annotation_load(ann_fname, ann2_fname, ann_h5_fname):
     ann2 = dustrack.VideoAnnotation(fname=ann2_fname)
     assert ann2.fname == ann2_fname

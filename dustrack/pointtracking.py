@@ -275,6 +275,7 @@ class _DUSTrackBase(VideoBrowser):
                 name=name,
                 fname=fname,
                 vname=self.fname,
+                video=self.data,
                 ax_list_scatter=ax_list_scatter,
                 ax_list_trace_x=[self._ax_trace_x],
                 ax_list_trace_y=[self._ax_trace_y],
@@ -1665,7 +1666,17 @@ class VideoAnnotation:
             assert isinstance(name, str)
             self.name = name
 
-        if utils.is_video(vname):
+        # 1.2.0a2: callers (notably ``_DUSTrackBase.add_annotation_layers``)
+        # can hand in an already-open reader via the ``video=`` kwarg so
+        # every annotation layer of a session shares the browser's single
+        # open file instead of opening it once per layer (3 av.opens per
+        # ``utils.Video(...)`` × ~6 layers was the dominant cold-open
+        # cost on M:). When ``video`` is supplied we trust the caller
+        # and skip the ``utils.is_video`` OpenCV probe too.
+        passed_video = kwargs.pop("video", None)
+        if passed_video is not None:
+            self.video = passed_video
+        elif utils.is_video(vname):
             self.video = utils.Video(vname)
         else:
             self.video = None

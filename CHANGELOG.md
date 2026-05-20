@@ -3,10 +3,13 @@ All notable changes to this project will be documented in this file.
 
 ## [1.2.0a2] - unreleased
 
-Cold-open optimisation: vectorise the DLC trace -> annotation-dict
-conversion. The pre-1.2.0a2 path walked every frame with a pandas
-``.loc[frame]`` cross-section call, which becomes the dominant
-segment of ``g.annotate()`` on the production pia02 workflow.
+Cold-open optimisation: two independent wins folded together — the
+vectorised DLC-trace conversion (drops the per-frame `.loc[frame]`
+pandas cross-section), and a single shared `VideoReader` across all
+annotation layers (drops the per-layer `utils.Video(vname)` open).
+Together they take `g.annotate()` on the pia02 `interosseous_pn24-x`
+production benchmark from **7.95 s → 2.96 s** (−5.0 s, **2.69× faster**)
+on video 0.
 
 Earlier 1.2.0 scope items (dnav 1.5.0 adoption + DLC `.h5` reclaim)
 came along with the 1.2.0a1 relocation. The originally-scheduled
@@ -33,6 +36,35 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
     in `tests/test_dlc_trace_vectorise.py`): **1 214 ms → 26 ms (46×)**.
   - pandas `.loc` / `xs` calls per cold-open: 146 948 → 0.
 
+- **Annotation layers share the browser's single open `VideoReader`**
+  (`dustrack/pointtracking.py:1668`, `:264`). `VideoAnnotation.__init__`
+  now accepts a `video=` kwarg; when supplied (the cold-open path),
+  it reuses the caller's already-open reader instead of constructing
+  a fresh `utils.Video(vname)`. `_DUSTrackBase.add_annotation_layers`
+  threads `video=self.data` (the browser's reader) into every
+  `annotations.add(...)` call.
+
+  Pre-fix, each layer paid 3 `av.container.core.open` calls (one for
+  `PyAVReaderIndexed`'s metadata probe, one for the persistent
+  `_load_fresh_file` decoder, and one for `VideoReader._probe_avg_fps`)
+  plus an OpenCV `is_video` probe — once per layer. The pia02 video 0
+  cold-open had 6 annotation layers + the browser, so 7 readers ×
+  3 = 21 `av.open` calls on a network drive, where each open on `M:`
+  costs ~80 ms even with the TOC cached.
+
+  Real cold-open benchmark (same harness, video 0, PyAV TOC cached,
+  starting from the post-vectorise baseline):
+  - `g.annotate()` total: **4.62 s → 2.96 s** (−1.66 s, **1.56× faster**).
+  - `add_annotation_layers` segment: 2.82 s → 1.30 s.
+  - `av.container.core.open` calls per `g.annotate()`: **21 → 3**.
+  - Combined with the vectorise: **7.95 s → 2.96 s, 2.69× cumulative**.
+
+  Surfaces a small dnav-side prerequisite (1.5.0a2): `VideoReader` now
+  exposes `fname` and `name` attributes on the base class so the
+  shared reader satisfies VideoAnnotation's
+  `self.video.fname` / `.name` access patterns without constructing
+  the `utils.Video` subclass.
+
 ### Added
 - **`tests/test_dlc_trace_vectorise.py`** — 10 parity tests pinning the
   legacy implementation against the vectorised one across realistic
@@ -46,17 +78,23 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   cProfile, scans the whole DLC project tree in one `os.walk` pass
   to find the worst-case multi-layer video, and reports the top-N
   cumulative + self-time entries.
+- **`tests/test_pointtracking.py::test_video_annotation_accepts_passed_video`**
+  + **`...::test_video_annotation_shared_video_skips_extra_av_opens`**
+  — pin the shared-video contract: `video=` is identity-held, and
+  six layers constructed against a shared reader add zero
+  `av.container.core.open` calls.
 
 ### Notes — out of scope, kept for next session
 - First-time PyAV TOC build on `M:` is ~37 s on a never-opened video,
   cached on disk after. Network-drive first-touch cost, not a code
   bug; pre-building TOCs server-side or warming them on project open
   would help.
-- `av.container.core.open` fires 21–34× during a single
-  `g.annotate()` (~300–770 ms cumulative). Likely
-  `datanavigator.utils.is_video` probing every file in the
-  `get_all_annotation_layers` enumeration. Small absolute cost so
-  not chased here; flagged for a follow-on investigation.
+- The remaining 3 `av.open` calls per cold-open come from one
+  `VideoReader` instantiation (`PyAVReaderIndexed`'s metadata probe +
+  `_load_fresh_file` + `VideoReader._probe_avg_fps`). Collapsing
+  those to 1 would need either a vendored-pims edit or extending the
+  TOC sidecar to cache stream-geometry + avg_fps; ~30 ms additional
+  win on a network drive. Not chased here.
 
 ## [1.2.0a1] - unreleased
 
