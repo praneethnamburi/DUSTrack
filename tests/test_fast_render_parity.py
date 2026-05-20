@@ -129,7 +129,7 @@ def test_tier2_scatter_positional_parity():
 @pytest.mark.skipif(not _qt_available(), reason="No Qt binding available")
 def test_tier2_pick_adapter_hit_test_selects_nearest_marker():
     """A synthetic mouse press at a marker pixel fires pick for that label."""
-    from qtpy.QtCore import QEvent, QPoint, Qt
+    from qtpy.QtCore import QEvent, QPointF, Qt
     from qtpy.QtGui import QMouseEvent
     from qtpy.QtWidgets import QApplication
 
@@ -187,7 +187,7 @@ def test_tier2_pick_adapter_hit_test_selects_nearest_marker():
         received.clear()
         event = QMouseEvent(
             QEvent.MouseButtonPress,
-            QPoint(viewport_pt),
+            QPointF(viewport_pt),
             Qt.LeftButton,
             Qt.LeftButton,
             Qt.NoModifier,
@@ -269,7 +269,7 @@ def test_tier2_resize_refits_until_user_adjusts():
 @pytest.mark.skipif(not _qt_available(), reason="No Qt binding available")
 def test_tier2_pick_adapter_misses_outside_radius():
     """A click far from any marker fires button_press but not pick."""
-    from qtpy.QtCore import QEvent, QPoint, Qt
+    from qtpy.QtCore import QEvent, QPointF, Qt
     from qtpy.QtGui import QMouseEvent
     from qtpy.QtWidgets import QApplication
 
@@ -304,7 +304,7 @@ def test_tier2_pick_adapter_misses_outside_radius():
     viewport_pt = view.mapFromScene(0.0, 0.0)
     event = QMouseEvent(
         QEvent.MouseButtonPress,
-        QPoint(viewport_pt),
+        QPointF(viewport_pt),
         Qt.LeftButton,
         Qt.LeftButton,
         Qt.NoModifier,
