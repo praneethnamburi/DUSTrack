@@ -1,22 +1,28 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## [1.1.0rc2] - 2026-05-18 (unreleased)
+## [1.1.0] - 2026-05-19
 
-Second release candidate for the smoother-interaction band. rc1 was
-backend-perf-oriented (datanavigator 1.4.0rc1 cache + revision-counter
-fixes); rc2 turns to the user-facing rough edges of the DLC pipeline:
-**all three DLC-pipeline buttons** (Train DLC model, Reduce jitter,
-Create DLC project) now run on a background thread under a shared
-modal `ProgressOverlay` instead of freezing the GUI; a unified
-**Done** button on the overlay lets the user review the final stdout
-(or read the error) before the underlying UI becomes interactive
-again. The training overlay no longer auto-dismisses, and the
-pre-rc2 `QMessageBox` failure dialogs are folded into the overlay
-itself. **Plus (2026-05-19 fold-in from the originally-planned rc3
-robustness band)**: save-on-close guard intercepts every way the
-window can close (X button, alt-F4, `plt.close()`) and offers
-*Save all / Discard / Cancel* on any unsaved diff.
+Minor release on top of 1.0.0. Two arcs from rc1 → rc2 fold into one
+1.1.0 cut:
+
+- **rc1 — backend perf adoption.** Adopt datanavigator 1.4.0's
+  Qt-native rendering (`fast_render=True` by default; image pane on
+  `QGraphicsView` + `QPixmapItem`) and `_revision`-counter cache, for
+  ~4× frame-update speedup on real ultrasound sessions.
+- **rc2 — DLC pipeline UX + robustness.** All three DLC-pipeline
+  buttons (Train DLC model, Reduce jitter, Create DLC project) now
+  run on a background thread under a shared modal `ProgressOverlay`
+  instead of freezing the GUI; a unified **Done** button on the
+  overlay lets the user review the final stdout (or read the error)
+  before the underlying UI becomes interactive again. The training
+  overlay no longer auto-dismisses, and the pre-rc2 `QMessageBox`
+  failure dialogs are folded into the overlay itself. A
+  save-on-close guard intercepts every way the window can close (X
+  button, alt-F4, `plt.close()`) and offers *Save all / Discard /
+  Cancel* on any unsaved diff. New `dustrack.open(path, layer_name=,
+  ...)` workflow entry point auto-detects Phase 1 (bare video) and
+  Phase 2 (DLC project) paths.
 
 ### Added
 - **Save-on-close guard** -- new `DUSTrack._install_close_guard()`,
@@ -225,6 +231,28 @@ window can close (X button, alt-F4, `plt.close()`) and offers
   `Path.read_text(encoding="utf-8")` + `json.loads`, the same
   convention `DLCProject._read_trackermap` already uses for the
   same reason.
+- Sibling shadowing bug in `_save_dropped_incomplete_sidecar`: was
+  calling bare `open(sidecar, "w")` which resolved to the
+  module-level `dustrack.open()` workflow entry point and raised
+  `FileNotFoundError` on the not-yet-existing sidecar path. Switched
+  to `Path.write_text`, matching the convention now documented in
+  `_load_layer_disk_data`.
+- **`_dlcproject` wiring on re-entered sessions.** `DLCProject.annotate`
+  constructs a fresh `DUSTrack` but did not set
+  `ret._dlcproject = self` on the returned instance. Result: the
+  Train DLC model / Reduce jitter buttons (and `_refresh_dlc_layers`)
+  raised `"DLCProject not created."` on a re-entered project
+  session, since `__init__`'s default left `_dlcproject = None`. Now
+  wired explicitly at the tail of `DLCProject.annotate`.
+- **`copy_existing_annotations_from_overlay` ("Replace existing from
+  overlay" button) now routes through `ann.add()`** instead of
+  writing directly into `self.ann.data[L][F]`. On dnav 1.4.0+ the
+  direct write skipped the `_revision` bump and the trace-display
+  cache kept serving pre-mutation ydata, so the button looked like a
+  no-op on the trace plot. Same bug class as dnav's
+  `check_labels_with_lk` (fixed upstream in datanavigator 1.4.0).
+  Bug latent since 1.1.0rc1 picked up dnav 1.4.0's cache; 1.0.0 +
+  dnav 1.3.x stack was unaffected.
 - **`apply_manual_corrections` no longer crashes when the user
   has manually corrected only one of two (or more) labels.**
   Pre-fix path: `VideoAnnotation.save()` pruned empty labels at
