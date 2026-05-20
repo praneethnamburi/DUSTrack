@@ -475,3 +475,27 @@ patch if the workflow ever runs into the headroom.
 | `add_annotation_layers` | 6290 ms | 2820 ms | **1298 ms** |
 | `av.container.core.open` calls | 21 | 21 | **3** |
 | cumulative speedup | 1.00x | 1.72x | **2.69x** |
+
+### DUSTrack UI -- post-seek-fix-2026-05-20 -- 2026-05-20 15:44:02
+
+- datanavigator: `1.2.0a2-cold-open@cfbc5a7` source `C:\dev\datanavigator\datanavigator\__init__.py`
+- dustrack: `1.2.0a2-cold-open@cfbc5a7` source `C:\dev\DUSTrack\dustrack\__init__.py`
+- backend: QtAgg, qt_api=pyside6, qt_plat=default
+- fast_render: True
+- N=185 (15 warmup discarded)
+
+| min | median | mean | p95 | p99 | max | fps (median) |
+|---|---|---|---|---|---|---|
+| 38.64 | 40.03 | 40.17 | 41.25 | 43.61 | 46.12 | 25.0 |
+
+### DUSTrack UI -- pre-seek-fix-isolated-2026-05-20 -- 2026-05-20 15:45:12
+
+- datanavigator: `1.2.0a2-cold-open@cfbc5a7-dirty` source `C:\dev\datanavigator\datanavigator\__init__.py`
+- dustrack: `1.2.0a2-cold-open@cfbc5a7-dirty` source `C:\dev\DUSTrack\dustrack\__init__.py`
+- backend: QtAgg, qt_api=pyside6, qt_plat=default
+- fast_render: True
+- N=185 (15 warmup discarded)
+
+| min | median | mean | p95 | p99 | max | fps (median) |
+|---|---|---|---|---|---|---|
+| 38.68 | 40.30 | 40.45 | 41.82 | 45.77 | 46.47 | 24.8 |
