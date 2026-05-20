@@ -1,6 +1,63 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.2.0a2] - unreleased
+
+Cold-open optimisation: vectorise the DLC trace -> annotation-dict
+conversion. The pre-1.2.0a2 path walked every frame with a pandas
+``.loc[frame]`` cross-section call, which becomes the dominant
+segment of ``g.annotate()`` on the production pia02 workflow.
+
+Earlier 1.2.0 scope items (dnav 1.5.0 adoption + DLC `.h5` reclaim)
+came along with the 1.2.0a1 relocation. The originally-scheduled
+`fast_traces=True` Qt-tier was explored on a throwaway branch
+2026-05-20 and reverted after the benchmark showed an 8.81×
+per-frame regression on the production video; the matplotlib trace
+pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
+
+### Changed
+- **`VideoAnnotation._dlc_trace_to_annotation_dict` vectorised**
+  (`dustrack/pointtracking.py:1895`). One column-slice +
+  `.to_numpy()` per label + a NaN-row mask + a dict comprehension,
+  replacing the per-frame `.loc[frame]` loop that fired ~73 k pandas
+  cross-section calls per DLC trace on a 36 715-frame video.
+  Semantics unchanged: skip rows where both x and y are NaN, otherwise
+  record `[x, y]` for that frame; frame keys stay as Python ints so
+  downstream `frame in dict` lookups keep matching.
+
+  Real cold-open benchmark (`tests/qt_learning/24_benchmark_cold_open.py`
+  on `interosseous_pn24-x`, video 0, PyAV TOC cached):
+  - `g.annotate()` total: **7.95 s → 4.62 s** (−3.33 s, **1.72× faster**).
+  - `add_annotation_layers` segment: 6.29 s → 2.82 s.
+  - Isolated `_dlc_trace_to_annotation_dict` smoke (36 715 × 2 labels,
+    in `tests/test_dlc_trace_vectorise.py`): **1 214 ms → 26 ms (46×)**.
+  - pandas `.loc` / `xs` calls per cold-open: 146 948 → 0.
+
+### Added
+- **`tests/test_dlc_trace_vectorise.py`** — 10 parity tests pinning the
+  legacy implementation against the vectorised one across realistic
+  inputs (dense / partial-NaN / all-NaN / single-frame / 36 715-frame
+  pia02-shape, plus `pointN`-vs-named-label naming and value-type +
+  frame-key contracts). The legacy implementation is preserved in
+  the test file for the parity assertions, so the contract has both
+  versions available in one place.
+- **`tests/qt_learning/24_benchmark_cold_open.py`** — cold-open
+  profiler. Times each `g.annotate()` segment under perf_counter +
+  cProfile, scans the whole DLC project tree in one `os.walk` pass
+  to find the worst-case multi-layer video, and reports the top-N
+  cumulative + self-time entries.
+
+### Notes — out of scope, kept for next session
+- First-time PyAV TOC build on `M:` is ~37 s on a never-opened video,
+  cached on disk after. Network-drive first-touch cost, not a code
+  bug; pre-building TOCs server-side or warming them on project open
+  would help.
+- `av.container.core.open` fires 21–34× during a single
+  `g.annotate()` (~300–770 ms cumulative). Likely
+  `datanavigator.utils.is_video` probing every file in the
+  `get_all_annotation_layers` enumeration. Small absolute cost so
+  not chased here; flagged for a follow-on investigation.
+
 ## [1.2.0a1] - unreleased
 
 Structural refactor: DUSTrack absorbs the VideoPointAnnotator UI,
