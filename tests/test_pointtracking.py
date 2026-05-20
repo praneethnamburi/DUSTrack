@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 import matplotlib.pyplot as plt
 
 import datanavigator
+import dustrack
 from datanavigator.examples import get_example_video
 from tests.conftest import (
     simulate_key_press,
@@ -29,7 +30,7 @@ def ann_fname(video_fname):
     height, width = video[0].shape[:2]
     # n_labels=3 declares "0", "1", "2" up front; the default became 1
     # in 1.4.0rc2 when labels were promoted to first-class schema.
-    ann = datanavigator.VideoAnnotation(vname=video_fname, n_labels=3)
+    ann = dustrack.VideoAnnotation(vname=video_fname, n_labels=3)
     for frame_count in range(10):
         for label in range(3):
             ann.add(
@@ -49,7 +50,7 @@ def ann2_fname(video_fname):
     """Fixture to create a second temporary JSON file with 9 annotated frames, 3 labels per frame."""
     video = datanavigator.Video(video_fname)
     height, width = video[0].shape[:2]
-    ann2 = datanavigator.VideoAnnotation(n_labels=3)
+    ann2 = dustrack.VideoAnnotation(n_labels=3)
     for frame_count in range(9):
         for label in range(3):
             ann2.add(
@@ -70,7 +71,7 @@ def ann2_fname(video_fname):
 @pytest.fixture(scope="module")
 def ann_h5_fname(ann_fname):
     """Fixture to create a temporary HDF5 file of ann."""
-    ann = datanavigator.VideoAnnotation(fname=ann_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname)
     ann.to_dlc(save=True)
     return str(Path(ann.fname).with_suffix(".h5"))
 
@@ -78,18 +79,18 @@ def ann_h5_fname(ann_fname):
 @pytest.fixture(scope="function")
 def ann_object(ann_fname):
     """Fixture returning a VideoAnnotation object."""
-    return datanavigator.VideoAnnotation(fname=ann_fname)
+    return dustrack.VideoAnnotation(fname=ann_fname)
 
 
 @pytest.fixture(scope="module")
 def ann_object_no_video(ann_fname):
     """Fixture returning a VideoAnnotation object without an associated video."""
     # Create a dummy json that doesn't match video name pattern
-    data = datanavigator.VideoAnnotation._load_json(ann_fname)
+    data = dustrack.VideoAnnotation._load_json(ann_fname)
     dummy_fname = Path(ann_fname).parent / "dummy_no_video_annotations.json"
     with open(dummy_fname, "w") as f:
         json.dump(data, f)
-    ann = datanavigator.VideoAnnotation(fname=str(dummy_fname))
+    ann = dustrack.VideoAnnotation(fname=str(dummy_fname))
     yield ann
     os.remove(dummy_fname)  # Clean up dummy file
 
@@ -99,7 +100,7 @@ def ann_object_overlapping(video_fname):
     """Fixture with annotations where all labels overlap for some frames."""
     video = datanavigator.Video(video_fname)
     height, width = video[0].shape[:2]
-    ann = datanavigator.VideoAnnotation(vname=video_fname, name="overlapping", n_labels=3)
+    ann = dustrack.VideoAnnotation(vname=video_fname, name="overlapping", n_labels=3)
     # Frames 5, 6, 7 have all 3 labels
     for frame_count in range(5, 8):
         for label in range(3):
@@ -117,14 +118,14 @@ def ann_object_overlapping(video_fname):
     ann.add(location=[10, 10], label="0", frame_number=9)
     ann.add(location=[20, 20], label="1", frame_number=9)
     ann.save()
-    ann = datanavigator.VideoAnnotation(fname=ann.fname)
+    ann = dustrack.VideoAnnotation(fname=ann.fname)
     yield ann
     os.remove(ann.fname)  # Clean up
 
 
 def test_video_annotation_init_empty(tmp_path):
     # test empty initialization
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     assert ann.fname is None
     assert ann.fstem is None
     assert ann.name == "noname"
@@ -143,7 +144,7 @@ def test_video_annotation_init_with_video(video_fname):
     vstem = Path(video_fname).stem
 
     # vname only
-    ann = datanavigator.VideoAnnotation(vname=video_fname)
+    ann = dustrack.VideoAnnotation(vname=video_fname)
     assert ann.fname == os.path.join(video_folder, f"{vstem}_annotations.json")
     assert ann.fstem == f"{vstem}_annotations"
     assert ann.name == "noname"  # default name
@@ -157,14 +158,14 @@ def test_video_annotation_init_with_video_2(video_fname):
     ann_fname = os.path.join(video_folder, f"{vstem}_annotations_pn.json")
 
     # fname and vname
-    ann = datanavigator.VideoAnnotation(fname=ann_fname, vname=video_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname, vname=video_fname)
     assert ann.fname == os.path.join(video_folder, f"{vstem}_annotations_pn.json")
     assert ann.fstem == f"{vstem}_annotations_pn"
     assert ann.name == "pn"
     assert ann.video.fname == video_fname
 
     # fname only - find the video
-    ann = datanavigator.VideoAnnotation(fname=ann_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname)
     assert ann.fname == os.path.join(video_folder, f"{vstem}_annotations_pn.json")
     assert ann.fstem == f"{vstem}_annotations_pn"
     assert ann.name == "pn"
@@ -172,7 +173,7 @@ def test_video_annotation_init_with_video_2(video_fname):
 
     # fname only without "_annotations" in it - this should not be allowed in the future
     ann_fname = os.path.join(video_folder, f"{vstem}_myann.json")
-    ann = datanavigator.VideoAnnotation(fname=ann_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname)
     assert ann.fname == ann_fname
     assert ann.fstem == Path(ann_fname).stem
     assert ann.name == "noname"
@@ -185,7 +186,7 @@ def test_video_annotation_init_with_video_3(video_fname):
     vstem = Path(video_fname).stem
 
     # vname and name
-    ann = datanavigator.VideoAnnotation(vname=video_fname, name="pn")
+    ann = dustrack.VideoAnnotation(vname=video_fname, name="pn")
     assert ann.fname == os.path.join(video_folder, f"{vstem}_annotations_pn.json")
     assert ann.fstem == f"{vstem}_annotations_pn"
     assert ann.name == "pn"
@@ -193,7 +194,7 @@ def test_video_annotation_init_with_video_3(video_fname):
 
 
 def test_video_annotation_load(ann_fname, ann2_fname, ann_h5_fname):
-    ann2 = datanavigator.VideoAnnotation(fname=ann2_fname)
+    ann2 = dustrack.VideoAnnotation(fname=ann2_fname)
     assert ann2.fname == ann2_fname
     assert ann2.fstem == Path(ann2_fname).stem
     assert ann2.name == "pn"
@@ -201,8 +202,8 @@ def test_video_annotation_load(ann_fname, ann2_fname, ann_h5_fname):
     assert len(ann2.data["0"]) == 9
 
     # test loading from h5 file
-    ann = datanavigator.VideoAnnotation(fname=ann_fname)
-    ann_h5 = datanavigator.VideoAnnotation(fname=ann_h5_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname)
+    ann_h5 = dustrack.VideoAnnotation(fname=ann_h5_fname)
     assert ann_h5.fname == ann_h5_fname
     assert ann_h5.fstem == Path(ann_h5_fname).stem
     assert ann_h5.name == "noname"
@@ -216,7 +217,7 @@ def test_video_annotation_from_multiple_files(
     fname_merged = os.path.join(
         Path(video_fname).parent, Path(video_fname).stem + "_annotations_merged.json"
     )
-    ann = datanavigator.VideoAnnotation.from_multiple_files(
+    ann = dustrack.VideoAnnotation.from_multiple_files(
         fname_list=[ann_fname, ann2_fname],
         vname=video_fname,
         name="merged",
@@ -227,7 +228,7 @@ def test_video_annotation_from_multiple_files(
     assert len(ann.data["0"]) == 19  # 10 + 9 frames
 
     # test loading from h5 file
-    ann_2 = datanavigator.VideoAnnotation.from_multiple_files(
+    ann_2 = dustrack.VideoAnnotation.from_multiple_files(
         fname_list=[ann_h5_fname, ann2_fname],
         vname=video_fname,
         name="merged2",
@@ -261,7 +262,7 @@ def test_video_annotation_properties(
     # frames_overlapping
     assert ann_object_overlapping.frames_overlapping == [5, 6, 7]
     # Test case with no overlapping frames
-    ann_no_overlap = datanavigator.VideoAnnotation()
+    ann_no_overlap = dustrack.VideoAnnotation()
     ann_no_overlap.data = {}
     ann_no_overlap.add_label("0")
     ann_no_overlap.add_label("1")
@@ -291,7 +292,7 @@ def test_video_annotation_get_values_cv(ann_object):
     assert not np.isnan(vals).any()
 
     # Test frame with missing annotations (should not happen in ann_object)
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     ann.data = {}
     ann.add_label("0")
     ann.add_label("1")
@@ -437,7 +438,7 @@ def test_video_annotation_to_dlc_real_data_roundtrip(tmp_path):
     real-shape DLC labeled-data file (multi-bodypart, full coverage)
     that the synthetic fixture above can't replicate.
     """
-    ann_orig = datanavigator.VideoAnnotation(
+    ann_orig = dustrack.VideoAnnotation(
         fname=str(REAL_DLC_H5), vname=str(REAL_DLC_VIDEO)
     )
     n_orig = sum(len(ann_orig.data[lbl]) for lbl in ann_orig.labels)
@@ -458,7 +459,7 @@ def test_video_annotation_to_dlc_real_data_roundtrip(tmp_path):
     out_dir = tmp_path / "roundtrip"
     out_dir.mkdir()
     ann_orig.to_dlc(output_path=str(out_dir), file_prefix="roundtrip", save=True)
-    ann_back = datanavigator.VideoAnnotation(
+    ann_back = dustrack.VideoAnnotation(
         fname=str(out_dir / "roundtrip.h5"), vname=str(REAL_DLC_VIDEO)
     )
     n_back = sum(len(ann_back.data[lbl]) for lbl in ann_back.labels)
@@ -481,7 +482,7 @@ def test_video_annotation_to_traces(ann_object):
 
 
 @patch(
-    "datanavigator.pointtracking.pysampled", create=True
+    "dustrack.pointtracking.pysampled", create=True
 )  # Mock pysampled if not installed or for isolation
 def test_video_annotation_to_signal(mock_pysampled, ann_object, ann_object_no_video):
     mock_data = MagicMock()
@@ -516,7 +517,7 @@ def test_video_annotation_add_label():
     # 1.4.0rc2: the default-label bootstrap shrank from 10 to 1.
     # Labels are first-class schema now; users grow the set via
     # explicit add_label / add_annotation_layers extension.
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     assert ann.labels == ["0"]
 
     # Add data to existing label
@@ -524,7 +525,7 @@ def test_video_annotation_add_label():
     assert ann.data["0"] == {0: [1, 1]}
 
     # Create a new instance to test adding labels beyond initial empty ones
-    ann_new = datanavigator.VideoAnnotation()
+    ann_new = dustrack.VideoAnnotation()
     ann_new.data = {}  # Start truly empty for this test
 
     # Add label automatically
@@ -578,7 +579,7 @@ def test_video_annotation_revision_bumps_on_mutation(video_fname):
     counter; an under-counted mutation would cause the cache to serve
     stale arrays. Test each public mutation method explicitly.
     """
-    ann = datanavigator.VideoAnnotation(vname=video_fname)
+    ann = dustrack.VideoAnnotation(vname=video_fname)
     ann.add_label("0")
     ann.add_label("1")
     base = ann._revision
@@ -639,7 +640,7 @@ def test_video_annotation_keep_overlapping_continuous_frames(ann_object_overlapp
     assert 7 in ann_object_overlapping.data["2"]
 
     # Test case with no continuous overlapping frames
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     ann.data = {}
     ann.add_label("0")
     ann.add_label("1")
@@ -666,7 +667,7 @@ def test_video_annotation_keep_overlapping_frames_keeps_non_continuous():
     """Distinguishes keep_overlapping_frames from the continuous variant:
     isolated fully-labeled frames survive here, but are dropped by
     keep_overlapping_continuous_frames."""
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     ann.data = {}
     ann.add_label("0")
     ann.add_label("1")
@@ -685,7 +686,7 @@ def test_video_annotation_keep_overlapping_frames_keeps_non_continuous():
 def test_video_annotation_keep_overlapping_frames_no_overlap_aborts():
     """No fully-labeled frame -> abort, data untouched (mirrors the
     continuous variant's safeguard)."""
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     ann.data = {}
     ann.add_label("0")
     ann.add_label("1")
@@ -695,7 +696,7 @@ def test_video_annotation_keep_overlapping_frames_no_overlap_aborts():
     assert ann.frames == [0, 5]
 
 
-@patch("datanavigator.pointtracking.pysampled", create=True)  # Mock pysampled
+@patch("dustrack.pointtracking.pysampled", create=True)  # Mock pysampled
 def test_video_annotation_get_area(mock_pysampled, ann_object, ann_object_no_video):
     mock_data = MagicMock()
     mock_pysampled.Data.return_value = mock_data
@@ -744,9 +745,9 @@ def test_video_annotation_get_area(mock_pysampled, ann_object, ann_object_no_vid
 
 def test_video_annotation_init_preloaded(ann_fname):
     # Load data first
-    preloaded_data = datanavigator.VideoAnnotation._load_json(ann_fname)
+    preloaded_data = dustrack.VideoAnnotation._load_json(ann_fname)
     # Init with preloaded data
-    ann = datanavigator.VideoAnnotation(preloaded_json=preloaded_data)
+    ann = dustrack.VideoAnnotation(preloaded_json=preloaded_data)
     assert ann.fname is None  # No fname provided
     assert ann.video is None  # No vname provided
     assert ann.name == "noname"
@@ -757,7 +758,7 @@ def test_video_annotation_init_preloaded(ann_fname):
 def test_video_annotation_display_setup(video_fname):
     # Use spec=matplotlib.axes.Axes to make isinstance checks pass
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
-    ann = datanavigator.VideoAnnotation(vname=video_fname, name="test_display_setup")
+    ann = dustrack.VideoAnnotation(vname=video_fname, name="test_display_setup")
 
     # Setup scatter
     ann.setup_display_scatter(ax_list_scatter=[ax_img])
@@ -789,7 +790,7 @@ def test_setup_display_trace_xlim_guard(video_fname):
     """
     # First annotation claims xlim.
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
-    ann1 = datanavigator.VideoAnnotation(vname=video_fname, name="ann1")
+    ann1 = dustrack.VideoAnnotation(vname=video_fname, name="ann1")
     ann1.setup_display(
         ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
     )
@@ -804,7 +805,7 @@ def test_setup_display_trace_xlim_guard(video_fname):
     ax_x.set_xlim(20, 50)
 
     # Second annotation on the same axes must NOT clobber the user's pan.
-    ann2 = datanavigator.VideoAnnotation(vname=video_fname, name="ann2")
+    ann2 = dustrack.VideoAnnotation(vname=video_fname, name="ann2")
     ann2.setup_display(
         ax_list_scatter=[ax_img], ax_list_trace_x=[ax_x], ax_list_trace_y=[ax_y]
     )
@@ -825,7 +826,7 @@ def test_video_point_annotator_xlim_preserved_across_layer_add(video_fname):
     Pre-fix, the trace xlim resets to (0, n_frames). Post-fix, it
     stays where the user put it.
     """
-    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    v = dustrack.VideoPointAnnotator(vid_name=video_fname)
     n_frames = v.ann.n_frames
 
     # Initial setup leaves xlim at (0, n_frames).
@@ -858,7 +859,7 @@ def test_video_point_annotator_ylim_manual_policy(video_fname):
     are no-ops. Pressing `r` (= `reset_axes("both")`) re-enables
     autoscale, restoring a one-shot refit.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     # The annotator's __init__ runs update() once with the empty annotation;
@@ -943,7 +944,7 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
     to verify the full-video pin. The active-label y-fit semantics are
     covered by ``test_r_keybinding_trace_branch_fits_active_label_only``.
     """
-    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    v = dustrack.VideoPointAnnotator(vid_name=video_fname)
     n_frames = v.ann.n_frames
 
     mock_pane = MagicMock()
@@ -1004,7 +1005,7 @@ def test_alt_r_keybinding_cursor_aware_data_extent_dispatch(video_fname):
     video range. Useful when the annotated region is much narrower than
     the full video and the user wants to zoom in to it.
     """
-    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    v = dustrack.VideoPointAnnotator(vid_name=video_fname)
     n_frames = v.ann.n_frames
 
     mock_pane = MagicMock()
@@ -1076,7 +1077,7 @@ def test_fit_y_to_active_label_active_only(video_fname):
     y window. Asserts the helper does NOT union with other labels'
     extents.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     # Label "0" data clusters at y ~ (0, 10); label "1" data clusters
@@ -1114,7 +1115,7 @@ def test_fit_y_to_active_label_with_overlay(video_fname):
     has y ~ (5, 25). Helper should fit y to (0, 25) -- the union for
     the active label across the two layers.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["primary", "overlay"], n_labels=1,
     )
     primary = v.annotations["primary"]
@@ -1134,7 +1135,7 @@ def test_fit_y_to_active_label_with_overlay(video_fname):
 
 def test_fit_y_to_active_label_empty_is_noop(video_fname):
     """No data for active label → helper short-circuits, leaves ylim alone."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["empty"], n_labels=1,
     )
     # No annotations added; label "0" has empty data.
@@ -1155,7 +1156,7 @@ def test_label_switch_triggers_yfit(video_fname):
     land the new label inside the y window. Also verifies the round-trip
     (back to the original label refits).
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
@@ -1194,7 +1195,7 @@ def test_layer_switch_does_not_trigger_yfit(video_fname):
     wired only to annotation_label + label_range; annotation_layer /
     annotation_overlay are explicitly NOT hooked.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["a", "b"], n_labels=1,
     )
     layer_a = v.annotations["a"]
@@ -1224,7 +1225,7 @@ def test_layer_switch_does_not_trigger_yfit(video_fname):
 
 def test_label_range_switch_triggers_yfit(video_fname):
     """Cycling label_range must fire the on_change hook (decade switcher)."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=1,
     )
     # Add label "0" data in y ~ (0, 5) and label "10" data in y ~ (1000, 1005).
@@ -1257,7 +1258,7 @@ def test_label_range_switch_triggers_yfit(video_fname):
 
 def test_r_keybinding_trace_branch_fits_active_label_only(video_fname):
     """``r`` over a trace fits y to the active label only, not the union."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
@@ -1286,7 +1287,7 @@ def test_r_keybinding_trace_branch_fits_active_label_only(video_fname):
 
 def test_alt_r_keybinding_trace_branch_keeps_union(video_fname):
     """``alt+r`` over a trace keeps the union autoscale (all labels)."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
@@ -1313,7 +1314,7 @@ def test_alt_r_keybinding_trace_branch_keeps_union(video_fname):
 def test_video_annotation_display_update_visibility(video_fname):
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
 
-    ann = datanavigator.VideoAnnotation(
+    ann = dustrack.VideoAnnotation(
         vname=video_fname, name="test_display_update_visibility"
     )
     ann.setup_display(
@@ -1365,7 +1366,7 @@ def test_set_plot_type_syncs_plot_type_attribute(video_fname):
     regression.
     """
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
-    ann = datanavigator.VideoAnnotation(
+    ann = dustrack.VideoAnnotation(
         vname=video_fname, name="plot_type_sync"
     )
     ann.setup_display(
@@ -1393,7 +1394,7 @@ def test_set_plot_type_survives_re_setup_display(video_fname):
     styling. Direct verification of the regression mechanism.
     """
     fig, (ax_img, ax_x, ax_y) = plt.subplots(3, 1)
-    ann = datanavigator.VideoAnnotation(
+    ann = dustrack.VideoAnnotation(
         vname=video_fname, name="plot_type_after_resetup"
     )
     ann.setup_display(
@@ -1412,28 +1413,28 @@ def test_set_plot_type_survives_re_setup_display(video_fname):
 
 def test_video_point_annotator_init(video_fname):
     # simple initialization with video only.
-    v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
+    v = dustrack.VideoPointAnnotator(vid_name=video_fname)
     assert len(v.annotations) == 2
     assert v.annotations[0].name == ""
     assert v.annotations[0].fstem == "example_video_annotations"
     assert v.annotations[-1].name == "buffer"
     plt.close(v.figure)
 
-    v = datanavigator.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn"])
+    v = dustrack.VideoPointAnnotator(vid_name=video_fname, annotation_names=["pn"])
     assert v.annotations.names == [
         "pn",
         "buffer",
     ]  # the _annotations.json file will not be loaded
     plt.close(v.figure)
 
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["", "pn"]
     )
     assert v.annotations.names == ["", "pn", "buffer"]
     plt.close(v.figure)
 
     # explicitly adding a "buffer" name will not make a difference
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["", "pn", "buffer"]
     )
     assert v.annotations.names == ["", "pn", "buffer"]
@@ -1441,12 +1442,12 @@ def test_video_point_annotator_init(video_fname):
 
 
 def test_video_point_annotator_from_annotations(ann_object):
-    v = datanavigator.VideoPointAnnotator.from_annotations(ann_object)
+    v = dustrack.VideoPointAnnotator.from_annotations(ann_object)
     assert len(v.ann.frames) == 10
 
 
 def test_video_point_annotator_add_new_label(ann_object):
-    v = datanavigator.VideoPointAnnotator.from_annotations(ann_object)
+    v = dustrack.VideoPointAnnotator.from_annotations(ann_object)
     assert "5" not in v.ann.labels
     assert "5" not in v.annotations["buffer"].labels
     v(simulate_key_press(v.figure, key="5"))
@@ -1468,7 +1469,7 @@ def test_video_point_annotator_add_new_label(ann_object):
 
 
 def test_video_point_annotator_key_bindings(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["", "pn"]
     )
     assert len(v.annotations[""].frames) == 10
@@ -1573,7 +1574,7 @@ def test_video_point_annotator_key_bindings(video_fname):
 
 
 def test_video_point_annotator_add_remove_annotation(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn2"]
     )
     assert len(v.annotations) == 2
@@ -1611,7 +1612,7 @@ def test_video_point_annotator_add_remove_annotation(video_fname):
 
 def test_video_point_annotator_conditional_move(video_fname):
     """Test the feature that allows to change frame only if there is no annotation at the current frame."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn2"]
     )
     assert len(v.annotations) == 2
@@ -1651,7 +1652,7 @@ def test_video_point_annotator_conditional_move(video_fname):
 
 def test_video_point_annotator_state_variables(video_fname):
     """Test cycling through the state variables."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["", "pn"]
     )
     assert len(v.annotations) == 3
@@ -1718,7 +1719,7 @@ def test_video_point_annotator_state_variables(video_fname):
 
 def test_video_point_annotator_frames_of_interest(video_fname):
     """Test the frames of interest feature."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn3"]
     )
     assert len(v.annotations) == 2
@@ -1810,7 +1811,7 @@ def test_video_point_annotator_frames_of_interest(video_fname):
 
 def test_video_point_annotator_copy_annotations(video_fname):
     """Test the feature of copying annotations between layers."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn4", "pn5"], n_labels=5,
     )
     # testing c - copy current annotaion from overlay to the current annotation layer
@@ -1946,7 +1947,7 @@ def test_video_point_annotator_copy_annotations(video_fname):
 
 def test_video_point_annotator_lucas_kanade(video_fname):
     # -- predict_labels_with_lucas_kanade --
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn6"]
     )
     v.ann.data = {}
@@ -2032,7 +2033,7 @@ def test_video_point_annotator_lucas_kanade(video_fname):
 
 
 def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn7"], n_labels=2,
     )
     # add annotation in frames 5 and 8
@@ -2056,7 +2057,7 @@ def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
 
 
 def test_save(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn7"]
     )
     assert not os.path.exists(v.annotations["pn7"].fname)
@@ -2066,7 +2067,7 @@ def test_save(video_fname):
 
 
 def test_video_point_annotator_keep_overlapping_continuous_frames(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn8"]
     )
     v.ann.data = {}
@@ -2098,7 +2099,7 @@ def test_video_point_annotator_keep_overlapping_frames(video_fname):
     keybinding is wired -- DUSTrack's "Train DLC model" pre-flight
     is the only caller.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn_kof"]
     )
     v.ann.data = {}
@@ -2120,7 +2121,7 @@ def test_video_point_annotator_keep_overlapping_frames(video_fname):
 
 
 def test_video_point_annotator_render(video_fname):
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["pn9"]
     )
     v.annotations["pn9"].add([10, 100], "0", 0)  # add some data
@@ -2143,7 +2144,7 @@ def test_video_point_annotator_render(video_fname):
 # makes the next bypass unrepresentable: any write to an inner per-label
 # dict bumps _revision regardless of which API path the caller took.
 
-from datanavigator.pointtracking import _TrackedFrameDict
+from dustrack.pointtracking import _TrackedFrameDict
 
 
 def test_inner_dict_is_tracked_frame_dict(ann_object):
@@ -2281,7 +2282,7 @@ def test_clear_bumps_revision_only_when_nonempty(ann_object):
 
 def test_revision_consumers_invalidate_on_direct_mutation(video_fname, ann_fname):
     """Trace-display cache key is (labels, _revision); direct mutation invalidates."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=[Path(ann_fname).stem]
     )
     ann = v.annotations[Path(ann_fname).stem]
@@ -2315,7 +2316,7 @@ def test_tracked_dict_survives_pickle_roundtrip():
 
 def test_video_annotation_reload_with_file_on_disk(ann_fname):
     """``reload()`` drops in-memory edits and re-syncs from disk."""
-    ann = datanavigator.VideoAnnotation(fname=ann_fname)
+    ann = dustrack.VideoAnnotation(fname=ann_fname)
     rev_before = ann._revision
     disk_label0 = dict(ann.data["0"])
     # In-memory mutation that diverges from disk.
@@ -2336,7 +2337,7 @@ def test_video_annotation_reload_without_file(tmp_path):
     # 1.4.0rc2 dropped the legacy 10-empty-labels bootstrap to a
     # single label "0". The fallback shape is now one inner dict;
     # the test still works on whatever count load() defaults to.
-    ann = datanavigator.VideoAnnotation(fname=missing_fname)
+    ann = dustrack.VideoAnnotation(fname=missing_fname)
     n_labels_before = len(ann.labels)
     assert n_labels_before > 0
     ann.add(location=[10.0, 20.0], label=ann.labels[0], frame_number=3)
@@ -2361,11 +2362,11 @@ def test_video_annotation_default_n_labels_is_one():
     would write a full slate of empties to disk on every fresh
     save -- so the default shrinks to 1.
     """
-    ann = datanavigator.VideoAnnotation()
+    ann = dustrack.VideoAnnotation()
     assert ann.labels == ["0"]
     assert ann.data["0"] == {}
 
-    ann_three = datanavigator.VideoAnnotation(n_labels=3)
+    ann_three = dustrack.VideoAnnotation(n_labels=3)
     assert ann_three.labels == ["0", "1", "2"]
 
 
@@ -2382,7 +2383,7 @@ def test_video_annotation_save_preserves_empty_labels(video_fname, tmp_path):
     corrected only one of two labels).
     """
     fname = str(tmp_path / "preserves_empty_annotations_pe.json")
-    ann = datanavigator.VideoAnnotation(fname=fname, vname=video_fname, n_labels=2)
+    ann = dustrack.VideoAnnotation(fname=fname, vname=video_fname, n_labels=2)
     ann.add(location=[10.0, 20.0], label="0", frame_number=3)
     # label "1" is declared but never populated -- the apply-manual-corrections shape.
     assert ann.labels == ["0", "1"]
@@ -2390,14 +2391,14 @@ def test_video_annotation_save_preserves_empty_labels(video_fname, tmp_path):
 
     ann.save()
 
-    on_disk = datanavigator.VideoAnnotation._load_json(fname)
+    on_disk = dustrack.VideoAnnotation._load_json(fname)
     assert set(on_disk.keys()) == {"0", "1"}, (
         f"Saved JSON dropped a declared label: {set(on_disk.keys())}"
     )
     assert on_disk["1"] == {}, "Empty label should serialize as an empty dict"
 
     # Reload and confirm round-trip.
-    ann_back = datanavigator.VideoAnnotation(fname=fname, vname=video_fname)
+    ann_back = dustrack.VideoAnnotation(fname=fname, vname=video_fname)
     assert ann_back.labels == ["0", "1"]
     assert ann_back.data["1"] == {}
     assert ann_back.data["0"][3] == [10.0, 20.0]
@@ -2424,7 +2425,7 @@ def test_to_trace_returns_nan_for_missing_label(video_fname, tmp_path):
     # Use an isolated fname so we don't load the ann_fname fixture's
     # data via the shared <video>_annotations.json path.
     fname = str(tmp_path / "to_trace_missing_annotations_tt.json")
-    ann = datanavigator.VideoAnnotation(fname=fname, vname=video_fname)
+    ann = dustrack.VideoAnnotation(fname=fname, vname=video_fname)
     # Default n_labels=1: only "0" is declared, "1" is missing entirely.
     assert "1" not in ann.data
 
@@ -2453,7 +2454,7 @@ def test_corrections_layer_shaped_update_frame_marker(video_fname, tmp_path):
     missing the label. Post-fix the missing-label layer contributes
     a NaN trace and ``np.hstack`` of the layer stack succeeds.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname,
         annotation_names=["base", "corrections"],
         n_labels=2,
@@ -2499,7 +2500,7 @@ def test_add_annotation_layers_unions_declared_labels(video_fname):
     declared label gets it added (the same auto-extend rule as
     before, just sourced from declarations rather than data).
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["alpha", "beta"], n_labels=1,
     )
     # Declare three labels on alpha, two on beta -- one is shared.
@@ -2514,7 +2515,7 @@ def test_add_annotation_layers_unions_declared_labels(video_fname):
 
     # Reopen and confirm both layers carry the full union of declared
     # labels, including alpha's empty "1".
-    v2 = datanavigator.VideoPointAnnotator(
+    v2 = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["alpha", "beta"],
     )
     for layer_name in ("alpha", "beta"):
@@ -2558,7 +2559,7 @@ def test_remove_annotation_layer_swaps_active_and_clears_overlay(video_fname):
     is ``None``, and both statevars' rotation lists no longer contain
     the removed name.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
     )
     # Sanity: rotation includes all three plus the implicit buffer slot.
@@ -2590,7 +2591,7 @@ def test_remove_annotation_layer_refuses_only_layer(video_fname):
     a second remove must refuse. The dnav layer treats every named
     entry the same -- the buffer-exclusion is a DUSTrack UI concern.
     """
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["solo"],
     )
     assert set(v.annotations.names) == {"solo", "buffer"}
@@ -2603,7 +2604,7 @@ def test_remove_annotation_layer_refuses_only_layer(video_fname):
 
 def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
     """Overlay stays put when a non-overlay, non-primary layer is removed."""
-    v = datanavigator.VideoPointAnnotator(
+    v = dustrack.VideoPointAnnotator(
         vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
     )
     v.statevariables["annotation_layer"].set_state("alpha")
@@ -2619,7 +2620,7 @@ def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
 
 def test_video_annotations_reorder_permutes_in_place():
     """``VideoAnnotations.reorder(names)`` rewrites _list order; idempotent."""
-    from datanavigator.pointtracking import VideoAnnotations
+    from dustrack.pointtracking import VideoAnnotations
 
     class _Named:
         def __init__(self, name):
@@ -2645,7 +2646,7 @@ def test_video_annotations_reorder_permutes_in_place():
 
 def test_video_annotations_reorder_rejects_non_permutation():
     """``reorder`` rejects missing / extra / duplicate names."""
-    from datanavigator.pointtracking import VideoAnnotations
+    from dustrack.pointtracking import VideoAnnotations
 
     class _Named:
         def __init__(self, name):

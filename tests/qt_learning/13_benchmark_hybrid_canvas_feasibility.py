@@ -56,7 +56,7 @@ keep all 11 ms.
 Usage
 -----
     C:\\Users\\praneeth\\anaconda3\\envs\\dlc\\python.exe \\
-        C:\\dev\\datanavigator\\tests\\qt_learning\\13_benchmark_hybrid_canvas_feasibility.py \\
+        C:\\dev\\DUSTrack\\tests\\qt_learning\\13_benchmark_hybrid_canvas_feasibility.py \\
         [--n-frames N] [--n-warmup N]
 
 Reads off

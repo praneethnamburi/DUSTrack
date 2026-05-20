@@ -18,10 +18,18 @@ post-processing.
     Interface for training and managing DeepLabCut pose estimation models.
     Requires the ``deeplabcut`` package to be installed.
 
+:class:`~dustrack.pointtracking.VideoPointAnnotator`
+    Lightweight point-annotation UI (no DLC ceremony). Use directly for
+    ad-hoc labeling -- ``dustrack.VideoPointAnnotator(video, ["pn"])``.
+
+:class:`~dustrack.pointtracking.VideoAnnotation`
+    Annotation-data container with DeepLabCut HDF5 interop. Use directly
+    for programmatic loads -- ``dustrack.VideoAnnotation(json_path, video).to_signals()``.
+
 :func:`~dustrack.postprocess.lk_moving_average_filter`
     Lucas-Kanade optical flow algorithm with Reverse Sigmoid Tracking Correction
     for reducing frame-to-frame jitter in tracked points. In practice, access this via
-    :meth:`dustrack.dlcinterface.VideoAnnotation.postprocess` method.
+    :meth:`dustrack.VideoAnnotation.postprocess` method.
 
 Typical workflow:
     1. Create annotations using DUSTrack GUI
@@ -46,10 +54,31 @@ Example:
     >>> # post-processing alone gets you usable tracks:
     >>> tracker = dustrack.open('video.mp4', 'manual')
     >>> tracker.process_with_lk()
+    >>>
+    >>> # Lightweight ad-hoc UI (no DLC project, no auto-detection):
+    >>> ann = dustrack.VideoPointAnnotator('video.mp4', ["pn", "buffer"])
+    >>>
+    >>> # Programmatic load (no UI):
+    >>> va = dustrack.VideoAnnotation('video_annotations_pn.json', 'video.mp4')
+    >>> signals = va.to_signals()
 
 """
 
 from .__version__ import __version__
 
+# Order matters: opticalflow has no in-package deps; pointtracking pulls
+# from opticalflow; postprocess pulls VideoAnnotation from pointtracking;
+# dlcinterface pulls pointtracking + postprocess.
+from .opticalflow import lucas_kanade, lucas_kanade_rstc
+from .pointtracking import VideoAnnotation, VideoAnnotations, VideoPointAnnotator
 from .postprocess import lk_moving_average_filter
-from .dlcinterface import DUSTrack, DLCProject, VideoAnnotation, open
+from .dlcinterface import DUSTrack, DLCProject, open
+
+# Attach lk_moving_average_filter as VideoAnnotation's default postprocess
+# hook. Done here (not in pointtracking.py) so pointtracking stays free of
+# DLC-aware post-processing concerns; dustrack owns its DLC story.
+# Pre-1.2.0a1 this lived as a one-line ``VideoAnnotation(dnav.VideoAnnotation)``
+# subclass in dlcinterface.py -- that subclass bit
+# ``isinstance(..., dustrack.VideoAnnotation)`` when ``lk_moving_average_filter``
+# returned a parent-class instance (see feedback_isinstance_subclass_narrowing).
+VideoAnnotation.postprocess = lk_moving_average_filter

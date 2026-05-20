@@ -1,10 +1,17 @@
 """
 Point-tracking UI, annotation containers, and DeepLabCut HDF5 interop.
 
+Moved here from ``datanavigator.pointtracking`` in datanavigator 1.5.0a1 /
+dustrack 1.2.0a1 -- see CHANGELOG. The browsers / asset managers / event
+plumbing still live in datanavigator; this module sits on top of them.
+The full pre-relocation history is preserved -- ``git log --follow
+dustrack/pointtracking.py`` traces it back through datanavigator's
+rc1-rc2 perf work, the label-aware y-refit, the _TrackedFrameDict
+mutation guard, etc.
+
 The DLC-specific paths in :py:class:`VideoAnnotation` are tagged
-``DUSTrack-shaped`` in their docstrings and are slated to migrate to
-``dustrack.VideoAnnotation`` in 1.3.0 alongside the ``pointtracking.py``
-split.
+``DUSTrack-shaped`` in their docstrings (kept as a greppable marker for
+the DLC-aware code paths, even though the whole module now lives in DUSTrack).
 """
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ from matplotlib.animation import FFMpegWriter
 from datanavigator import utils
 from datanavigator.assets import AssetContainer
 from datanavigator.videos import VideoBrowser
-from datanavigator.opticalflow import lucas_kanade, lucas_kanade_rstc
+from dustrack.opticalflow import lucas_kanade, lucas_kanade_rstc
 
 
 class VideoPointAnnotator(VideoBrowser):

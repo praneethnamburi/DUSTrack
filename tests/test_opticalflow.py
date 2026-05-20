@@ -1,5 +1,6 @@
 import numpy as np
-from datanavigator import VideoReader, get_example_video, lucas_kanade, lucas_kanade_rstc
+from datanavigator import VideoReader, get_example_video
+from dustrack import lucas_kanade, lucas_kanade_rstc
 from matplotlib import pyplot as plt
 
 

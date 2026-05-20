@@ -46,7 +46,7 @@ Reads
 Usage
 -----
     C:\\Users\\praneeth\\anaconda3\\envs\\dlc\\python.exe \\
-        C:\\dev\\datanavigator\\tests\\qt_learning\\11_profile_dustrack_update.py \\
+        C:\\dev\\DUSTrack\\tests\\qt_learning\\11_profile_dustrack_update.py \\
         [--n-frames N] [--n-warmup N]
 """
 

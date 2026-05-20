@@ -15,16 +15,16 @@ Key Features:
 
 Typical Usage:
     >>> from dustrack.postprocess import lk_moving_average_filter
-    >>> from datanavigator import VideoAnnotation
-    >>> 
+    >>> from dustrack import VideoAnnotation
+    >>>
     >>> # Load annotations
     >>> ann = VideoAnnotation('video_annotations.json', 'video.mp4')
-    >>> 
+    >>>
     >>> # Apply post-processing with 0.5 second window
     >>> ann_smooth = lk_moving_average_filter(ann, window_size=0.5)
 
-In practice, access the lk_moving_average_filter method via :class:`~dustrack.dlcinterface.VideoAnnotation`:
-    >>> from dustrack.dlcinterface import VideoAnnotation
+In practice, access the lk_moving_average_filter method via :class:`~dustrack.VideoAnnotation`:
+    >>> from dustrack import VideoAnnotation
     >>> ann = VideoAnnotation('video_dlc_predictions.h5', 'video.mp4')
     >>> ann_rstc = ann.postprocess()
 
@@ -66,7 +66,7 @@ import cv2 as cv
 import numpy as np
 from tqdm import tqdm
 
-from datanavigator import VideoAnnotation
+from .pointtracking import VideoAnnotation
 
 
 def gray(video_frame: np.ndarray) -> np.ndarray:
@@ -319,8 +319,9 @@ def lk_moving_average_filter(
         >>> # Non-parallel processing for short clips
         >>> ann_smooth = lk_moving_average_filter(ann, window_size=0.3, use_parallel=False)
 
-        In practice, when using a dlcinterface.VideoAnnotation object, you would do:
-        >>> from dustrack.dlcinterface import VideoAnnotation
+        In practice, the ``postprocess`` shortcut on a :class:`~dustrack.VideoAnnotation`
+        is equivalent:
+        >>> from dustrack import VideoAnnotation
         >>> ann = VideoAnnotation('video_dlc_predictions.h5', 'video.mp4')
         >>> ann_rstc = ann.postprocess()
     

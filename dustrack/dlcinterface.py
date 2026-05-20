@@ -28,6 +28,7 @@ import datanavigator as dnav
 from datanavigator import VideoReader, cpu
 
 from .postprocess import lk_moving_average_filter
+from .pointtracking import VideoAnnotation, VideoAnnotations, VideoPointAnnotator
 from . import _config
 
 try:
@@ -210,19 +211,6 @@ def _pin_qt_palette(dark: bool) -> None:
         pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
         pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
     app.setPalette(pal)
-
-
-class VideoAnnotation(dnav.VideoAnnotation):
-    """
-    Enhanced VideoAnnotation with integrated post-processing.
-
-    This subclass extends dnav.VideoAnnotation by adding the Lucas-Kanade
-    moving average filter as a default post-processing method for smoothing trajectories.
-
-    Attributes:
-        postprocess: Function reference to lk_moving_average_filter for jitter reduction.
-    """
-    postprocess = lk_moving_average_filter
 
 
 # Phase / progress detection on DLC's stdout. We don't depend on any
@@ -1061,7 +1049,7 @@ def _make_enhance_widget_class():
     return EnhanceWidget
 
 
-class DUSTrack(dnav.VideoPointAnnotator):
+class DUSTrack(VideoPointAnnotator):
     """
     Interactive video point annotator with DeepLabCut integration.
     
@@ -2677,13 +2665,14 @@ class DUSTrack(dnav.VideoPointAnnotator):
             The canonical layer name on success, or ``None`` if the layer
             was already loaded.
         """
-        # NOTE: `dnav.VideoAnnotation`, not the dustrack subclass.
-        # ``lk_moving_average_filter`` returns the parent class (the
-        # subclass adds the ``postprocess`` hook only), so the narrower
-        # ``isinstance`` was silently falling through to ``str(obj)`` --
-        # producing layer names like ``"<datanavigator.pointtracking"``
-        # and an empty data dict (load() of a non-existent path).
-        if isinstance(ann_or_fname, dnav.VideoAnnotation):
+        # Before dustrack 1.2.0a1 dnav.VideoAnnotation was the parent
+        # and the dustrack subclass added the ``postprocess`` hook --
+        # ``lk_moving_average_filter`` would return the parent type so
+        # ``isinstance(..., dustrack.VideoAnnotation)`` silently fell
+        # through to ``str(obj)``. Now there's a single VideoAnnotation
+        # class (relocated to dustrack with postprocess attached at
+        # import time in dustrack/__init__.py); the check is unambiguous.
+        if isinstance(ann_or_fname, VideoAnnotation):
             fname = ann_or_fname.fname
         else:
             fname = str(ann_or_fname)

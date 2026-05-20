@@ -1,6 +1,61 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.2.0a1] - unreleased
+
+Structural refactor: DUSTrack absorbs the VideoPointAnnotator UI,
+VideoAnnotation / VideoAnnotations data containers, and Lucas-Kanade
+optical-flow helpers from datanavigator. After this release dustrack
+owns its DLC story end-to-end -- VideoAnnotation's DeepLabCut HDF5
+interop, the LK-RSTC `postprocess` hook, and the VPA labeling UI all
+live under one roof. datanavigator narrows to data-navigation
+primitives (browsers, asset managers, events).
+
+The files moved with **full git history preserved** via `git
+filter-repo` + `git merge --allow-unrelated-histories`. `git log
+--follow dustrack/pointtracking.py` traces every dnav-era commit
+(rc1-rc2 perf work, label-aware y-refit, `_TrackedFrameDict` mutation
+guard, etc.).
+
+### Changed
+- **Absorbed `datanavigator.pointtracking`** -- `VideoPointAnnotator`,
+  `VideoAnnotation`, `VideoAnnotations`, `_TrackedFrameDict` relocated
+  to `dustrack/pointtracking.py` (2813 LOC lifted via filter-repo).
+  VPA remains a subclass of `datanavigator.VideoBrowser` (cross-package
+  import); asset containers, events, utils, `_qt` scaffolding stay in
+  datanavigator. Direct construction is the building-block entry point
+  (`dustrack.VideoPointAnnotator(video, ["pn", "buffer"])`,
+  `dustrack.VideoAnnotation(json, video).to_signals()`);
+  `dustrack.open()` remains the workflow entry point.
+- **Absorbed `datanavigator.opticalflow`** -- `lucas_kanade`,
+  `lucas_kanade_rstc` relocated to `dustrack/opticalflow.py` (the
+  per-video shapes used by
+  `VideoPointAnnotator.predict_labels_with_lucas_kanade`). The
+  frame-list shapes `lucas_kanade_2` / `lucas_kanade_rstc_2` in
+  `dustrack/postprocess.py` are siblings (different signature,
+  shared algorithm); no rename.
+- **Dropped the `class VideoAnnotation(dnav.VideoAnnotation)` subclass
+  in `dlcinterface.py`** -- the `postprocess = lk_moving_average_filter`
+  hook now attaches directly to the relocated
+  `dustrack.pointtracking.VideoAnnotation` at import time inside
+  `dustrack/__init__.py`. Removes a long-running
+  `isinstance(obj, Subclass)`-narrowing trap (see
+  feedback_isinstance_subclass_narrowing) -- with only one
+  VideoAnnotation class, that whole class of bug is unrepresentable.
+- **Floor on `datanavigator>=1.5.0a1`** in pyproject.toml -- the dnav
+  release where pointtracking + opticalflow are dropped from the dnav
+  surface.
+
+### Added
+- Test relocations from datanavigator: `tests/test_pointtracking.py`,
+  `tests/test_opticalflow.py`, `tests/test_fast_render_parity.py`
+  (narrowed to Tier-1 only -- Tier-2 image-pane parity stays in dnav),
+  and `tests/qt_learning/{11,12,13,16,17,21}_*.py` perf/binding probes
+  (also via filter-repo, so `git log --follow` works on each).
+  New `tests/conftest.py` carries the shared helpers
+  (`simulate_key_press`, `simulate_key_press_at_xy`,
+  `simulate_mouse_click`, `setup_folders`, `close_figures`).
+
 ## [1.1.0] - 2026-05-19
 
 Minor release on top of 1.0.0. Two arcs from rc1 → rc2 fold into one

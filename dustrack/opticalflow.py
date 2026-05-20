@@ -1,12 +1,22 @@
 """
-This module provides functions to track points in a video using the Lucas-Kanade
-algorithm and apply the reverse sigmoid tracking correction (RSTC) as described
-in Magana-Salgado, et al., 2023.
+Per-video Lucas-Kanade helpers used by
+:py:meth:`dustrack.pointtracking.VideoPointAnnotator.predict_labels_with_lucas_kanade`.
+
+These are the *per-video* shapes (called with ``video, start_frame, end_frame, ...``).
+The frame-list shapes used by the postprocess pipeline
+(``lucas_kanade_2`` / ``lucas_kanade_rstc_2``) live in :py:mod:`dustrack.postprocess`
+-- they share the algorithm but take an explicit frame list instead of a video object.
+
+Lucas-Kanade + reverse sigmoid tracking correction (RSTC) is described in:
 
 Magana-Salgado, U., Namburi, P., Feigin-Almon, M., Pallares-Lopez, R., & Anthony, B (2023)
-A comparison of point-tracking algorithms in ultrasound videos from the upper limb. 
+A comparison of point-tracking algorithms in ultrasound videos from the upper limb.
 BioMedical Engineering OnLine, 22(1), 52.
 https://doi-org.libproxy.mit.edu/10.1186/s12938-023-01105-y
+
+Moved here from ``datanavigator.opticalflow`` in datanavigator 1.5.0a1 /
+dustrack 1.2.0a1 -- see CHANGELOG. Full pre-relocation history preserved
+via ``git log --follow dustrack/opticalflow.py``.
 """
 
 from __future__ import annotations
@@ -17,9 +27,9 @@ from typing import Union
 
 import cv2 as cv
 import numpy as np
-from .video_reader import VideoReader
+from datanavigator.video_reader import VideoReader
 
-from . import utils
+from datanavigator import utils
 
 
 def lucas_kanade(
