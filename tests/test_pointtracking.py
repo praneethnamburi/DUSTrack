@@ -927,21 +927,21 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
     - Cursor over ``_ax_image`` (Tier 2: aliased to ``_image_pane``) →
       ``_image_pane.reset_view()`` only; trace axes untouched.
     - Cursor over ``_ax_trace_x`` or ``_ax_trace_y`` → trace x reset to
-      ``(0, n_frames)``, y autoscaled (via scoped ``reset_axes(axis="y",
-      axes=[trace_x, trace_y])``); image pane untouched. Setting x to
+      ``(0, n_frames)``, y fit to the active label via
+      :meth:`_fit_y_to_active_label`; image pane untouched. Setting x to
       the full video range keeps frames outside the current annotation
       extent visible — the usual case when extending annotations to a
       new region. ``alt+r`` (the ``_reset_view_to_data_extent`` sibling)
-      covers the "shrink to data extent" use case.
+      covers the "shrink to data extent + union-y" use case.
     - Cursor undetectable (``event is None`` / ``event.inaxes is None``)
       → reset everything: image pane reset AND the same trace treatment
-      (x = full-video, y = autoscale).
+      (x = full-video, y = active-label fit).
 
     Agg-headless tests don't actually build a Qt image pane, so this
-    test stubs ``_image_pane`` and ``_ax_image`` onto the annotator
-    and intercepts ``reset_axes`` to record the scope kwarg per call.
+    test stubs ``_image_pane`` and ``_ax_image`` onto the annotator.
     Trace ``set_xlim`` is NOT intercepted; we read back the real xlim
-    to verify the full-video pin.
+    to verify the full-video pin. The active-label y-fit semantics are
+    covered by ``test_r_keybinding_trace_branch_fits_active_label_only``.
     """
     v = datanavigator.VideoPointAnnotator(vid_name=video_fname)
     n_frames = v.ann.n_frames
@@ -951,36 +951,22 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
     # In fast_render, _ax_image is mirrored to _image_pane after super().__init__.
     v._ax_image = mock_pane
 
-    reset_axes_calls = []
-    orig_reset_axes = v.reset_axes
-
-    def record_reset(axis="both", event=None, axes=None):
-        reset_axes_calls.append({"axis": axis, "axes": axes})
-
-    v.reset_axes = record_reset
-
     try:
         # Branch 1: cursor over image pane -> reset_view only, traces untouched.
         v._ax_trace_x.set_xlim(15, 40)
         event_img = simulate_key_press(v.figure, key="r", inaxes=mock_pane)
         v._reset_view_all(event_img)
         assert mock_pane.reset_view.call_count == 1
-        assert reset_axes_calls == [], (
-            f"Image-pane branch must not call reset_axes; got {reset_axes_calls}"
-        )
         assert v._ax_trace_x.get_xlim() == (15, 40), (
             "Image-pane branch must NOT touch trace xlim"
         )
 
-        # Branch 2a: cursor over _ax_trace_x -> xlim=(0, n_frames), reset_axes(y).
+        # Branch 2a: cursor over _ax_trace_x -> xlim=(0, n_frames), no image pane.
         event_tx = simulate_key_press(v.figure, key="r", inaxes=v._ax_trace_x)
         v._reset_view_all(event_tx)
         assert mock_pane.reset_view.call_count == 1, (
             "Trace branch must not touch the image pane"
         )
-        assert len(reset_axes_calls) == 1
-        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
-        assert reset_axes_calls[-1]["axis"] == "y"
         assert v._ax_trace_x.get_xlim() == (0, n_frames), (
             f"Trace branch must pin xlim to (0, {n_frames}); "
             f"got {v._ax_trace_x.get_xlim()}"
@@ -991,18 +977,12 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
         event_ty = simulate_key_press(v.figure, key="r", inaxes=v._ax_trace_y)
         v._reset_view_all(event_ty)
         assert mock_pane.reset_view.call_count == 1
-        assert len(reset_axes_calls) == 2
-        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
-        assert reset_axes_calls[-1]["axis"] == "y"
         assert v._ax_trace_x.get_xlim() == (0, n_frames)
 
         # Branch 3a: event is None -> reset everything, traces to full video.
         v._ax_trace_x.set_xlim(10, 20)
         v._reset_view_all(None)
         assert mock_pane.reset_view.call_count == 2
-        assert len(reset_axes_calls) == 3
-        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
-        assert reset_axes_calls[-1]["axis"] == "y"
         assert v._ax_trace_x.get_xlim() == (0, n_frames)
 
         # Branch 3b: event with inaxes=None -> same fallback.
@@ -1010,12 +990,8 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
         event_none = simulate_key_press(v.figure, key="r", inaxes=None)
         v._reset_view_all(event_none)
         assert mock_pane.reset_view.call_count == 3
-        assert len(reset_axes_calls) == 4
-        assert reset_axes_calls[-1]["axes"] == [v._ax_trace_x, v._ax_trace_y]
-        assert reset_axes_calls[-1]["axis"] == "y"
         assert v._ax_trace_x.get_xlim() == (0, n_frames)
     finally:
-        v.reset_axes = orig_reset_axes
         plt.close(v.figure)
 
 
@@ -1090,6 +1066,248 @@ def test_alt_r_keybinding_cursor_aware_data_extent_dispatch(video_fname):
     finally:
         v.reset_axes = orig_reset_axes
         plt.close(v.figure)
+
+
+def test_fit_y_to_active_label_active_only(video_fname):
+    """Helper fits y to the active label, not the union of all labels.
+
+    1.4.0rc2 multi-label workflow: switching active label between two
+    labels with disjoint y ranges should land the new label inside the
+    y window. Asserts the helper does NOT union with other labels'
+    extents.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    )
+    # Label "0" data clusters at y ~ (0, 10); label "1" data clusters
+    # at y ~ (1000, 1010). Use x ~ (0, 10) for both labels so the x
+    # axis check is independent of the label.
+    for f in range(5):
+        v.ann.add([float(f), float(f)], "0", f)
+        v.ann.add([float(f), 1000.0 + float(f)], "1", f + 10)
+    v.update()
+
+    v.statevariables["annotation_label"].set_state("0")
+    v._fit_y_to_active_label()
+    lo, hi = v._ax_trace_y.get_ylim()
+    assert lo < 0.5, f"Label-0 fit should bracket below y=0, got lo={lo}"
+    assert hi < 11.5, (
+        f"Label-0 fit must NOT union with label-1's ~1000 extent; got hi={hi}"
+    )
+
+    v.statevariables["annotation_label"].set_state("1")
+    v._fit_y_to_active_label()
+    lo, hi = v._ax_trace_y.get_ylim()
+    assert lo > 50, (
+        f"Label-1 fit must NOT union with label-0's ~0 extent; got lo={lo}"
+    )
+    assert 1000.0 <= hi or hi >= 1004.0, (
+        f"Label-1 fit should bracket above y=1004, got hi={hi}"
+    )
+    plt.close(v.figure)
+
+
+def test_fit_y_to_active_label_with_overlay(video_fname):
+    """Helper unions active + overlay layers for the active label only.
+
+    Active layer's label "0" has y ~ (0, 10); overlay layer's label "0"
+    has y ~ (5, 25). Helper should fit y to (0, 25) -- the union for
+    the active label across the two layers.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["primary", "overlay"], n_labels=1,
+    )
+    primary = v.annotations["primary"]
+    overlay = v.annotations["overlay"]
+    for f in range(5):
+        primary.add([float(f), float(f) * 2.0], "0", f)        # y ~ (0, 8)
+        overlay.add([float(f), 5.0 + float(f) * 5.0], "0", f)  # y ~ (5, 25)
+    v.statevariables["annotation_overlay"].set_state("overlay")
+    v.update()
+
+    v._fit_y_to_active_label()
+    lo, hi = v._ax_trace_y.get_ylim()
+    assert lo <= 0.5, f"Union fit should bracket below y=0, got lo={lo}"
+    assert hi >= 24.5, f"Union fit should bracket above y=25, got hi={hi}"
+    plt.close(v.figure)
+
+
+def test_fit_y_to_active_label_empty_is_noop(video_fname):
+    """No data for active label → helper short-circuits, leaves ylim alone."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["empty"], n_labels=1,
+    )
+    # No annotations added; label "0" has empty data.
+    v._ax_trace_y.set_ylim(-100, 100)
+    v._ax_trace_x.set_ylim(-50, 50)
+    v._fit_y_to_active_label()
+    assert v._ax_trace_y.get_ylim() == (-100, 100), (
+        f"Empty-label helper must not touch ylim; got {v._ax_trace_y.get_ylim()}"
+    )
+    assert v._ax_trace_x.get_ylim() == (-50, 50)
+    plt.close(v.figure)
+
+
+def test_label_switch_triggers_yfit(video_fname):
+    """Switching annotation_label fires the on_change hook → helper refits y.
+
+    Two labels with disjoint y ranges; switching active label should
+    land the new label inside the y window. Also verifies the round-trip
+    (back to the original label refits).
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    )
+    for f in range(5):
+        v.ann.add([float(f), float(f)], "0", f)
+        v.ann.add([float(f), 1000.0 + float(f)], "1", f + 10)
+    v.update()
+    # Bootstrap y-fit for label "0" via Manual y-policy.
+    lo_0, hi_0 = v._ax_trace_y.get_ylim()
+    assert lo_0 < 0.5 and hi_0 < 12.5, (
+        f"Bootstrap should have fit ylim around (0, 4); got ({lo_0}, {hi_0})"
+    )
+
+    # Switch to "1" via set_state -- this fires _on_active_label_change.
+    v.statevariables["annotation_label"].set_state("1")
+    lo_1, hi_1 = v._ax_trace_y.get_ylim()
+    assert lo_1 > 50, (
+        f"Label-switch hook should have refit ylim to label-1's ~1000 "
+        f"region; got ({lo_1}, {hi_1})"
+    )
+
+    # Back to "0": hook should refit again.
+    v.statevariables["annotation_label"].set_state("0")
+    lo_back, hi_back = v._ax_trace_y.get_ylim()
+    assert lo_back < 0.5 and hi_back < 12.5, (
+        f"Returning to label 0 should refit; got ({lo_back}, {hi_back})"
+    )
+    plt.close(v.figure)
+
+
+def test_layer_switch_does_not_trigger_yfit(video_fname):
+    """Switching annotation_layer / annotation_overlay must NOT refit y.
+
+    The layer-flip comparison workflow (DUSTrack: pre-correction vs.
+    post-correction) needs the y window to stay put so the two layers
+    are visually comparable on the same scale. The on_change hook is
+    wired only to annotation_label + label_range; annotation_layer /
+    annotation_overlay are explicitly NOT hooked.
+    """
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["a", "b"], n_labels=1,
+    )
+    layer_a = v.annotations["a"]
+    layer_b = v.annotations["b"]
+    for f in range(5):
+        layer_a.add([float(f), float(f)], "0", f)              # y ~ (0, 5)
+        layer_b.add([float(f), 100.0 + float(f)], "0", f)      # y ~ (100, 105)
+    v.update()
+
+    # User pans y manually after the bootstrap fit.
+    v._ax_trace_y.set_ylim(-5, 15)
+    v._ax_trace_x.set_ylim(-5, 15)
+
+    # Switch primary layer: should not refit.
+    v.statevariables["annotation_layer"].set_state("b")
+    assert v._ax_trace_y.get_ylim() == (-5, 15), (
+        f"Primary-layer switch must not refit ylim; got {v._ax_trace_y.get_ylim()}"
+    )
+
+    # Switch overlay: should not refit.
+    v.statevariables["annotation_overlay"].set_state("a")
+    assert v._ax_trace_y.get_ylim() == (-5, 15), (
+        f"Overlay switch must not refit ylim; got {v._ax_trace_y.get_ylim()}"
+    )
+    plt.close(v.figure)
+
+
+def test_label_range_switch_triggers_yfit(video_fname):
+    """Cycling label_range must fire the on_change hook (decade switcher)."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"], n_labels=1,
+    )
+    # Add label "0" data in y ~ (0, 5) and label "10" data in y ~ (1000, 1005).
+    for f in range(5):
+        v.ann.add([float(f), float(f)], "0", f)
+    v.ann.add_label("10")
+    for f in range(5):
+        v.ann.add([float(f), 1000.0 + float(f)], "10", f + 10)
+    v.update()
+
+    # increment_label_range cycles label_range from 0 to 1; the hook
+    # should land the y view on label "10"'s ~1000 region.
+    v.increment_label_range()
+    assert v._current_label == "10"
+    lo, hi = v._ax_trace_y.get_ylim()
+    assert lo > 50 and hi >= 1004.0, (
+        f"label_range cycle should have refit ylim to label-10's ~1000 "
+        f"region; got ({lo}, {hi})"
+    )
+
+    # Decrement back: should refit to label "0".
+    v.decrement_label_range()
+    assert v._current_label == "0"
+    lo_back, hi_back = v._ax_trace_y.get_ylim()
+    assert lo_back < 0.5 and hi_back < 7.0, (
+        f"Returning to label 0 should refit; got ({lo_back}, {hi_back})"
+    )
+    plt.close(v.figure)
+
+
+def test_r_keybinding_trace_branch_fits_active_label_only(video_fname):
+    """``r`` over a trace fits y to the active label only, not the union."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    )
+    for f in range(5):
+        v.ann.add([float(f), float(f)], "0", f)               # y ~ (0, 5)
+        v.ann.add([float(f), 1000.0 + float(f)], "1", f + 10) # y ~ (1000, 1005)
+    v.update()
+    n_frames = v.ann.n_frames
+
+    # Active label "0"; user pans y to something irrelevant.
+    v._ax_trace_y.set_ylim(-500, -100)
+    v._ax_trace_x.set_ylim(-500, -100)
+
+    event_ty = simulate_key_press(v.figure, key="r", inaxes=v._ax_trace_y)
+    v._reset_view_all(event_ty)
+
+    assert v._ax_trace_x.get_xlim() == (0, n_frames)
+    lo, hi = v._ax_trace_y.get_ylim()
+    # Must bracket label "0"'s data
+    assert lo < 0.5, f"r should fit y to label 0 (~0); got lo={lo}"
+    # Must NOT extend into label "1"'s ~1000 region
+    assert hi < 12.5, (
+        f"r on trace must fit active label only, not union; got hi={hi}"
+    )
+    plt.close(v.figure)
+
+
+def test_alt_r_keybinding_trace_branch_keeps_union(video_fname):
+    """``alt+r`` over a trace keeps the union autoscale (all labels)."""
+    v = datanavigator.VideoPointAnnotator(
+        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    )
+    for f in range(5):
+        v.ann.add([float(f), float(f)], "0", f)               # y ~ (0, 5)
+        v.ann.add([float(f), 1000.0 + float(f)], "1", f + 10) # y ~ (1000, 1005)
+    v.update()
+
+    # Active label "0"; user pans y away.
+    v._ax_trace_y.set_ylim(-500, -100)
+
+    event_ty = simulate_key_press(v.figure, key="alt+r", inaxes=v._ax_trace_y)
+    v._reset_view_to_data_extent(event_ty)
+
+    lo, hi = v._ax_trace_y.get_ylim()
+    # Union autoscale must bracket BOTH labels' data (~0 and ~1005).
+    assert lo < 0.5, f"alt+r union y should bracket label-0 (~0); got lo={lo}"
+    assert hi > 500, (
+        f"alt+r union y should bracket label-1 (~1005), not just active label; "
+        f"got hi={hi}"
+    )
+    plt.close(v.figure)
 
 
 def test_video_annotation_display_update_visibility(video_fname):

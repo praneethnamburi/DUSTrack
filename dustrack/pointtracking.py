@@ -152,6 +152,24 @@ class VideoPointAnnotator(VideoBrowser):
         self.statevariables["label_range"].set_state(int(first_label) // 10)
         self.update_annotation_label_states()
         self.statevariables.add("number_keys", ["select", "place"], widget="toggle")
+
+        # Label-aware y-refit (1.4.0rc2): wire after bootstrap set_state
+        # above so the init-time label_range pin doesn't trigger a
+        # spurious first fit. Both annotation_label and label_range
+        # participate in :py:attr:`_current_label`, so both feed the
+        # hook; :meth:`_on_active_label_change` de-dupes via
+        # ``_last_active_label`` so the second callback fired by an
+        # increment_label_range / decrement_label_range / digit-key
+        # path is a no-op when the derived label hasn't actually
+        # changed. Initial value: the current label at registration
+        # time, so a user-driven set_state to the same label is a no-op.
+        self._last_active_label = self._current_label
+        self.statevariables["annotation_label"].add_on_change(
+            self._on_active_label_change
+        )
+        self.statevariables["label_range"].add_on_change(
+            self._on_active_label_change
+        )
         # rc2: single show() call regardless of fast_render. Inside,
         # StateVariables.show() tries the Qt-native dock widget first
         # (mounts under the buttons column for both tiers) and falls
@@ -593,11 +611,11 @@ class VideoPointAnnotator(VideoBrowser):
             # inherited binding (no image zoom to reset).
             self.add_key_binding(
                 "r", self._reset_view_all,
-                "Reset view under cursor (traces use full-video x)",
+                "Reset view under cursor (traces: full-video x, active label y)",
             )
             self.add_key_binding(
                 "alt+r", self._reset_view_to_data_extent,
-                "Reset view under cursor (traces fit to data extent)",
+                "Reset view under cursor (traces: data-extent x, all-labels y)",
             )
 
     def _reset_view_all(self, event: Any | None = None) -> None:
@@ -612,17 +630,19 @@ class VideoPointAnnotator(VideoBrowser):
           only; trace axes untouched.
         - Cursor over a trace axis (``inaxes in (self._ax_trace_x,
           self._ax_trace_y)``) → trace x set to ``(0, ann.n_frames)`` and
-          y autoscaled to data. Image pane untouched. Setting x to the
-          full video range (rather than autoscaling to the annotation
-          data extent) keeps frames *outside* the current annotation
-          envelope visible, which is the usual case when extending
-          annotations to a new region. See ``_reset_view_to_data_extent``
-          for the autoscale-x sibling, bound to ``alt+r``.
+          y fit to the **active label** (active + overlay layers, if both
+          carry it; see :meth:`_fit_y_to_active_label`). Image pane
+          untouched. Setting x to the full video range (rather than
+          autoscaling to the annotation data extent) keeps frames
+          *outside* the current annotation envelope visible, which is the
+          usual case when extending annotations to a new region. See
+          ``_reset_view_to_data_extent`` for the autoscale-x +
+          union-y sibling, bound to ``alt+r``.
         - Cursor anywhere else / event undetectable (``event is None`` or
           ``event.inaxes is None`` or some unrelated mpl axis) → reset
           everything: image pane reset AND the same trace treatment
-          (x = full-video, y = autoscale). Preserves muscle memory for
-          users who hit ``r`` while hovering a button or off-figure.
+          (x = full-video, y = active-label fit). Preserves muscle memory
+          for users who hit ``r`` while hovering a button or off-figure.
         """
         inaxes = getattr(event, "inaxes", None) if event is not None else None
         if inaxes is self._ax_image:
@@ -635,13 +655,16 @@ class VideoPointAnnotator(VideoBrowser):
         self._reset_traces_to_full_video(event=event)
 
     def _reset_view_to_data_extent(self, event: Any | None = None) -> None:
-        """Cursor-aware ``alt+r`` dispatch (Tier 2 only); traces autoscale to data.
+        """Cursor-aware ``alt+r`` dispatch (Tier 2 only); union autoscale.
 
         Same dispatch structure as :meth:`_reset_view_all`, but the trace
-        branch and the fallback autoscale both x and y to the data extent
-        instead of pinning x to the full video range. Useful for shrinking
-        the trace view to the annotated region when the full video is
-        much longer than the annotated window.
+        branch + fallback autoscale both x and y to the **union** of all
+        visible data (active layer + overlay's full label set), not just
+        the active label. Use when you want to confirm no label has gone
+        catastrophically offscreen, or when you genuinely want to see
+        several labels at the same scale. Also useful for shrinking the
+        trace view to the annotated region when the full video is much
+        longer than the annotated window.
         """
         inaxes = getattr(event, "inaxes", None) if event is not None else None
         if inaxes is self._ax_image:
@@ -658,21 +681,100 @@ class VideoPointAnnotator(VideoBrowser):
         self.reset_axes(axis="both", event=event)
 
     def _reset_traces_to_full_video(self, event: Any | None = None) -> None:
-        """Trace pair: x = ``(0, ann.n_frames)``, y autoscaled to data.
+        """Trace pair: x = ``(0, ann.n_frames)``, y fit to active label.
 
-        Helper for the ``r`` dispatch trace + fallback branches. Setting
-        xlim flips ``autoscalex_on`` to ``False`` on the shared trace
-        pair (via mpl's sharex propagation); calling ``reset_axes`` with
-        ``axis="y"`` re-enables ``autoscaley_on`` and refits y from the
-        current annotation data, dovetailing with the rc2 Manual
-        y-policy fix (one-shot refit on the next mutation).
+        Helper for the ``r`` dispatch trace + fallback branches. The y
+        branch fits only the active label (across the active layer +
+        overlay layer, if both carry it) rather than autoscaling to the
+        union of every label's data extent. Multi-label workflow:
+        pressing ``r`` over a trace gives a comfortable view of what the
+        user is actively editing instead of compressing it into the
+        envelope of every other label. Single-label sessions: collapses
+        to "fit to all data" -- the helper walks exactly one label.
+
+        For the union-autoscale behaviour, ``alt+r`` is the sibling
+        (:meth:`_reset_view_to_data_extent`).
         """
         self._ax_trace_x.set_xlim(0, self.ann.n_frames)
-        self.reset_axes(
-            axis="y",
-            event=event,
-            axes=[self._ax_trace_x, self._ax_trace_y],
-        )
+        self._fit_y_to_active_label(event=event)
+
+    def _fit_y_to_active_label(self, event: Any | None = None) -> None:
+        """One-shot y-refit on both trace axes, scoped to the active label.
+
+        Computes y-extent from the active layer's active-label trace
+        (and the overlay layer's same-named label, if an overlay is set
+        and contains the label) with a 5% margin, then ``set_ylim`` on
+        both trace axes. No-op if neither layer has data for the active
+        label (helper short-circuits before touching ylim).
+
+        Mirrors the "first cache miss with real data fits y" bootstrap
+        in :meth:`update_frame_marker`: a deliberate one-shot fit that
+        leaves the Manual y-policy guard satisfied (``set_ylim`` flips
+        ``autoscaley_on=False`` as a side effect, so subsequent
+        mutations / label switches / FOI toggles don't disturb the
+        view). Pair with the label-switch hook
+        (:meth:`_on_active_label_change`) and the ``r`` / ``alt+r``
+        dispatch.
+        """
+        label = self._current_label
+        layers = [self.ann]
+        overlay_name = self._current_overlay
+        if overlay_name is not None and overlay_name != self._current_layer:
+            overlay = self.annotations[overlay_name]
+            if label in overlay.labels:
+                layers.append(overlay)
+
+        y_x_vals: list[np.ndarray] = []
+        y_y_vals: list[np.ndarray] = []
+        for ann in layers:
+            if label not in ann.labels:
+                continue
+            trace = ann.to_trace(label)  # (n_frames, 2)
+            col_x, col_y = trace[:, 0], trace[:, 1]
+            col_x = col_x[~np.isnan(col_x)]
+            col_y = col_y[~np.isnan(col_y)]
+            if col_x.size:
+                y_x_vals.append(col_x)
+            if col_y.size:
+                y_y_vals.append(col_y)
+
+        def _apply(ax: plt.Axes, parts: list[np.ndarray]) -> None:
+            if not parts:
+                return
+            cat = np.concatenate(parts)
+            lo, hi = float(cat.min()), float(cat.max())
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                return
+            if hi == lo:
+                pad = max(abs(lo) * 0.05, 0.5)
+            else:
+                pad = (hi - lo) * 0.05
+            ax.set_ylim(lo - pad, hi + pad)
+
+        _apply(self._ax_trace_x, y_x_vals)
+        _apply(self._ax_trace_y, y_y_vals)
+
+    def _on_active_label_change(self) -> None:
+        """StateVariable on_change hook: refit y only on real label change.
+
+        Wired (in :meth:`__init__`) to both ``annotation_label`` and
+        ``label_range`` statevariables. Each callback compares the
+        derived ``_current_label`` to the previously-seen value cached
+        in ``_last_active_label``; if it changed, dispatches the
+        one-shot y-refit via :meth:`_fit_y_to_active_label`. No-op when
+        the label hasn't actually changed (e.g. ``increment_label_range``
+        fires set_state on ``annotation_label`` after ``cycle()`` on
+        ``label_range``; the second callback sees the same
+        ``_current_label`` and short-circuits).
+
+        Switching primary layer or overlay does NOT route through here
+        -- the layer-flip comparison workflow keeps its current y window.
+        """
+        new_label = self._current_label
+        if new_label == self._last_active_label:
+            return
+        self._last_active_label = new_label
+        self._fit_y_to_active_label()
 
     def _add_default_buttons(self) -> None:
         """Install the default action buttons appended after ``__init__``.
