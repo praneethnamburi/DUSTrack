@@ -83,21 +83,29 @@ from .dlcinterface import DUSTrack, DLCProject, open
 #   * ``patch_dlc_decoder()`` -- replaces DLC's
 #     ``cv2.VideoCapture``-backed ``VideoReader`` with a dnav PyAV+TOC
 #     reader so annotation, training-frame extraction, and inference
-#     all go through one decode path. NOT applied automatically. The
-#     2026-05-20 parity test confirmed bit-exact agreement with cv2 on
-#     a 500-frame CFR clip (so this is a coherence improvement, not a
-#     correctness *fix* on our files), but the end-to-end
-#     ``decoder_patch_bench_rc14.py`` measured a -42% inference
-#     regression on the same clip. Root cause: the test (and the
-#     pia02 production video) is encoded with avg ~1 frame/packet,
-#     which puts dnav's ``PyAVReaderIndexed._seek_packet`` on a
-#     per-frame path that creates a fresh ``container.demux()``
-#     iterator on every call. The 154 fps inference ceiling is decode-
-#     bound when the reader streams at ~175 fps. Call manually with
-#     ``patch_dlc_decoder()`` to opt in to unified-decoder semantics
-#     when the perf cost is acceptable or when reading codecs whose
-#     cv2 vs PyAV indexing might diverge.
+#     all go through one decode path. Auto-applied. Three parity
+#     tests on 2026-05-20 confirmed semantic transparency on the
+#     pia02 production format (1-frame-per-packet h264, common for
+#     medical/scientific video):
+#       - decoder parity: 50/50 frames bit-exact at the pixel level
+#         (`parity_decoder.json`)
+#       - inference output parity: 499/500 frames bit-exact keypoints,
+#         max diff 1.5e-5 px on the outlier (pytorch nondeterminism,
+#         not the decoder; `parity_inference_output.json`)
+#       - training-extraction parity: 50/50 frames bit-exact through
+#         `set_to_frame + read_frame(crop=...)` (the access pattern
+#         used by `extract_frames`; `parity_training_extract.json`)
+#     End-to-end inference cost is ~42% (154 -> 88 fps at bs=4) on
+#     this codec class, because PyAV's `to_ndarray(rgb24)` swscale
+#     conversion is ~3 ms/frame vs cv2's ~0.5 ms/frame. The
+#     architectural coherence -- one decoder across annotation,
+#     training, and inference, with no cross-decoder frame-indexing
+#     risk -- is judged worth the cost. On a 30k-frame production
+#     video the per-inference penalty is ~2.4 minutes. Opt-out:
+#     ``DUSTRACK_DISABLE_DLC_DECODER_PATCH=1`` if a future codec
+#     edge-case bites.
 from . import _dlc_patch as _dlc_patch  # noqa: F401
+_dlc_patch.patch_dlc_decoder(verbose=False)
 
 # Attach lk_moving_average_filter as VideoAnnotation's default postprocess
 # hook. Done here (not in pointtracking.py) so pointtracking stays free of
