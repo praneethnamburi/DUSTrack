@@ -35,7 +35,7 @@ from datanavigator.videos import VideoBrowser
 from dustrack.opticalflow import lucas_kanade, lucas_kanade_rstc
 
 
-class VideoPointAnnotator(VideoBrowser):
+class _DUSTrackBase(VideoBrowser):
     """
     Add point annotations to videos.
 
@@ -216,7 +216,7 @@ class VideoPointAnnotator(VideoBrowser):
                 self.figure.canvas.mpl_connect("button_press_event", self.go_to_frame)
             )
 
-        if self.__class__.__name__ == "VideoPointAnnotator":
+        if self.__class__.__name__ == "_DUSTrackBase":
             plt.show(block=False)
             self.update()
             plt.setp(self._ax_trace_x.get_xticklabels(), visible=False)
@@ -225,7 +225,7 @@ class VideoPointAnnotator(VideoBrowser):
     @classmethod
     def from_annotations(
         cls, annotations: list[VideoAnnotation], *args, **kwargs
-    ) -> VideoPointAnnotator:
+    ) -> _DUSTrackBase:
         if isinstance(annotations, VideoAnnotation):
             annotations = [annotations]
         video_names = {a.video.fname for a in annotations}
@@ -1671,7 +1671,7 @@ class VideoAnnotation:
             self.video = None
 
         # Bumped on every mutation of self.data. Consumers (e.g.
-        # VideoPointAnnotator.update_frame_marker) read this to invalidate
+        # _DUSTrackBase.update_frame_marker) read this to invalidate
         # caches keyed on per-label trace contents. Over-invalidates on
         # ordering-only changes (sort_labels / sort_data); under-invalidates
         # would be a correctness bug. Hoisted before the data setter so
@@ -2217,7 +2217,7 @@ class VideoAnnotation:
         Schema-tolerant: a label absent from :attr:`data` is treated as
         all-frames-unannotated and returns the full NaN array. Lets
         cross-layer trace consumers
-        (e.g. :meth:`VideoPointAnnotator.update_frame_marker`, which
+        (e.g. :meth:`_DUSTrackBase.update_frame_marker`, which
         iterates every annotation layer with one shared label) survive
         a layer that legitimately doesn't carry the active label --
         either a freshly created layer or a layer where the user
@@ -2792,7 +2792,7 @@ class VideoAnnotations(AssetContainer):
         ``names`` must be a permutation of the current
         :attr:`AssetContainer.names`. Callers that own the rotation of a
         ``annotation_layer`` / ``annotation_overlay``
-        :class:`StateVariable` (i.e. :class:`VideoPointAnnotator` and
+        :class:`StateVariable` (i.e. :class:`_DUSTrackBase` and
         subclasses) are responsible for resyncing those after this
         returns -- ``reorder`` only manages the membership order.
         """
@@ -2813,7 +2813,7 @@ if __name__ == "__main__":
     sys.path.append(r"C:\dev\datanavigator")
     import datanavigator
     video_fname = datanavigator.get_example_video()
-    v = VideoPointAnnotator(video_fname, "pn2", n_labels=2)
+    v = _DUSTrackBase(video_fname, "pn2", n_labels=2)
     for ann in v.annotations:
         ann.add_label("3")
     v.update()

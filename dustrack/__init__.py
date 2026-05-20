@@ -18,10 +18,6 @@ post-processing.
     Interface for training and managing DeepLabCut pose estimation models.
     Requires the ``deeplabcut`` package to be installed.
 
-:class:`~dustrack.pointtracking.VideoPointAnnotator`
-    Lightweight point-annotation UI (no DLC ceremony). Use directly for
-    ad-hoc labeling -- ``dustrack.VideoPointAnnotator(video, ["pn"])``.
-
 :class:`~dustrack.pointtracking.VideoAnnotation`
     Annotation-data container with DeepLabCut HDF5 interop. Use directly
     for programmatic loads -- ``dustrack.VideoAnnotation(json_path, video).to_signals()``.
@@ -55,9 +51,6 @@ Example:
     >>> tracker = dustrack.open('video.mp4', 'manual')
     >>> tracker.process_with_lk()
     >>>
-    >>> # Lightweight ad-hoc UI (no DLC project, no auto-detection):
-    >>> ann = dustrack.VideoPointAnnotator('video.mp4', ["pn", "buffer"])
-    >>>
     >>> # Programmatic load (no UI):
     >>> va = dustrack.VideoAnnotation('video_annotations_pn.json', 'video.mp4')
     >>> signals = va.to_signals()
@@ -70,7 +63,7 @@ from .__version__ import __version__
 # from opticalflow; postprocess pulls VideoAnnotation from pointtracking;
 # dlcinterface pulls pointtracking + postprocess.
 from .opticalflow import lucas_kanade, lucas_kanade_rstc
-from .pointtracking import VideoAnnotation, VideoAnnotations, VideoPointAnnotator
+from .pointtracking import VideoAnnotation, VideoAnnotations
 from .postprocess import lk_moving_average_filter
 from .dlcinterface import DUSTrack, DLCProject, open
 

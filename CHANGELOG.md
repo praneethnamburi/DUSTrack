@@ -56,6 +56,21 @@ guard, etc.).
   (`simulate_key_press`, `simulate_key_press_at_xy`,
   `simulate_mouse_click`, `setup_folders`, `close_figures`).
 
+### Removed
+- **`dustrack.VideoPointAnnotator`** removed from the public surface.
+  Direct VPA instantiation was confirmed buggy in practice (the
+  mpl-fallback path or some half-initialized state expectation that
+  DUSTrack's `__init__` resolves on the subclass side); the class is
+  renamed to `_DUSTrackBase` in `dustrack/pointtracking.py` to signal
+  "internal -- the base that DUSTrack subclasses, not a usable
+  building block." Drop-in replacement at every callsite is
+  `dustrack.DUSTrack(...)`, whose constructor has the same
+  `(vid_name, annotation_names, ...)` signature. `dustrack.VideoAnnotation`
+  + `dustrack.VideoAnnotations` (the data containers) stay public --
+  they're the programmatic surface used by ~14 portfolio files. The
+  internal class is still reachable as
+  `dustrack.pointtracking._DUSTrackBase` for tests + debugging.
+
 ## [1.1.0] - 2026-05-19
 
 Minor release on top of 1.0.0. Two arcs from rc1 → rc2 fold into one

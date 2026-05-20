@@ -28,7 +28,7 @@ import datanavigator as dnav
 from datanavigator import VideoReader, cpu
 
 from .postprocess import lk_moving_average_filter
-from .pointtracking import VideoAnnotation, VideoAnnotations, VideoPointAnnotator
+from .pointtracking import VideoAnnotation, VideoAnnotations, _DUSTrackBase
 from . import _config
 
 try:
@@ -1049,7 +1049,7 @@ def _make_enhance_widget_class():
     return EnhanceWidget
 
 
-class DUSTrack(VideoPointAnnotator):
+class DUSTrack(_DUSTrackBase):
     """
     Interactive video point annotator with DeepLabCut integration.
     
@@ -1218,7 +1218,7 @@ class DUSTrack(VideoPointAnnotator):
         self.buttons.add_separator(style="double")
 
         # --- Utilities + Swap layers -----------------------------------
-        # Refresh UI is normally installed by VideoPointAnnotator's
+        # Refresh UI is normally installed by _DUSTrackBase's
         # _add_default_buttons hook; DUSTrack overrides that hook to
         # no-op (see _add_default_buttons below) so this slot keeps the
         # button next to Keyboard shortcuts as a "utility" pair just
@@ -1258,7 +1258,7 @@ class DUSTrack(VideoPointAnnotator):
     def _add_default_buttons(self) -> None:
         """Override the parent's default-button hook to a no-op.
 
-        VideoPointAnnotator installs ``Refresh UI`` immediately at
+        _DUSTrackBase installs ``Refresh UI`` immediately at
         end of ``__init__``; DUSTrack's rc2 sidebar instead places it
         next to ``Keyboard shortcuts`` as a utility pair just above
         ``Swap layers`` (see button-add block in ``__init__``).
@@ -3665,7 +3665,7 @@ class DLCProject:
     
     def copy_annotations(self, video_name: Union[Path, list]):
         """
-        Copy DUSTrack/VideoPointAnnotator JSON files into project's video folder.
+        Copy DUSTrack/_DUSTrackBase JSON files into project's video folder.
         
         Args:
             video_name: Single video path or list of video paths.
