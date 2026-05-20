@@ -83,29 +83,27 @@ from .dlcinterface import DUSTrack, DLCProject, open
 #   * ``patch_dlc_decoder()`` -- replaces DLC's
 #     ``cv2.VideoCapture``-backed ``VideoReader`` with a dnav PyAV+TOC
 #     reader so annotation, training-frame extraction, and inference
-#     all go through one decode path. Auto-applied. Three parity
-#     tests on 2026-05-20 confirmed semantic transparency on the
-#     pia02 production format (1-frame-per-packet h264, common for
-#     medical/scientific video):
-#       - decoder parity: 50/50 frames bit-exact at the pixel level
-#         (`parity_decoder.json`)
-#       - inference output parity: 499/500 frames bit-exact keypoints,
-#         max diff 1.5e-5 px on the outlier (pytorch nondeterminism,
-#         not the decoder; `parity_inference_output.json`)
-#       - training-extraction parity: 50/50 frames bit-exact through
-#         `set_to_frame + read_frame(crop=...)` (the access pattern
-#         used by `extract_frames`; `parity_training_extract.json`)
-#     End-to-end inference cost is ~42% (154 -> 88 fps at bs=4) on
-#     this codec class, because PyAV's `to_ndarray(rgb24)` swscale
-#     conversion is ~3 ms/frame vs cv2's ~0.5 ms/frame. The
-#     architectural coherence -- one decoder across annotation,
-#     training, and inference, with no cross-decoder frame-indexing
-#     risk -- is judged worth the cost. On a 30k-frame production
-#     video the per-inference penalty is ~2.4 minutes. Opt-out:
-#     ``DUSTRACK_DISABLE_DLC_DECODER_PATCH=1`` if a future codec
-#     edge-case bites.
+#     all go through one decode path. NOT applied automatically. Three
+#     parity tests on 2026-05-20 confirmed semantic transparency on
+#     the pia02 production format (1-frame-per-packet h264, common
+#     for medical/scientific video):
+#       - decoder pixel parity      : 50/50 bit-exact
+#       - inference output parity   : 499/500 bit-exact predictions
+#         (1 frame at 1.5e-5 px from pytorch nondeterminism, not the
+#         decoder)
+#       - training-extraction parity: 50/50 bit-exact
+#     ...and the end-to-end perf cost is ~42% (154 -> 88 fps at bs=4)
+#     on this codec because PyAV's ``to_ndarray(rgb24)`` swscale is
+#     ~3.6 ms/frame vs cv2's ~0.5 ms/frame. Since the outputs are
+#     bit-exact, defaulting to cv2 (the faster path) is the right
+#     call. Use ``patch_dlc_decoder()`` as a power-user / debugging
+#     toggle when you want unified-decoder semantics — e.g. to test a
+#     codec class we haven't validated, or to A/B-check whether a
+#     suspicious result is decoder-dependent.
+#
+#     Artefacts at S:/_corpus/dustrack/dlc_inference_bench_2026-05-20/
+#     (parity_*.{py,json}, decoder_patch_bench_rc14.py, README.md).
 from . import _dlc_patch as _dlc_patch  # noqa: F401
-_dlc_patch.patch_dlc_decoder(verbose=False)
 
 # Attach lk_moving_average_filter as VideoAnnotation's default postprocess
 # hook. Done here (not in pointtracking.py) so pointtracking stays free of
