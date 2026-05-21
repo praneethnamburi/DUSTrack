@@ -1288,6 +1288,24 @@ def _make_training_options_class():
                 "  font-size: 22pt; font-weight: bold; }"
                 "QRadioButton { color: white; font-size: 11pt; }"
                 "QCheckBox { color: white; font-size: 11pt; }"
+                # Radio indicator -- on the dark overlay backdrop the
+                # native Windows checked dot is barely visible (white
+                # inner ring on a white indicator background). Render
+                # the indicator as a white-bordered circle, filled
+                # with the primary-action blue when checked. Matches
+                # the Train button's #3a86ff so the "selected mode"
+                # affordance is unmistakable.
+                "QRadioButton::indicator { width: 14px; height: 14px; }"
+                "QRadioButton::indicator:unchecked { "
+                "  background-color: transparent; "
+                "  border: 2px solid white; "
+                "  border-radius: 8px; "
+                "}"
+                "QRadioButton::indicator:checked { "
+                "  background-color: #3a86ff; "
+                "  border: 2px solid white; "
+                "  border-radius: 8px; "
+                "}"
             )
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
@@ -2254,7 +2272,11 @@ class DUSTrack(_DUSTrackBase):
                     "Output is also streamed to the launching terminal. "
                     "Predictions will load when you click Done."
                 ),
-                show_progress_bar=False,
+                # analyze_videos emits a tqdm bar ("  3/100 [") that
+                # the _PROGRESS_PATTERNS' tqdm-style regex consumes;
+                # the same shape the Train DLC overlay uses for
+                # consistency.
+                show_progress_bar=True,
                 phase_patterns=_SEED_PROJECT_PHASES,
                 success_summary=(
                     f"Project '{name}' seeded from bundle. "

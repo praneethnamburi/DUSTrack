@@ -30,6 +30,18 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Fixed
+- **Seeding overlay progress bar + radio-button visibility** (`dlcinterface.py`).
+  Two visual nits on the 1.2.0a2 modals. (a) The Create-and-seed
+  ``ProgressOverlay`` was opened with ``show_progress_bar=False``,
+  so the ``analyze_videos`` phase had no bar despite DLC's tqdm
+  output matching ``_PROGRESS_PATTERNS``; flipped to ``True`` to
+  match the Train DLC overlay. (b) ``QRadioButton::indicator`` on
+  the Training options modal inherited Windows' native checked
+  rendering (a white inner ring) which was almost invisible
+  against the ``rgba(0, 0, 0, 200)`` overlay backdrop -- explicit
+  QSS now renders the indicator as a white-bordered circle filled
+  with the primary-action blue (``#3a86ff``, matching the Train
+  button) when checked.
 - **Empty manual-layer labels after seeding** (`dlcinterface.py`).
   Two compounding issues left the post-seed ``annotation_label``
   dropdown showing the bootstrap default ``"0"`` instead of the
