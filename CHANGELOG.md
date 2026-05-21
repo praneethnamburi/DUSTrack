@@ -19,6 +19,124 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Changed
+- **`lucas_kanade_rstc` decodes each frame once across forward + reverse
+  passes** (`dustrack/opticalflow.py:158`). Pre-fix the function called
+  `lucas_kanade` twice — one forward (`start → end`) and one reverse
+  (`end → start`); each pass independently decoded + grayscaled every
+  frame in the window. The reverse direction is much more expensive
+  than the forward one on PyAV+TOC because PyAV has to seek back to
+  the nearest keyframe and re-decode forward to each requested frame,
+  so the reverse pass dominated wall time. Now we decode the window
+  once, share the grayscale frame list between forward and reverse
+  via a `frames[::-1]` view, and delegate to a single canonical LK
+  loop (`_lk_track_frames`).
+
+  Bench (`tests/qt_learning/25_benchmark_lk_rstc.py`, 720p, 16-frame
+  window, demuxer state normalised to frame 0 between benches):
+  - `lucas_kanade_rstc` (mode='full'): **1 343 ms → 247 ms (5.44×)**.
+  - `lucas_kanade` (mode='full'): unchanged (single-direction decode,
+    nothing to share).
+  - `lucas_kanade_2` micro: unchanged (the helper is now its body).
+
+  All four bench reference outputs (`lk2_pair`, `lk_full`,
+  `lk_rstc_full`, `movavg`) are bit-exact against the pre-refactor
+  arrays under `atol=1e-6, rtol=0`.
+
+- **Per-pair LK loop centralised in `_lk_track_frames`**
+  (`dustrack/opticalflow.py:70`). `lucas_kanade` (per-video) and
+  `lucas_kanade_2` (frame-list, in `dustrack/postprocess.py`)
+  delegated their per-pair loops here so the call lives in one place.
+  Carries an `np.empty` allocation tweak (every slot is overwritten
+  immediately) and the documented limitation that
+  `cv.calcOpticalFlowPyrLK` in opencv-python 4.11 does not accept a
+  pre-built pyramid list as `prevImg` / `nextImg` (the `vector<Mat>`
+  C++ overload is not exposed to Python — it rejects both tuple and
+  list of ndarrays, demanding `Ptr<UMat>`). Pyramid reuse across pairs
+  is therefore not viable from Python; the docstring records the
+  finding so future readers don't retry it.
+
+- **`lk_moving_average_filter` parallel path pins
+  ``cv.setNumThreads(1)`` via try/finally**
+  (`dustrack/postprocess.py:447`). Before the tweak, every Python
+  worker's ``cv.calcOpticalFlowPyrLK`` call spawned up to
+  ``cpu_count`` OpenCV-internal threads on top of the
+  ``cpu_count``-sized worker pool -- ``cpu_count**2`` thread-slots
+  fighting for ``cpu_count`` cores. Sweep on a 24-core machine
+  (300-frame bench, ``save_raw=False``):
+
+  | cv_threads | workers | median (s) |
+  |---|---|---|
+  | 24 (default) | 28 (default) | 6.49 |
+  | 1 | 8 | 5.77 |
+  | 1 | 24 | 5.73 |
+  | 2 | 12 | 5.76 |
+  | 8 | 4 | 6.93 |
+
+  Final landing: ``cv=1`` + executor default. ~12% faster, parity
+  bit-exact. Scope: ``cv.setNumThreads(1)`` is global; restoring it
+  in ``finally`` keeps cv defaults intact for any concurrent caller.
+
+  GIL-breaking investigation (deferred): a sibling probe at
+  ``tests/qt_learning/_movavg_gil_probe.py`` ran ``ProcessPoolExecutor``
+  with frames in ``multiprocessing.shared_memory``. After amortising
+  Windows worker-spawn cost across reps, the persistent process pool
+  plateaus at **~5.7 s** -- identical to ``ThreadPool``. The GIL is
+  **not** the bottleneck; the cap is likely OpenCV's heap allocator
+  contending on the ~7 MB pyramid that
+  ``cv.calcOpticalFlowPyrLK`` builds for each frame in each call
+  (~117 GB of allocation traffic across the bench's 8008 LK calls).
+  Going below 5.7 s would need either a custom allocator
+  (mimalloc/jemalloc as the host's default malloc) or a custom LK
+  that pools pyramid memory across calls -- both out of scope.
+
+- **`lk_moving_average_filter` accepts `save_raw=False` to skip the
+  per-window `.pkl` sidecar** (`dustrack/postprocess.py:248`). Default
+  is `True` — preserves the existing `(W, N, L, 2)` `.pkl` that
+  `pn-projects/wobble` and `gaitmusic` consume via their `.rawlk`
+  property + `lk_gradients` velocity estimation, so direct API
+  callers see no behaviour change. `save_raw=False` switches to a
+  streaming `(N, L, 2)` sum and `(N, L)` count, divides at the end,
+  and skips the `.pkl` write entirely. Trade-off: peak Python memory
+  for the accumulator drops from `W*N*L*16` bytes to roughly
+  `N*L*20` bytes — a ~10-12× reduction on typical configs (W=15,
+  L=4, N=36 715: **35 MB → 2.9 MB**). Wall time is essentially
+  unchanged (post-processing is <0.3% of the LK call budget on this
+  bench video; the .pkl round-trip is a sub-second I/O on real
+  videos). FP summation order between the two modes differs, so
+  `save_raw=False` output is numerically close but not bit-exact
+  vs `save_raw=True`: measured `max|delta| = 2.27e-13` on the
+  300-frame example video, well below the float64 noise floor
+  (image-coordinate scale ~O(100), so relative error ~1e-15).
+
+  Cache short-circuits restructured so an existing `.pkl` is always
+  honoured (it's cheaper to average a cached `.pkl` than to recompute
+  even when `save_raw=False`), and the assert in
+  `tests/qt_learning/25_benchmark_lk_rstc.py` pins the contract:
+  `.pkl` present iff `save_raw=True`.
+
+- **`lk_moving_average_filter` parallel path uses bounded-inflight
+  submission with a single fused progress bar**
+  (`dustrack/postprocess.py:376`). Pre-fix the executor pre-submitted
+  all N futures up front then collected them in submission order
+  under two separate tqdm bars ("Submitting jobs" → "Processing
+  results"); on long videos the Submitting bar filled almost instantly
+  and Processing sat at 0 for ages, making the Qt overlay phase label
+  uninformative. Now the loop interleaves decode + submit + collection
+  via `concurrent.futures.wait(FIRST_COMPLETED)` with at most
+  `2 × pool_size` futures pending, and a single tqdm bar
+  ("Processing tracking jobs") drives the overlay throughout.
+  `_JITTER_PHASES` in `dustrack/dlcinterface.py:233` recognises the
+  new label and keeps the old ones as fallbacks. Output bit-exact
+  vs. the sequential path; parallel-vs-sequential timing on the
+  300-frame example video: parallel **6.43 s** / sequential
+  **21.62 s** (3.36× via threading, unchanged from pre-refactor).
+
+- **RSTC sigmoid blend uses two ufunc-with-out calls instead of three
+  implicit allocations** (`dustrack/opticalflow.py:226`,
+  `dustrack/postprocess.py:209`). `np.flip(reverse_path, 0)` collapsed
+  to a `[::-1]` view (no copy). Below the noise floor on small
+  arrays; included for hygiene.
+
 - **`VideoAnnotation._dlc_trace_to_annotation_dict` vectorised**
   (`dustrack/pointtracking.py:1895`). One column-slice +
   `.to_numpy()` per label + a NaN-row mask + a dict comprehension,
@@ -66,6 +184,15 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   the `utils.Video` subclass.
 
 ### Added
+- **`tests/qt_learning/25_benchmark_lk_rstc.py`** — LK / LK-RSTC /
+  `lk_moving_average_filter` benchmark + parity harness. Mode-minor
+  interleaving, demuxer state normalised between benches to avoid
+  the reverse-seek artifact that lets one bench's exit state
+  contaminate the next bench's timing. Writes per-rep timings,
+  reference arrays, and a summary JSON under
+  `%TEMP%/dustrack_lk_bench/<step>/` so a follow-up step can pass
+  `--compare-to <step>` to diff parity against frozen reference
+  arrays (default `atol=1e-6, rtol=0`).
 - **`tests/test_dlc_trace_vectorise.py`** — 10 parity tests pinning the
   legacy implementation against the vectorised one across realistic
   inputs (dense / partial-NaN / all-NaN / single-frame / 36 715-frame

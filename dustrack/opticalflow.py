@@ -7,7 +7,8 @@ Per-video Lucas-Kanade helpers used by
 These are the *per-video* shapes (called with ``video, start_frame, end_frame, ...``).
 The frame-list shapes used by the postprocess pipeline
 (``lucas_kanade_2`` / ``lucas_kanade_rstc_2``) live in :py:mod:`dustrack.postprocess`
--- they share the algorithm but take an explicit frame list instead of a video object.
+-- both shapes delegate to :func:`_lk_track_frames` here so the per-pair
+LK loop has a single home.
 
 Lucas-Kanade + reverse sigmoid tracking correction (RSTC) is described in:
 
@@ -34,6 +35,77 @@ from datanavigator.video_reader import VideoReader
 from datanavigator import utils
 
 
+_DEFAULT_LK_CONFIG = dict(
+    winSize=(45, 45),
+    maxLevel=2,
+    criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03),
+)
+
+
+def _normalize_init_points(init_points: np.ndarray) -> np.ndarray:
+    """Coerce to ``(n_points, 1, 2)`` float32 -- the shape OpenCV's LK wants."""
+    init_points = np.asarray(init_points, dtype=np.float32)
+    if init_points.ndim == 1:
+        init_points = init_points[np.newaxis, :]
+    assert init_points.shape[-1] == 2
+    if init_points.ndim == 2:
+        init_points = init_points.reshape((init_points.shape[0], 1, 2))
+    return init_points
+
+
+def _gray_rgb(video, frame_num: int) -> np.ndarray:
+    """Decode a frame from a VideoReader / utils.Video and grayscale it.
+
+    Mirrors the original per-video LK behaviour: PyAV+TOC returns RGB so
+    this uses ``COLOR_RGB2GRAY``. The frame-list shape in
+    :py:mod:`dustrack.postprocess` historically used ``COLOR_BGR2GRAY``
+    on the same RGB input -- a documented inconsistency we preserve
+    here for bit-parity, see ``postprocess.gray``.
+    """
+    return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_RGB2GRAY)
+
+
+def _lk_track_frames(
+    frame_list: list[np.ndarray],
+    init_points: np.ndarray,
+    **lk_config,
+) -> np.ndarray:
+    """Canonical pyramidal-LK per-pair loop over pre-decoded grayscale frames.
+
+    Returned shape ``(n_frames, n_points, 2)``. Row 0 is ``init_points``;
+    row k is the location at ``frame_list[k]``. Both
+    :func:`lucas_kanade` (per-video) and
+    :func:`dustrack.postprocess.lucas_kanade_2` (frame-list) delegate
+    here so the LK call lives in exactly one place.
+
+    NOTE: pyramid reuse across pairs (build once for ``ff``, pass into
+    the next pair as ``fi``) is the textbook LK optimisation, but the
+    opencv-python 4.11 binding of ``calcOpticalFlowPyrLK`` does not
+    accept a pre-built pyramid list as ``prevImg`` / ``nextImg`` --
+    the C++ ``vector<Mat>`` overload is not exposed to Python (the
+    binding rejects tuples and lists of ndarrays alike, demanding
+    ``Ptr<UMat>``). So each call rebuilds both pyramids internally;
+    interior frames are pyramid-built twice. Re-evaluate if the
+    binding surfaces this overload in a later release.
+    """
+    init_points = _normalize_init_points(init_points)
+    cfg = {**_DEFAULT_LK_CONFIG, **lk_config}
+
+    n_frames = len(frame_list)
+    n_points = init_points.shape[0]
+    tracked_points = np.empty((n_frames, n_points, 2))
+    tracked_points[0] = init_points[:, 0, :]
+
+    fi = frame_list[0]
+    for frame_idx in range(1, n_frames):
+        ff = frame_list[frame_idx]
+        fp, _, _ = cv.calcOpticalFlowPyrLK(fi, ff, init_points, None, **cfg)
+        tracked_points[frame_idx] = fp[:, 0, :]
+        init_points = fp
+        fi = ff
+    return tracked_points
+
+
 def lucas_kanade(
     video: Union[utils.Video, VideoReader, str, Path],
     start_frame: int,
@@ -58,71 +130,29 @@ def lucas_kanade(
         np.ndarray: n_frames x n_points x 2, includes start and end frame for 'full',
             and 1 x n_points x 2 for 'direct'.
     """
-
-    def gray(video: VideoReader, frame_num: int) -> np.ndarray:
-        """Convert a frame to grayscale.
-
-        Args:
-            video (VideoReader): Video object.
-            frame_num (int): Frame number to convert.
-
-        Returns:
-            np.ndarray: Grayscale frame.
-        """
-        return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_RGB2GRAY)
-
-    # input validation
     if isinstance(video, (str, Path)):
         assert os.path.exists(video)
         video = VideoReader(video)
 
-    direction = "forward" if end_frame > start_frame else "back"
-
-    init_points = np.array(init_points).astype(np.float32)
-    if init_points.ndim == 1:
-        init_points = init_points[np.newaxis, :]
-    assert init_points.shape[-1] == 2
-    if init_points.ndim == 2:
-        init_points = init_points.reshape((init_points.shape[0], 1, 2))
-
     assert mode in ("direct", "full")
+    init_points = _normalize_init_points(init_points)
+    cfg = {**_DEFAULT_LK_CONFIG, **lk_config}
 
-    lk_config_default = dict(
-        winSize=(45, 45),
-        maxLevel=2,
-        criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03),
-    )
-    lk_config = {**lk_config_default, **lk_config}
-
-    # compute locations at end_frame based on locations at start_frame
-    fi = gray(video, start_frame)
     if mode == "direct":
-        ff = gray(video, end_frame)
-        fp, _, _ = cv.calcOpticalFlowPyrLK(fi, ff, init_points, None, **lk_config)
-        tracked_points = fp[:, 0, :][np.newaxis, :, :]
-        return tracked_points
+        fi = _gray_rgb(video, start_frame)
+        ff = _gray_rgb(video, end_frame)
+        fp, _, _ = cv.calcOpticalFlowPyrLK(fi, ff, init_points, None, **cfg)
+        return fp[:, 0, :][np.newaxis, :, :]
 
-    # compute locations at every frame iteratively from start_frame to end_frame
-    assert mode == "full"  # for readability
-    n_frames = np.abs(end_frame - start_frame) + 1
-    if direction == "forward":
-        frame_numbers = np.arange(start_frame + 1, end_frame + 1, 1)
-    else:
-        frame_numbers = np.arange(start_frame - 1, end_frame - 1, -1)
-
-    n_points = init_points.shape[0]  # number of tracked points
-
-    tracked_points = np.full((n_frames, n_points, 2), np.nan)
-    frame_count = 0
-    tracked_points[frame_count] = init_points[:, 0, :]
-    for frame_num in frame_numbers:
-        frame_count = frame_count + 1
-        ff = gray(video, frame_num)
-        fp, _, _ = cv.calcOpticalFlowPyrLK(fi, ff, init_points, None, **lk_config)
-        tracked_points[frame_count] = fp[:, 0, :]
-        fi = ff
-        init_points = fp
-    return tracked_points
+    # mode == "full": prefetch frames in tracking order, delegate to the
+    # canonical helper. Forward goes start -> end inclusive; reverse goes
+    # start -> end inclusive but the step is -1 so the first frame in
+    # the list is ``start_frame`` and the last is ``end_frame``. Matches
+    # the historical contract that tracked_points[0] is ``init_points``.
+    step = 1 if end_frame > start_frame else -1
+    frame_numbers = range(start_frame, end_frame + step, step)
+    frame_list = [_gray_rgb(video, int(fn)) for fn in frame_numbers]
+    return _lk_track_frames(frame_list, init_points, **lk_config)
 
 
 def lucas_kanade_rstc(
@@ -158,12 +188,31 @@ def lucas_kanade_rstc(
         assert isinstance(target_frame, int)
         mode = "direct"
 
-    forward_path = lucas_kanade(
-        video, start_frame, end_frame, start_points, mode, **lk_config
-    )
-    reverse_path = lucas_kanade(
-        video, end_frame, start_frame, end_points, mode, **lk_config
-    )
+    if isinstance(video, (str, Path)):
+        assert os.path.exists(video)
+        video = VideoReader(video)
+
+    if mode == "full":
+        # Decode each frame in [start_frame, end_frame] once and share
+        # the grayscale frame list between the forward and reverse
+        # passes. Pre-refactor this path called ``lucas_kanade`` twice,
+        # which decoded every frame in both directions -- and the
+        # reverse-direction decode is much more expensive than the
+        # forward one on PyAV+TOC (sub-keyframe reverse seeks). The
+        # forward-then-reverse-view shares decode work cleanly.
+        frames_fwd = [_gray_rgb(video, fn) for fn in range(start_frame, end_frame + 1)]
+        frames_rev = frames_fwd[::-1]
+        forward_path = _lk_track_frames(frames_fwd, start_points, **lk_config)
+        reverse_path = _lk_track_frames(frames_rev, end_points, **lk_config)
+    else:
+        # Direct mode: each call decodes only the two endpoints, so the
+        # combined shape is 4 decodes total -- not worth refactoring.
+        forward_path = lucas_kanade(
+            video, start_frame, end_frame, start_points, mode, **lk_config
+        )
+        reverse_path = lucas_kanade(
+            video, end_frame, start_frame, end_points, mode, **lk_config
+        )
     assert forward_path.shape == reverse_path.shape
     n_frames, n_points = forward_path.shape[:2]
 
@@ -174,12 +223,16 @@ def lucas_kanade_rstc(
     sigmoid_forward = (1 / (1 + np.exp(b * (x - c))) - 0.5) / (1 - 2 * epsilon) + 0.5
     sigmoid_reverse = (1 / (1 + np.exp(-b * (x - c))) - 0.5) / (1 - 2 * epsilon) + 0.5
 
-    s_f = np.broadcast_to(
-        sigmoid_forward[:, np.newaxis, np.newaxis], (n_frames, n_points, 2)
-    )
-    s_r = np.broadcast_to(
-        sigmoid_reverse[:, np.newaxis, np.newaxis], (n_frames, n_points, 2)
-    )
+    s_f = sigmoid_forward[:, np.newaxis, np.newaxis]
+    s_r = sigmoid_reverse[:, np.newaxis, np.newaxis]
 
-    rstc_path = forward_path * s_f + np.flip(reverse_path, 0) * s_r
+    # Fuse the blend into two ufunc-with-out calls instead of three
+    # implicit allocations (forward*sf, flip(reverse)*sr, sum). The
+    # ``[::-1]`` view replaces ``np.flip(reverse_path, 0)`` (same
+    # behaviour, no copy).
+    rstc_path = np.empty_like(forward_path)
+    tmp = np.empty_like(forward_path)
+    np.multiply(forward_path, s_f, out=rstc_path)
+    np.multiply(reverse_path[::-1], s_r, out=tmp)
+    rstc_path += tmp
     return rstc_path

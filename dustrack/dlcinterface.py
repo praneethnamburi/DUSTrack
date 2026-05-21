@@ -231,6 +231,12 @@ _TRAINING_PHASES = [
 # collect). Match the desc prefix so we don't depend on tqdm's exact
 # bar / spinner glyphs.
 _JITTER_PHASES = [
+    # Post-2026-05-21 the parallel path uses a single fused bar
+    # ("Processing tracking jobs") instead of separate Submitting /
+    # Processing phases. Old labels kept as fallbacks so a stale
+    # installation that still runs the two-phase code path renders
+    # cleanly under the Qt overlay.
+    (re.compile(r"Processing tracking jobs", re.IGNORECASE), "Processing tracking jobs"),
     (re.compile(r"Submitting jobs", re.IGNORECASE), "Submitting tracking jobs"),
     (re.compile(r"Processing results", re.IGNORECASE), "Processing tracking results"),
     (re.compile(r"Processing sequentially", re.IGNORECASE), "Processing sequentially"),

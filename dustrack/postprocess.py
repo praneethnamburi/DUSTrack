@@ -59,13 +59,14 @@ import os
 from typing import Union
 from pathlib import Path
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import dill
 import cv2 as cv
 import numpy as np
 from tqdm import tqdm
 
+from .opticalflow import _lk_track_frames
 from .pointtracking import VideoAnnotation
 
 
@@ -116,29 +117,7 @@ def lucas_kanade_2(frame_list: list, init_points: np.ndarray, **lk_config) -> np
         >>> trajectories = lucas_kanade_2(frames, initial_pts)
         >>> # trajectories.shape = (len(frames), 2, 2)
     """
-    init_points = np.array(init_points).astype(np.float32)
-    if init_points.ndim == 1:
-        init_points = init_points[np.newaxis, :]
-    assert init_points.shape[-1] == 2
-    if init_points.ndim == 2:
-        init_points = init_points.reshape((init_points.shape[0], 1, 2))
-
-    lk_config_default = dict(
-        winSize=(45, 45),
-        maxLevel=2,
-        criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03),
-    )
-    lk_config = {**lk_config_default, **lk_config}
-
-    n_frames = len(frame_list)
-    n_points = init_points.shape[0]
-    tracked_points = np.full((n_frames, n_points, 2), np.nan)
-    tracked_points[0] = init_points[:, 0, :]
-    for frame_idx, (frame_current, frame_next) in enumerate(zip(frame_list, frame_list[1:])):
-        next_points, _, _ = cv.calcOpticalFlowPyrLK(frame_current, frame_next, init_points, None, **lk_config)
-        tracked_points[frame_idx + 1] = next_points[:, 0, :]
-        init_points = next_points
-    return tracked_points
+    return _lk_track_frames(frame_list, init_points, **lk_config)
 
 
 def compute_sigmoid_weights(n_frames: int, epsilon: float = 0.01) -> tuple[np.ndarray, np.ndarray]:
@@ -227,10 +206,16 @@ def lucas_kanade_rstc_2(
     if sigmoid_forward is None or sigmoid_reverse is None:
         sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_frames)
 
-    s_f = np.broadcast_to(sigmoid_forward[:, np.newaxis, np.newaxis], (n_frames, n_points, 2))
-    s_r = np.broadcast_to(sigmoid_reverse[:, np.newaxis, np.newaxis], (n_frames, n_points, 2))
+    s_f = sigmoid_forward[:, np.newaxis, np.newaxis]
+    s_r = sigmoid_reverse[:, np.newaxis, np.newaxis]
 
-    rstc_path = forward_path * s_f + np.flip(reverse_path, 0) * s_r
+    # Fuse the blend into two ufunc-with-out calls. ``[::-1]`` view
+    # replaces ``np.flip(reverse_path, 0)`` (no copy).
+    rstc_path = np.empty_like(forward_path)
+    tmp = np.empty_like(forward_path)
+    np.multiply(forward_path, s_f, out=rstc_path)
+    np.multiply(reverse_path[::-1], s_r, out=tmp)
+    rstc_path += tmp
     return rstc_path
 
 
@@ -265,13 +250,14 @@ def lk_moving_average_filter(
     video_name: str = None,
     window_size: float = 0.5,
     use_parallel: bool = True,
+    save_raw: bool = True,
 ) -> VideoAnnotation:
     """
     Apply Lucas-Kanade moving average filter to smooth tracking annotations.
-    
+
     This is the main post-processing function. It applies RSTC over overlapping
     time windows and averages the results to produce smooth, jitter-free trajectories.
-    
+
     Workflow:
         1. Load video and annotations
         2. Slide a time window through the video
@@ -280,7 +266,7 @@ def lk_moving_average_filter(
            - Store results indexed by window position
         4. Average all trajectories that cover each frame
         5. Save smoothed annotations
-    
+
     Args:
         tracked_points (Union[str, VideoAnnotation]): Either:
             - Path to annotation JSON file
@@ -293,42 +279,70 @@ def lk_moving_average_filter(
             Typical range: 0.1 to 1.0 seconds. Defaults to 0.5.
         use_parallel (bool, optional): Use ThreadPoolExecutor for parallel processing.
             Significantly faster for longer videos. Defaults to True.
+        save_raw (bool, optional): If True (default), allocate the full
+            ``(n_window_frames, n_total_frames, n_labels, 2)`` per-window
+            RSTC array and dill-pickle it to
+            ``{stem}_lkmovavg_{window_size}.pkl`` alongside the averaged
+            JSON. Per-window data is consumed downstream by
+            ``pn-projects/wobble`` and ``gaitmusic`` (their ``.rawlk``
+            property → ``lk_gradients`` velocity estimation), so keep
+            True for those flows. If False, stream a running
+            ``(n_total_frames, n_labels, 2)`` sum and per-cell count
+            instead, divide at the end, and skip the .pkl write. Cuts
+            peak memory from ``W*N*L*16`` bytes to ``N*L*12`` bytes
+            (~10x on typical W=15, L=4 cases). On the example-video
+            bench wall time is essentially unchanged (post-processing
+            is <0.3% of total) but on real-world long videos
+            (N=36715+) the .pkl round-trip alone is a couple of
+            seconds. FP summation order changes between modes so
+            ``save_raw=False`` output is numerically close
+            (``np.allclose`` with ``atol~1e-10``) rather than
+            bit-exact vs ``save_raw=True``.
 
     Returns:
         VideoAnnotation: New annotation object with smoothed trajectories.
             Saved to {original_stem}_lkmovavg_{window_size}.json
-    
+
     Output Files:
-        - {stem}_lkmovavg_{window_size}.pkl: Raw RSTC results (for debugging)
+        - {stem}_lkmovavg_{window_size}.pkl: Per-window RSTC results
+          (only when ``save_raw=True``; consumed by ``.rawlk`` downstream).
         - {stem}_lkmovavg_{window_size}.json: Averaged smoothed annotations
-    
+          (always written).
+
     Performance Tips:
         - Use use_parallel=True for videos longer than a few seconds
         - Smaller window_size is faster but provides less smoothing
-        - Results are cached in .pkl file; delete to recompute
-    
+        - Results are cached: the .json is the primary cache, and when
+          ``save_raw=True`` the .pkl is reused on subsequent calls
+          regardless of the ``save_raw`` flag (a pre-existing .pkl is
+          always read if the .json is missing). Delete either to
+          recompute the corresponding stage.
+
     Example:
         >>> # Post-process manual annotations
         >>> ann = VideoAnnotation('video_annotations.json', 'video.mp4')
         >>> ann_smooth = lk_moving_average_filter(ann, window_size=0.5)
-        >>> 
+        >>>
         >>> # Post-process DLC predictions with larger window
         >>> ann_dlc = VideoAnnotation('video_dlc_predictions.h5', 'video.mp4')
         >>> ann_smooth = lk_moving_average_filter(ann_dlc, window_size=1.0)
-        >>> 
+        >>>
         >>> # Non-parallel processing for short clips
         >>> ann_smooth = lk_moving_average_filter(ann, window_size=0.3, use_parallel=False)
+        >>>
+        >>> # GUI-style: skip the .pkl sidecar (memory + I/O savings)
+        >>> ann_smooth = lk_moving_average_filter(ann, save_raw=False)
 
         In practice, the ``postprocess`` shortcut on a :class:`~dustrack.VideoAnnotation`
         is equivalent:
         >>> from dustrack import VideoAnnotation
         >>> ann = VideoAnnotation('video_dlc_predictions.h5', 'video.mp4')
         >>> ann_rstc = ann.postprocess()
-    
+
     Raises:
         AssertionError: If video_name is not provided when tracked_points is a file path.
         AssertionError: If tracked_points is not a VideoAnnotation or valid file path.
-    
+
     Note:
         The algorithm uses a deque-based frame buffer to minimize memory usage
         and avoid repeated video decoding. Frames are read once and discarded
@@ -378,7 +392,31 @@ def lk_moving_average_filter(
                 f"{label!r}={len(ann.data[label])}" for label in all_labels
             )
         )
-    if not os.path.exists(fname_rawlk):
+    fname_processed = str(postprocess_path / f"{ann.fstem}_{suffix}.json")
+
+    # Cache short-circuits.
+    # 1. If the averaged JSON already exists, we're done -- just reload it.
+    # 2. Else if the per-window .pkl exists (from any prior run, regardless
+    #    of this call's save_raw), re-use it to compute the average without
+    #    re-running LK.
+    # 3. Else: full computation. ``save_raw`` controls whether we accumulate
+    #    into the (W, N, L, 2) per-window array (preserved + dill-pickled,
+    #    nanmean'd at the end) or into running sum + count buffers (no .pkl,
+    #    final mean = sum / count).
+    rstc_paths_avg = None  # populated by one of the three branches below
+
+    if os.path.exists(fname_processed):
+        # Branch 1: nothing to do; the saved annotation is the truth.
+        pass
+    elif os.path.exists(fname_rawlk):
+        # Branch 2: reuse cached per-window data even if save_raw=False
+        # (a previous save_raw=True run left it on disk -- cheaper to
+        # average than to recompute).
+        with open(fname_rawlk, "rb") as f:
+            rstc_paths = dill.load(f)
+        rstc_paths_avg = np.nanmean(rstc_paths, axis=0)
+    else:
+        # Branch 3: full computation.
         video = ann.video
         n_window_frames = round(window_size * video.get_avg_fps())
         video_frame_buffer = deque([gray(f) for f in video[:n_window_frames - 1].asnumpy()], maxlen=n_window_frames)
@@ -386,37 +424,100 @@ def lk_moving_average_filter(
         # Precompute sigmoid weights for the given window size
         sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_window_frames)
 
-        rstc_paths = np.full((n_window_frames, ann.n_frames, len(label_list), 2), np.nan)
+        # ``save_raw`` chooses the accumulator. Both branches expose a
+        # ``_record(cnt, start_frame, rstc_path)`` callable so the
+        # parallel + sequential loops below stay uniform.
+        if save_raw:
+            rstc_paths = np.full((n_window_frames, ann.n_frames, len(label_list), 2), np.nan)
+            def _record(cnt, start_frame, rstc_path):
+                n = rstc_path.shape[0]
+                rstc_paths[cnt % n_window_frames, start_frame:start_frame + n, :, :] = rstc_path
+        else:
+            # Streaming sum + count, no per-window slab. ``count_paths``
+            # is per (frame, label) -- the same window touches all
+            # labels at each frame, so collapsing the trailing 2-axis
+            # is safe.
+            sum_paths = np.zeros((ann.n_frames, len(label_list), 2), dtype=np.float64)
+            count_paths = np.zeros((ann.n_frames, len(label_list)), dtype=np.int32)
+            def _record(cnt, start_frame, rstc_path):
+                n = rstc_path.shape[0]
+                sum_paths[start_frame:start_frame + n] += rstc_path
+                count_paths[start_frame:start_frame + n] += 1
 
         if use_parallel:
-            # Use ThreadPoolExecutor for parallel processing
-            with ThreadPoolExecutor() as executor:
-                futures = []
-                with tqdm(total=len(frame_list) - n_window_frames + 1, desc="Submitting jobs") as pbar:
-                    for cnt, (start_frame, end_frame) in enumerate(zip(frame_list, frame_list[n_window_frames - 1:])):
-                        video_frame_buffer.append(gray(video[end_frame].asnumpy()))
-                        start_points = [ann.data[label][start_frame] for label in label_list]
-                        end_points = [ann.data[label][end_frame] for label in label_list]
-
-                        # Submit the task to the executor
-                        futures.append(executor.submit(
-                            process_window,
-                            video_frame_buffer.copy(),
-                            start_points,
-                            end_points,
-                            sigmoid_forward,
-                            sigmoid_reverse,
-                        ))
-                        pbar.update(1)  # Update the progress bar as jobs are submitted
-
-                # Collect results
-                with tqdm(total=len(futures), desc="Processing results") as pbar:
-                    for cnt, future in enumerate(futures):
-                        rstc_path = future.result()
-                        n_frames_in_path = rstc_path.shape[0]
-                        start_frame = frame_list[cnt]
-                        rstc_paths[cnt % n_window_frames, start_frame:start_frame + n_frames_in_path, :, :] = rstc_path
-                        pbar.update(1)  # Update the progress bar as results are processed
+            # Bounded-inflight ThreadPoolExecutor loop. Pre-2026-05-21
+            # this submitted all N futures up front then collected
+            # in submission order with two separate tqdm bars
+            # ("Submitting jobs" / "Processing results"); the
+            # "Submitting" bar filled almost instantly on long videos
+            # then "Processing" sat at 0 for ages, making the Qt overlay
+            # phase label uninformative. Now: a single tqdm bar
+            # ("Processing tracking jobs") with at most ``max_inflight``
+            # futures pending, decode + submit interleaved with
+            # collection, completions written into the circular buffer
+            # by the cnt index they own (slot = cnt % n_window_frames),
+            # so out-of-order completion is safe.
+            #
+            # Pin OpenCV's internal thread count to 1 for the duration
+            # of the parallel block. Without this, every worker's
+            # ``cv.calcOpticalFlowPyrLK`` call spawns up to ``cpu_count``
+            # internal threads of its own; with a ``cpu_count``-sized
+            # Python worker pool that's ``cpu_count**2`` thread-slots
+            # fighting for ``cpu_count`` cores -- pure oversubscription.
+            # Measured (24-core, 300-frame bench, save_raw=False):
+            # cv=24 + 28 workers = 6.49 s, cv=1 + 24 workers = 5.73 s
+            # (~12% faster). Beyond that there's a hard plateau at
+            # ~5.7 s independent of pool size (>= 8 workers) and pool
+            # type (a ProcessPoolExecutor + shared-memory frames
+            # variant hits the same ceiling -- see
+            # ``tests/qt_learning/_movavg_gil_probe.py``), so the GIL
+            # is NOT the bottleneck. The plateau is likely OpenCV's
+            # heap allocator contending on pyramid memory:
+            # ``calcOpticalFlowPyrLK`` internally builds two ~7 MB
+            # pyramids per pair, ~117 GB of allocation traffic across
+            # the 8008 LK calls of this bench. Going lower would need
+            # either a different system allocator (mimalloc/jemalloc)
+            # or a custom LK that pools pyramid memory across calls;
+            # neither is in scope.
+            pair_iter = enumerate(zip(frame_list, frame_list[n_window_frames - 1:]))
+            n_windows = len(frame_list) - n_window_frames + 1
+            saved_cv_threads = cv.getNumThreads()
+            cv.setNumThreads(1)
+            try:
+                with ThreadPoolExecutor() as executor:
+                    max_inflight = max(2 * (executor._max_workers or 4), 8)
+                    inflight: dict = {}
+                    n_done = 0
+                    with tqdm(total=n_windows, desc="Processing tracking jobs") as pbar:
+                        while n_done < n_windows:
+                            while len(inflight) < max_inflight:
+                                try:
+                                    cnt, (start_frame, end_frame) = next(pair_iter)
+                                except StopIteration:
+                                    break
+                                video_frame_buffer.append(gray(video[end_frame].asnumpy()))
+                                start_points = [ann.data[label][start_frame] for label in label_list]
+                                end_points = [ann.data[label][end_frame] for label in label_list]
+                                fut = executor.submit(
+                                    process_window,
+                                    video_frame_buffer.copy(),
+                                    start_points,
+                                    end_points,
+                                    sigmoid_forward,
+                                    sigmoid_reverse,
+                                )
+                                inflight[fut] = cnt
+                            if not inflight:
+                                break
+                            done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                            for fut in done:
+                                cnt = inflight.pop(fut)
+                                rstc_path = fut.result()
+                                _record(cnt, frame_list[cnt], rstc_path)
+                                n_done += 1
+                                pbar.update(1)
+            finally:
+                cv.setNumThreads(saved_cv_threads)
         else:
             # Sequential processing
             with tqdm(total=len(frame_list) - n_window_frames + 1, desc="Processing sequentially") as pbar:
@@ -433,23 +534,36 @@ def lk_moving_average_filter(
                         sigmoid_forward,
                         sigmoid_reverse,
                     )
-                    n_frames_in_path = rstc_path.shape[0]
-                    rstc_paths[cnt % n_window_frames, start_frame:start_frame + n_frames_in_path, :, :] = rstc_path
+                    _record(cnt, start_frame, rstc_path)
                     pbar.update(1)  # Update the progress bar as results are processed
 
-        with open(fname_rawlk, "wb") as f:
-            dill.dump(rstc_paths, f)
+        # Finalise + persist sidecars.
+        if save_raw:
+            with open(fname_rawlk, "wb") as f:
+                dill.dump(rstc_paths, f)
+            rstc_paths_avg = np.nanmean(rstc_paths, axis=0)
+        else:
+            # Mean = sum / count. ``count`` is 0 only at frames that no
+            # window touched -- shouldn't happen since the window iter
+            # covers [0, n_frames-1], but guard with errstate so a
+            # surprise 0 produces NaN rather than a runtime warning.
+            with np.errstate(invalid="ignore", divide="ignore"):
+                rstc_paths_avg = sum_paths / count_paths[..., np.newaxis]
 
-    fname_processed = str(postprocess_path / f"{ann.fstem}_{suffix}.json")
     if not os.path.exists(fname_processed):
-        with open(fname_rawlk, "rb") as f:
-            rstc_paths = dill.load(f)
-        rstc_paths_avg = np.nanmean(rstc_paths, axis=0)
+        assert rstc_paths_avg is not None, (
+            "rstc_paths_avg was not populated; the cache-branch logic above "
+            "should ensure this is unreachable."
+        )
         ann_processed = VideoAnnotation(fname_processed, ann.video.fname)
-        ann_processed.data = {label: {} for label in label_list}
-        for label_cnt, label in enumerate(label_list):
-            for frame_num in frame_list:
-                ann_processed.data[label][frame_num] = rstc_paths_avg[frame_num, label_cnt, :]
+        # Build per-label dicts via comprehension instead of the
+        # nested ``data[label][frame] = ...`` loop. Same end state,
+        # one fewer name-lookup chain per write.
+        ann_processed.data = {
+            label: {frame_num: rstc_paths_avg[frame_num, label_cnt, :]
+                    for frame_num in frame_list}
+            for label_cnt, label in enumerate(label_list)
+        }
         ann_processed.save()
 
     return VideoAnnotation(fname_processed, ann.video.fname)
