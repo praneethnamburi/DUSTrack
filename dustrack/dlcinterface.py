@@ -14,7 +14,7 @@ import threading
 import traceback
 import warnings
 from pathlib import Path, PureWindowsPath, PurePosixPath
-from typing import Mapping, Union
+from typing import Literal, Mapping, Union
 
 import numpy as np
 import pandas as pd
@@ -3987,6 +3987,49 @@ class DLCProject:
             self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
         return self
 
+    def _initialize_weights_from_external_path(self, external_path):
+        """Edit the latest iteration's pose_cfg to initialise weights from
+        an external snapshot file.
+
+        Sibling of :meth:`initialize_weights` for the
+        ``train_iteration(refine_mode="external")`` UI path. Unlike
+        :meth:`initialize_weights` (which resolves an in-project
+        ``(source_iteration, source_snapshot)`` pair via ``FileManager``),
+        this helper takes the path directly and writes it verbatim into
+        the destination iteration's pose_cfg.
+
+        The DLC3 ``train_iteration`` path normally bypasses this helper
+        and passes ``snapshot_path=`` straight to ``train_network`` so
+        pose_cfg stays clean. This helper is the DLC2 fallback (DLC2's
+        ``train_network`` has no runtime override) and is also available
+        on DLC3 if a caller wants the pose_cfg path explicitly.
+
+        Args:
+            external_path (str or Path): Path to an external snapshot
+                file (``.pt`` on DLC3, ``.index`` on DLC2). A trailing
+                ``.pt`` / ``.index`` extension is stripped to match the
+                pose_cfg convention :meth:`initialize_weights` uses.
+
+        Returns:
+            self: For method chaining.
+        """
+        external_path = str(external_path)
+        # Match initialize_weights' convention: pose_cfg expects the
+        # extensionless prefix (DLC2: init_weights=.../snapshot-200;
+        # DLC3: resume_training_from=.../snapshot-200).
+        for ext in (".pt", ".index"):
+            if external_path.endswith(ext):
+                external_path = external_path[: -len(ext)]
+                break
+
+        dest_iteration = self.all_iterations[-1]
+        cfg_file = self.get_pose_cfg_file(dest_iteration)
+        if DLC3:
+            self.edit_config(cfg_file, resume_training_from=external_path)
+        else:
+            self.edit_config(cfg_file, init_weights=external_path)
+        return self
+
     def create_training_dataset(self, **kwargs):
         """Call deeplabcut.create_training_dataset."""
         net_type = kwargs.pop('net_type', 'resnet_50')
@@ -4197,6 +4240,223 @@ class DLCProject:
             analyze_videos_kwargs["batchsize"] = kwargs.pop("analyze_batchsize")
 
         return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
+
+    def train_iteration(
+        self,
+        *,
+        refine_mode: Literal["scratch", "in_project", "external"] = "scratch",
+        source_iteration: int = None,
+        source_snapshot: int = None,
+        external_snapshot_path: str = None,
+        maxiters: int = None,
+        create_video: bool = False,
+        videos: list = None,
+        analyze_batchsize: int = None,
+    ):
+        """Explicit-args training driver for UI-triggered flows.
+
+        Distinct from :meth:`process` (auto-infer for CLI ergonomics).
+        Caller decides everything: refine source, training duration,
+        output options. Strict validation per ``refine_mode``; no
+        inference and no silent fallbacks.
+
+        The mechanics of advancing iterations (extract_frames →
+        increment_iteration if latest is trained → create_training_dataset
+        if needed) mirror :meth:`process`; the only difference is *how*
+        weights are initialised once the destination iteration is in
+        place.
+
+        Args:
+            refine_mode: How to initialise weights for the next training
+                round. ``"scratch"`` starts from random init (no pose_cfg
+                edit); ``"in_project"`` copies weights from a snapshot
+                in this project (requires ``source_iteration``, optional
+                ``source_snapshot``); ``"external"`` initialises from an
+                arbitrary snapshot file (requires
+                ``external_snapshot_path``; supported on both DLC2 and
+                DLC3 -- DLC3 passes the path through
+                ``train_network(snapshot_path=...)``, DLC2 edits
+                pose_cfg's ``init_weights`` via
+                :meth:`_initialize_weights_from_external_path`).
+            source_iteration: in-project iteration to copy weights from.
+                Only valid with ``refine_mode="in_project"``; must point
+                at a trained iteration.
+            source_snapshot: specific snapshot within
+                ``source_iteration``. Only valid with
+                ``refine_mode="in_project"``; defaults to the best
+                snapshot when ``None``.
+            external_snapshot_path: path to an external snapshot file
+                (``.pt`` on DLC3, ``.index`` on DLC2). Only valid with
+                ``refine_mode="external"``; the file must exist at
+                call time.
+            maxiters: training epochs (DLC3) or iterations (DLC2).
+                Defaults to the same values :meth:`process` uses (50 /
+                500000) so the two methods stay consistent until the
+                UI exposes the field.
+            create_video: write a labeled output video after analyze.
+                Defaults to ``False`` (the UI ergonomics default;
+                :meth:`process` defaults to ``True`` for CLI parity).
+            videos: list of videos (indices or paths) to analyze.
+                Forwarded to ``analyze_videos``. ``None`` analyses every
+                video in the project.
+            analyze_batchsize: batchsize for ``analyze_videos``.
+                Forwarded on if set; ``None`` lets ``analyze_videos``
+                pick its own default (post-2026-05-20: rc14 knee at 4).
+
+        Returns:
+            self: For method chaining.
+
+        Raises:
+            ValueError: on refine_mode / argument mismatch (see
+                :meth:`_validate_train_iteration_args`).
+            TypeError: if ``source_iteration`` / ``source_snapshot``
+                aren't ``int`` when given.
+            FileNotFoundError: if ``external_snapshot_path`` is set but
+                the file doesn't exist.
+        """
+        self._validate_train_iteration_args(
+            refine_mode=refine_mode,
+            source_iteration=source_iteration,
+            source_snapshot=source_snapshot,
+            external_snapshot_path=external_snapshot_path,
+        )
+
+        if maxiters is None:
+            maxiters = 50 if DLC3 else 500000  # same defaults as process()
+
+        # Iteration advancement mechanics (mirror process()).
+        self.extract_frames()  # capture any new manual annotations
+        if self.latest_iteration_is_trained():
+            self.increment_iteration()
+        if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
+            self.create_training_dataset()
+
+        # Apply refine mode.
+        if refine_mode == "in_project":
+            self.initialize_weights(
+                source_iteration=source_iteration,
+                source_snapshot=source_snapshot,
+            )
+        elif refine_mode == "external" and not DLC3:
+            # DLC2: no runtime override -- edit pose_cfg's init_weights
+            # to point at the external snapshot. DLC3 handles this
+            # inline at the train call below via snapshot_path=.
+            self._initialize_weights_from_external_path(external_snapshot_path)
+        # refine_mode == "scratch": no pose_cfg edit; pose_cfg is fresh
+        # from create_training_dataset and has no init weights set.
+
+        # Train.
+        if not self.current_iteration_is_trained():
+            train_kwargs = {}
+            if DLC3:
+                train_kwargs["epochs"] = maxiters
+                if refine_mode == "external":
+                    train_kwargs["snapshot_path"] = external_snapshot_path
+            else:
+                train_kwargs["maxiters"] = maxiters
+            try:
+                self.train(**train_kwargs)
+            except KeyboardInterrupt:
+                pass
+
+        # Evaluate + analyze.
+        analyze_kwargs = {}
+        if videos is not None:
+            analyze_kwargs["videos"] = videos
+        if analyze_batchsize is not None:
+            analyze_kwargs["batchsize"] = analyze_batchsize
+        return self.evaluate().analyze_videos(create_video=create_video, **analyze_kwargs)
+
+    def _validate_train_iteration_args(
+        self,
+        *,
+        refine_mode,
+        source_iteration,
+        source_snapshot,
+        external_snapshot_path,
+    ):
+        """Strict validation for :meth:`train_iteration`. Raises on
+        mismatch.
+
+        The discriminator is ``refine_mode``; the helper enforces a
+        canonical valid-combo table:
+
+        - ``"scratch"``: every source / external arg must be ``None``.
+        - ``"in_project"``: ``source_iteration`` required (``int``,
+          trained); ``source_snapshot`` optional (``int`` or ``None``
+          -- ``None`` lets :meth:`initialize_weights` pick the best
+          snapshot); ``external_snapshot_path`` must be ``None``.
+        - ``"external"``: ``external_snapshot_path`` required (string,
+          file must exist); ``source_iteration`` /
+          ``source_snapshot`` must be ``None``.
+        """
+        valid_modes = {"scratch", "in_project", "external"}
+        if refine_mode not in valid_modes:
+            raise ValueError(
+                f"refine_mode must be one of {sorted(valid_modes)}, "
+                f"got {refine_mode!r}"
+            )
+
+        if refine_mode == "scratch":
+            for name, value in (
+                ("source_iteration", source_iteration),
+                ("source_snapshot", source_snapshot),
+                ("external_snapshot_path", external_snapshot_path),
+            ):
+                if value is not None:
+                    raise ValueError(
+                        f"refine_mode='scratch' is incompatible with "
+                        f"{name}={value!r}"
+                    )
+            return
+
+        if refine_mode == "in_project":
+            if external_snapshot_path is not None:
+                raise ValueError(
+                    "refine_mode='in_project' is incompatible with "
+                    f"external_snapshot_path={external_snapshot_path!r}"
+                )
+            if source_iteration is None:
+                raise ValueError(
+                    "refine_mode='in_project' requires source_iteration"
+                )
+            if not isinstance(source_iteration, int):
+                raise TypeError(
+                    f"source_iteration must be int, got "
+                    f"{type(source_iteration).__name__}"
+                )
+            if not self.iteration_is_trained(source_iteration):
+                trained = [i for i, snaps in self.all_snapshots.items() if snaps]
+                raise ValueError(
+                    f"source_iteration={source_iteration} is not a "
+                    f"trained iteration. Trained iterations: {trained}"
+                )
+            if source_snapshot is not None and not isinstance(source_snapshot, int):
+                raise TypeError(
+                    f"source_snapshot must be int or None, got "
+                    f"{type(source_snapshot).__name__}"
+                )
+            return
+
+        if refine_mode == "external":
+            for name, value in (
+                ("source_iteration", source_iteration),
+                ("source_snapshot", source_snapshot),
+            ):
+                if value is not None:
+                    raise ValueError(
+                        f"refine_mode='external' is incompatible with "
+                        f"{name}={value!r}"
+                    )
+            if external_snapshot_path is None:
+                raise ValueError(
+                    "refine_mode='external' requires external_snapshot_path"
+                )
+            if not os.path.exists(external_snapshot_path):
+                raise FileNotFoundError(
+                    f"External snapshot not found: {external_snapshot_path}"
+                )
+            return
 
     def annotate(self, video_index: int=0, new_annotation_suffix=None, **dustrack_kwargs):
         """
