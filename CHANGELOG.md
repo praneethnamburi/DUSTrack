@@ -11,6 +11,17 @@ Together they take `g.annotate()` on the pia02 `interosseous_pn24-x`
 production benchmark from **7.95 s → 2.96 s** (−5.0 s, **2.69× faster**)
 on video 0.
 
+DLC training UI controls: new `DLCProject.train_iteration` (explicit-args
+sibling of `process()`) plus a Training options modal that opens
+before the existing pre-flight scan when the user clicks Train DLC
+model. The modal exposes refine mode (scratch / in-project /
+external), source iteration + snapshot picker (or Browse... for an
+external `.pt`), training epochs, and a create-labeled-video toggle.
+Closes a latent silent-drop bug: `process(refine=<path>)` was a no-op
+on DLC2 because DLC2 has no `train_network(snapshot_path=...)`
+runtime override; the new path edits pose_cfg's `init_weights`
+explicitly. `process()` is unchanged for CLI users.
+
 Earlier 1.2.0 scope items (dnav 1.5.0 adoption + DLC `.h5` reclaim)
 came along with the 1.2.0a1 relocation. The originally-scheduled
 `fast_traces=True` Qt-tier was explored on a throwaway branch
@@ -19,6 +30,18 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Changed
+- **`DUSTrack.process_dlc_project` routes through
+  `DLCProject.train_iteration` on the Qt path** (`dlcinterface.py`).
+  The Qt button click now opens the Training options modal first; on
+  Accept, the modal's choices become `train_iteration(**kwargs)` in
+  the worker closure under the existing `ProgressOverlay`. Positional
+  `*args` / keyword `**kwargs` passed to `process_dlc_project` are now
+  **ignored on the Qt path** -- the modal owns the kwarg surface
+  per-click. Non-Qt fallback path is unchanged: still routes through
+  `DLCProject.process()` with `kwargs.setdefault('create_video',
+  False)`. `create_video`'s pre-1.2.0a2 setdefault that applied to
+  both paths is now scoped to the non-Qt branch only.
+
 - **`postprocess.gray` switched to `COLOR_RGB2GRAY`** (was
   `COLOR_BGR2GRAY` on the same RGB input from dnav `VideoReader`).
   Bug-fix that unifies the grayscale convention with
@@ -283,6 +306,80 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   the `utils.Video` subclass.
 
 ### Added
+- **`DLCProject.train_iteration(...)`** — explicit-args sibling of
+  `DLCProject.process()`. Where `process()` auto-infers state and picks
+  sane defaults for CLI ergonomics, `train_iteration` assumes the
+  caller has already decided everything (refine source, training
+  duration, output options) and performs strict per-`refine_mode`
+  validation with no inference or silent fallbacks. Three modes:
+  - `refine_mode="scratch"` — no pose_cfg edit; train from a fresh
+    `create_training_dataset` pose_cfg.
+  - `refine_mode="in_project"` — requires `source_iteration` (int,
+    must be trained); optional `source_snapshot` (None = best).
+    Routes through `initialize_weights(...)`. Works on both DLC2
+    and DLC3.
+  - `refine_mode="external"` — requires `external_snapshot_path`
+    (file must exist). On DLC3 the path is passed straight to
+    `train_network(snapshot_path=...)` (existing pattern); on DLC2
+    a new helper `_initialize_weights_from_external_path` edits
+    pose_cfg's `init_weights` to the external path string (since
+    DLC2's `train_network` has no runtime override). This closes a
+    surprise where `process(refine=<str>)` was silently a no-op on
+    DLC2 because the DLC2 branch never propagated the string. The
+    GUI Training options modal (below) is the primary caller.
+- **Training options modal on Train DLC model click**
+  (`dlcinterface.py`). New `_make_training_options_class()`
+  qtpy-lazy-import factory + `DUSTrack._prompt_training_options(qt_window)`
+  method + two pure helpers (`_default_training_options(dlcproject)`,
+  `_training_options_to_train_iteration_kwargs(options)`). Modal
+  opens BEFORE the existing pre-flight scan (separate concerns:
+  training config vs. data-loss prevention). Layout:
+  - **Refine mode** radio group: `Start from scratch` /
+    `Refine from in-project iteration` / `Refine from external
+    snapshot`. The in_project radio is auto-disabled when no
+    trained iterations are available (first-time training).
+  - **In-project sub-row**: iteration `QComboBox` (lists every
+    trained iteration; pre-selects the latest) + snapshot
+    `QComboBox` (repopulated on iteration change; first entry is
+    `best (auto)` mapping to None so `initialize_weights` picks
+    the best).
+  - **External sub-row**: `QLineEdit` + `Browse...` button (opens
+    a `QFileDialog` filtered to `*.pt` on DLC3 / `*.index` on
+    DLC2). The DLC2 path edits pose_cfg explicitly via the new
+    `_initialize_weights_from_external_path` helper.
+  - **Training duration**: `QSpinBox` (label adapts to "epochs"
+    on DLC3 / "iterations" on DLC2; pre-filled with the same 50 /
+    500000 default `process()` uses).
+  - **Create labeled video on completion**: `QCheckBox` (defaults
+    off; the UI ergonomics default vs. `process()`'s CLI-parity
+    `create_video=True`).
+  - **Train** (primary QSS) / **Cancel** (neutral QSS) buttons,
+    matching the rc2 ConfirmOverlay visual vocab.
+  Modal shares ConfirmOverlay's dark-translucent backdrop +
+  reposition + event-filter scaffolding; inner content `QWidget`
+  intentionally carries no `QWidget { ... }` QSS so child
+  combos / line edit / spinbox keep their native Windows
+  rendering (avoids the cascade trap from
+  `feedback_qt_qss_vs_palette`). Non-Qt fallback path is
+  unchanged -- still routes through `DLCProject.process()` with
+  its `kwargs.setdefault('create_video', False)` ergonomic.
+  Visual polish + a future "create DLC project from external
+  snapshot" feature deferred to a follow-up session.
+- **`tests/test_train_iteration.py`** (34 tests) — validates
+  `refine_mode` discrimination + DLC2/DLC3 dispatch + maxiters
+  defaults + analyze_videos kwarg forwarding +
+  `_initialize_weights_from_external_path` directly (DLC3 edits
+  `resume_training_from`, DLC2 edits `init_weights`, `.pt` / `.index`
+  extension stripping). Stub `DLCProject` subclass bypasses the
+  heavy `__init__` + filesystem deps.
+- **`tests/test_training_options_helpers.py`** (16 tests) — pure-helper
+  coverage for `_default_training_options` + `_training_options_to_train_iteration_kwargs`
+  across DLC2/DLC3 and trained/untrained project states. Pins the
+  payload-shape contract (scratch drops `source_*` keys; in_project
+  forwards `source_snapshot=None` rather than dropping it so
+  `initialize_weights` picks the best snapshot; external drops
+  `source_*` keys). The Qt widget itself is covered by manual
+  smoke per the EnhanceWidget / ConfirmOverlay precedent.
 - **`dustrack.convert_to_mono(sources, ...)`** (`dustrack/convert.py`):
   batch re-encode helper that walks a file / list / directory and
   writes `<stem>_mono.mp4` next to each source via
