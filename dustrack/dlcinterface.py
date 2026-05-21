@@ -1055,6 +1055,455 @@ def _make_enhance_widget_class():
     return EnhanceWidget
 
 
+# ---------------------------------------------------------------------------
+# Training options modal (Train DLC model click flow, 1.2.0a2)
+# ---------------------------------------------------------------------------
+#
+# The GUI Train button opens a Training options modal *before* the
+# existing pre-flight scan. The modal lets the user pick refine_mode +
+# source iteration/snapshot (or external snapshot path) + epochs +
+# create_video explicitly, then hands the choices to
+# :meth:`DLCProject.train_iteration` (the explicit-args sibling of
+# ``process()``).
+#
+# Two pure helpers + one factory:
+# - :func:`_default_training_options` reads project state and returns
+#   the initial dialog state dict.
+# - :func:`_training_options_to_train_iteration_kwargs` translates the
+#   user-modified dialog state to ``train_iteration`` kwargs.
+# - :func:`_make_training_options_class` builds the Qt dialog lazily.
+
+
+def _default_training_options(dlcproject):
+    """Initial state dict for the Training options modal.
+
+    Pure-Python, no Qt deps -- testable in isolation by passing a stub
+    that exposes the same surface as a real :class:`DLCProject`
+    (``all_snapshots``). Reads the module-level ``DLC3`` flag for the
+    training-duration default.
+
+    Defaults:
+
+    * ``refine_mode``: ``"in_project"`` if any iteration is trained;
+      otherwise ``"scratch"`` (the only mode that works without a
+      source).
+    * ``source_iteration``: the latest trained iteration; ``None`` if
+      none are trained.
+    * ``source_snapshot``: ``None`` (lets :meth:`initialize_weights`
+      pick the best snapshot).
+    * ``external_snapshot_path``: empty string -- the user picks via
+      Browse... in the modal.
+    * ``maxiters``: 50 (DLC3) or 500000 (DLC2), matching
+      :meth:`DLCProject.process` / :meth:`DLCProject.train_iteration`
+      defaults.
+    * ``create_video``: ``False`` -- UI ergonomics default.
+
+    Also returns ``trained_iterations`` (sorted) and
+    ``snapshots_by_iteration`` (dict) so the dialog can populate the
+    combos without going back to the project. ``is_dlc3`` is a
+    snapshot of the module flag so the dialog's spinbox label
+    ("epochs" vs "iterations") and the Browse filter (``.pt`` vs
+    ``.index``) don't have to import this module.
+
+    Returns:
+        dict: Initial state for the Training options modal.
+    """
+    trained = sorted(
+        i for i, snaps in dlcproject.all_snapshots.items() if snaps
+    )
+    snapshots_by_iteration = {
+        i: list(dlcproject.all_snapshots[i]) for i in trained
+    }
+    has_trained = bool(trained)
+    return {
+        "refine_mode": "in_project" if has_trained else "scratch",
+        "source_iteration": trained[-1] if has_trained else None,
+        "source_snapshot": None,  # None == "best" (initialize_weights default)
+        "external_snapshot_path": "",
+        "maxiters": 50 if DLC3 else 500000,
+        "create_video": False,
+        # Combo population helpers; not forwarded to train_iteration.
+        "trained_iterations": trained,
+        "snapshots_by_iteration": snapshots_by_iteration,
+        "is_dlc3": bool(DLC3),
+    }
+
+
+def _training_options_to_train_iteration_kwargs(options):
+    """Translate Training options dialog state to
+    :meth:`DLCProject.train_iteration` kwargs.
+
+    Pure-Python translation. ``options`` is the dict returned by the
+    modal's ``exec_()`` after the user clicks Train -- a copy of
+    :func:`_default_training_options`'s output with the user-picked
+    values applied. Discriminates by ``options['refine_mode']`` and
+    only forwards keys that ``train_iteration``'s validator accepts
+    for that mode (``source_*`` keys would be rejected in scratch
+    mode, etc.).
+
+    Returns:
+        dict: kwargs ready to splat into ``train_iteration(...)``.
+    """
+    mode = options["refine_mode"]
+    common = {
+        "refine_mode": mode,
+        "maxiters": options["maxiters"],
+        "create_video": options["create_video"],
+    }
+    if mode == "scratch":
+        return common
+    if mode == "in_project":
+        return {
+            **common,
+            "source_iteration": options["source_iteration"],
+            "source_snapshot": options["source_snapshot"],
+        }
+    if mode == "external":
+        return {
+            **common,
+            "external_snapshot_path": options["external_snapshot_path"],
+        }
+    raise ValueError(f"unknown refine_mode in options: {mode!r}")
+
+
+def _make_training_options_class():
+    """Build :class:`TrainingOptionsDialog` lazily, mirroring
+    :func:`_make_confirm_overlay_class`'s qtpy-import-on-demand pattern.
+
+    Modal dialog parented to the DUSTrack QMainWindow, shown when the
+    user clicks Train DLC model. Lets the user pick refine_mode +
+    source (in-project iteration/snapshot OR external snapshot path) +
+    epochs + create_video, returning the choices as a dict on Train
+    or ``None`` on Cancel.
+
+    Shares ConfirmOverlay's dark-translucent backdrop + reposition +
+    event-filter scaffolding but holds richer form widgets (radio
+    buttons, combos, line edit + Browse, spinbox, checkbox). The
+    inner content QWidget deliberately carries NO ``QWidget { ... }``
+    QSS so child QComboBox / QLineEdit / QSpinBox keep their native
+    rendering (per memory ``feedback_qt_qss_vs_palette``).
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
+        QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton,
+        QSpinBox, QVBoxLayout, QWidget,
+    )
+
+    # Reuse ConfirmOverlay's role QSS so Train/Cancel match the visual
+    # vocab of the other rc2 modals.
+    _ROLE_QSS = {
+        "primary": (
+            "QPushButton { background-color: #3a86ff; color: white; "
+            "  border: 1px solid #2a76ef; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4a96ff; }"
+            "QPushButton:pressed { background-color: #2a76ef; }"
+        ),
+        "neutral": (
+            "QPushButton { background-color: #555555; color: white; "
+            "  border: 1px solid #444444; padding: 6px 24px; "
+            "  font-size: 11pt; }"
+            "QPushButton:hover { background-color: #666666; }"
+            "QPushButton:pressed { background-color: #444444; }"
+        ),
+    }
+
+    class TrainingOptionsDialog(QObject):
+        """Synchronous modal for the Train DLC model pre-flight.
+
+        Example::
+
+            dialog = TrainingOptionsDialog(qt_window, initial_state=...)
+            options = dialog.exec_()
+            if options is None:
+                ...  # user cancelled
+            else:
+                kwargs = _training_options_to_train_iteration_kwargs(options)
+                self._dlcproject.train_iteration(**kwargs)
+
+        ``initial_state`` is the dict returned by
+        :func:`_default_training_options`; the dialog seeds itself
+        from it. On *Train*, ``exec_()`` returns a new dict with the
+        user-modified values applied. On *Cancel*, returns ``None``.
+        """
+
+        def __init__(self, main_window, *, initial_state: dict):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._result = None
+            self._loop = QEventLoop()
+            self._state = dict(initial_state)
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_training_options_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_training_options_overlay { "
+                "  background-color: rgba(0, 0, 0, 200); "
+                "}"
+                "QLabel { color: white; }"
+                "#dustrack_training_title { color: white; "
+                "  font-size: 22pt; font-weight: bold; }"
+                "QRadioButton { color: white; font-size: 11pt; }"
+                "QCheckBox { color: white; font-size: 11pt; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setAlignment(Qt.AlignCenter)
+            outer.addStretch(1)
+
+            title_lbl = QLabel("Training options")
+            title_lbl.setObjectName("dustrack_training_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title_lbl)
+
+            # Inner content card: deliberately no QSS on QWidget {} so
+            # child native controls (QComboBox / QLineEdit / QSpinBox)
+            # keep their Windows-native rendering (avoids the QSS-
+            # cascade trap from feedback_qt_qss_vs_palette).
+            content = QWidget()
+            content.setMaximumWidth(640)
+            content_layout = QVBoxLayout(content)
+            content_layout.setSpacing(12)
+
+            # --- Refine mode radios ---
+            self._refine_group = QButtonGroup(self)
+            self._scratch_radio = QRadioButton("Start from scratch")
+            self._in_project_radio = QRadioButton(
+                "Refine from in-project iteration"
+            )
+            self._external_radio = QRadioButton(
+                "Refine from external snapshot"
+            )
+            for i, rb in enumerate(
+                (self._scratch_radio, self._in_project_radio, self._external_radio)
+            ):
+                self._refine_group.addButton(rb, i)
+                content_layout.addWidget(rb)
+                rb.toggled.connect(self._on_radio_toggled)
+
+            # --- In-project source picker (indented sub-row) ---
+            self._in_project_row = QWidget()
+            ip_layout = QHBoxLayout(self._in_project_row)
+            ip_layout.setContentsMargins(28, 0, 0, 0)
+            ip_layout.addWidget(QLabel("Iteration:"))
+            self._iter_combo = QComboBox()
+            for it in initial_state.get("trained_iterations", []):
+                self._iter_combo.addItem(f"iteration-{it}", userData=it)
+            self._iter_combo.currentIndexChanged.connect(self._on_iteration_changed)
+            ip_layout.addWidget(self._iter_combo, stretch=1)
+            ip_layout.addWidget(QLabel("Snapshot:"))
+            self._snap_combo = QComboBox()
+            ip_layout.addWidget(self._snap_combo, stretch=1)
+            content_layout.addWidget(self._in_project_row)
+
+            # --- External source picker (indented sub-row) ---
+            self._external_row = QWidget()
+            ex_layout = QHBoxLayout(self._external_row)
+            ex_layout.setContentsMargins(28, 0, 0, 0)
+            ex_layout.addWidget(QLabel("Path:"))
+            self._external_path_edit = QLineEdit(
+                initial_state.get("external_snapshot_path", "")
+            )
+            ex_layout.addWidget(self._external_path_edit, stretch=1)
+            browse_btn = QPushButton("Browse…")
+            browse_btn.clicked.connect(self._on_browse_clicked)
+            ex_layout.addWidget(browse_btn)
+            content_layout.addWidget(self._external_row)
+
+            # --- Training duration ---
+            duration_row = QHBoxLayout()
+            duration_row.addWidget(
+                QLabel(
+                    "Training epochs:" if initial_state.get("is_dlc3", True)
+                    else "Training iterations:"
+                )
+            )
+            self._maxiters_spin = QSpinBox()
+            self._maxiters_spin.setRange(1, 10_000_000)
+            self._maxiters_spin.setValue(int(initial_state["maxiters"]))
+            duration_row.addWidget(self._maxiters_spin)
+            duration_row.addStretch(1)
+            content_layout.addLayout(duration_row)
+
+            # --- Create labeled video toggle ---
+            self._create_video_chk = QCheckBox(
+                "Create labeled video on completion"
+            )
+            self._create_video_chk.setChecked(
+                bool(initial_state["create_video"])
+            )
+            content_layout.addWidget(self._create_video_chk)
+
+            # --- Train / Cancel buttons ---
+            button_row = QHBoxLayout()
+            button_row.setAlignment(Qt.AlignCenter)
+            self._train_btn = QPushButton("Train")
+            self._train_btn.setMinimumWidth(160)
+            self._train_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._train_btn.clicked.connect(self._on_train_clicked)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setMinimumWidth(160)
+            self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+            button_row.addWidget(self._train_btn)
+            button_row.addWidget(self._cancel_btn)
+            content_layout.addLayout(button_row)
+
+            outer.addWidget(content, alignment=Qt.AlignCenter)
+            outer.addStretch(1)
+
+            # Seed radio group from initial_state.
+            mode = initial_state["refine_mode"]
+            {
+                "scratch": self._scratch_radio,
+                "in_project": self._in_project_radio,
+                "external": self._external_radio,
+            }[mode].setChecked(True)
+
+            # Pre-select the default iteration.
+            default_iter = initial_state.get("source_iteration")
+            if default_iter is not None:
+                idx = self._iter_combo.findData(default_iter)
+                if idx >= 0:
+                    self._iter_combo.setCurrentIndex(idx)
+
+            # Disable in_project radio if no trained iterations are
+            # available; first-time training has to start from scratch
+            # (or external on either DLC version since the helper
+            # supports both).
+            if not initial_state.get("trained_iterations"):
+                self._in_project_radio.setEnabled(False)
+                self._in_project_radio.setToolTip(
+                    "No trained iterations available yet."
+                )
+
+            # Trigger enable/disable cascade once after seeding.
+            self._on_radio_toggled()
+
+            main_window.installEventFilter(self)
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._train_btn.setFocus()
+
+        # -- Helpers ---------------------------------------------------
+
+        def _refresh_snapshot_combo(self):
+            """Repopulate the snapshot combo for the currently-selected
+            iteration. The first entry is "best (auto)" mapping to
+            ``None`` so :meth:`initialize_weights` picks the best.
+            """
+            self._snap_combo.blockSignals(True)
+            try:
+                self._snap_combo.clear()
+                self._snap_combo.addItem("best (auto)", userData=None)
+                cur_iter = self._iter_combo.currentData()
+                snapshots = self._state.get("snapshots_by_iteration", {}).get(
+                    cur_iter, []
+                )
+                for snap in snapshots:
+                    self._snap_combo.addItem(str(snap), userData=snap)
+            finally:
+                self._snap_combo.blockSignals(False)
+
+        def _set_row_enabled(self, row, enabled):
+            row.setEnabled(enabled)
+            for child in row.findChildren(QLabel):
+                child.setStyleSheet(
+                    "color: white;" if enabled else "color: #888888;"
+                )
+
+        # -- Slots -----------------------------------------------------
+
+        def _on_radio_toggled(self, *_):
+            in_project = self._in_project_radio.isChecked()
+            external = self._external_radio.isChecked()
+            self._set_row_enabled(self._in_project_row, in_project)
+            self._set_row_enabled(self._external_row, external)
+            if in_project:
+                self._refresh_snapshot_combo()
+
+        def _on_iteration_changed(self, *_):
+            self._refresh_snapshot_combo()
+
+        def _on_browse_clicked(self):
+            ext = ".pt" if self._state.get("is_dlc3", True) else ".index"
+            file_filter = f"DLC snapshot (*{ext});;All files (*.*)"
+            path, _selected_filter = QFileDialog.getOpenFileName(
+                self._mw,
+                "Choose external snapshot",
+                "",
+                file_filter,
+            )
+            if path:
+                self._external_path_edit.setText(path)
+
+        def _on_train_clicked(self):
+            if self._scratch_radio.isChecked():
+                mode = "scratch"
+            elif self._in_project_radio.isChecked():
+                mode = "in_project"
+            else:
+                mode = "external"
+            self._result = {
+                **self._state,
+                "refine_mode": mode,
+                "source_iteration": (
+                    self._iter_combo.currentData() if mode == "in_project"
+                    else None
+                ),
+                "source_snapshot": (
+                    self._snap_combo.currentData() if mode == "in_project"
+                    else None
+                ),
+                "external_snapshot_path": (
+                    self._external_path_edit.text() if mode == "external"
+                    else ""
+                ),
+                "maxiters": int(self._maxiters_spin.value()),
+                "create_video": self._create_video_chk.isChecked(),
+            }
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel_clicked(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        # -- Lifecycle (mirror ConfirmOverlay) -------------------------
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            """Block until the user clicks Train or Cancel.
+
+            Returns the result dict on Train; ``None`` on Cancel.
+            """
+            self._loop.exec_()
+            return self._result
+
+    return TrainingOptionsDialog
+
+
 class DUSTrack(_DUSTrackBase):
     """
     Interactive video point annotator with DeepLabCut integration.
