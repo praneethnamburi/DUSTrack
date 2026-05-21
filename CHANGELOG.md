@@ -29,6 +29,28 @@ came along with the 1.2.0a1 relocation. The originally-scheduled
 per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
+### Fixed
+- **Empty manual-layer labels after seeding** (`dlcinterface.py`).
+  Two compounding issues left the post-seed ``annotation_label``
+  dropdown showing the bootstrap default ``"0"`` instead of the
+  bundle's bodyparts. (1) ``_DUSTrackBase.__init__`` snapshots
+  ``self.ann.labels`` into the dropdown statevariable once and
+  never refreshes it when the active layer flips to
+  ``iteration-1`` post-seed. (2) ``add_annotation_layers``' union
+  pass adds missing labels but never *removes* the session-bootstrap
+  ``"0"``, so non-sequential bodyparts like ``["point1", "point3"]``
+  would land on a layer with ``["0", "1", "3"]`` rather than
+  ``["1", "3"]``. Fix: after seeding (or training, or fresh-from-
+  project annotate), reset every *empty* manual layer's labels to
+  match the project's bodyparts exactly via
+  ``_normalize_empty_manual_layer_labels``, then re-bootstrap the
+  ``label_range`` + ``annotation_label`` statevariables from the
+  active layer via ``_rebootstrap_label_states``. Bodypart -> label
+  mapping (``_dlc_bodyparts_to_layer_labels``) mirrors the
+  ``_dlc_trace_to_annotation_dict`` convention: strip the ``"point"``
+  prefix when every bodypart is ``point<digit>``; otherwise fall
+  back to consecutive indices.
+
 ### Changed
 - **Create DLC Project on an empty active layer routes through a
   Seed-from-bundle modal** (`dlcinterface.py`). Qt path only. When

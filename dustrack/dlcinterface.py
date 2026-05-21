@@ -99,6 +99,31 @@ _DENSE_LAYER_PREFIXES = ("dlc_", "dlccorr")
 _DENSE_LAYER_SUBSTRINGS = ("lkmovavg",)
 
 
+def _dlc_bodyparts_to_layer_labels(bodyparts: list[str]) -> list[str]:
+    """Convert DLC ``bodyparts`` to DUSTrack annotation-layer ``labels``.
+
+    Mirrors :meth:`VideoAnnotation._dlc_trace_to_annotation_dict`
+    (the h5-trace loader) and inverts ``DLCProject.__init__``'s
+    ``[f'point{x}' for x in annotation_names]`` synthesis at
+    project-creation time:
+
+    - If every bodypart strips cleanly to a digit after removing
+      the ``"point"`` prefix, the labels are the bare digits
+      (``["point0", "point1"]`` -> ``["0", "1"]``; ``["point1",
+      "point3"]`` -> ``["1", "3"]``).
+    - Otherwise (e.g. ``["nose", "ear"]`` from a non-DUSTrack
+      project), the labels are consecutive indices starting at 0.
+
+    Single source of truth for "given a project's bodyparts, what
+    labels should a new manual annotation layer carry?".
+    """
+    prefix = "point"
+    stripped = [bp.removeprefix(prefix) for bp in bodyparts]
+    if stripped and all(s.isdigit() for s in stripped):
+        return stripped
+    return [str(i) for i in range(len(bodyparts))]
+
+
 def _is_dense_layer_name(name: str) -> bool:
     """True if ``name`` is a layer that should render as a line plot
     by default (DLC inference, the ``dlccorr`` manual-corrections
@@ -3428,10 +3453,102 @@ class DUSTrack(_DUSTrackBase):
         # the same helper is called with scope=None so it operates on
         # all current dlc_ layers.
         self._normalize_dlc_layer_display(scope=new_layers.keys())
+        # Reset empty manual layers' labels to match the project's
+        # bodyparts. Two issues this fixes (both visible after
+        # seeding from an external snapshot): (a) ``add_annotation_layers``'
+        # union pass adds missing labels but never removes the
+        # session-bootstrap default ``"0"``, leaving spurious labels
+        # when bodyparts don't start at 0; (b) for the simple
+        # ``["point0", "point1"]`` case the data ends up correct but
+        # the ``annotation_label`` dropdown was set at __init__ from
+        # a one-label ``self.ann.labels`` snapshot and would otherwise
+        # stay stale. See :func:`_dlc_bodyparts_to_layer_labels`.
+        self._normalize_empty_manual_layer_labels()
         if new_suffix in self.annotations.names:
             self.statevariables["annotation_layer"].set_state(new_suffix)
         self._restructure_annotation_order()
+        # Re-bootstrap the label-related statevariables from the
+        # (possibly just-normalised) active layer so the dropdown
+        # reflects the project's bodyparts instead of the stale
+        # ``__init__``-time snapshot.
+        self._rebootstrap_label_states()
         self.update()
+
+    def _normalize_empty_manual_layer_labels(self) -> None:
+        """When the project's bodyparts are known, reset every *empty*
+        manual annotation layer's labels to match the bodyparts exactly.
+
+        Empty here means ``not any(ann.data.values())`` -- no label
+        has any frames. Layers with real annotations are untouched.
+
+        Without this, two failure modes show up after seeding from
+        an external snapshot bundle:
+
+        - The session-bootstrap ``"manual"`` layer is created with
+          ``{"0": {}}`` (the ``n_labels=1`` default in
+          :class:`VideoAnnotation`). The union pass in
+          :meth:`add_annotation_layers` adds new labels but never
+          removes the bootstrap ``"0"``, so a bundle with bodyparts
+          ``["point1", "point3"]`` produces a layer with labels
+          ``["0", "1", "3"]`` instead of ``["1", "3"]``.
+        - Even when bodyparts are ``["point0", "point1"]`` and the
+          union ends up correct, the active layer's labels were
+          captured at ``__init__`` time into the
+          ``annotation_label`` statevariable; without re-bootstrap
+          (see :meth:`_rebootstrap_label_states`) the dropdown shows
+          only the original ``"0"``.
+
+        Saves the layer to disk if its JSON path is already known
+        (set by :meth:`_rewire_to_in_project_paths`) so the on-disk
+        annotation file reflects the new label set on the next
+        cold-open.
+        """
+        if self._dlcproject is None:
+            return
+        bodyparts = self._dlcproject.config.get("bodyparts") or []
+        if not bodyparts:
+            return
+        target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
+        for ann in self.annotations._list:
+            if ann.name == "buffer":
+                continue
+            if not self._is_manual_layer_name(ann.name):
+                continue
+            if any(ann.data.values()):
+                continue  # real data present -- preserve as-is
+            if list(ann.data.keys()) == target_labels:
+                continue  # already canonical
+            ann.data = {label: {} for label in target_labels}
+            ann.sort_labels()
+            ann.re_setup_display()
+            if ann.fname is not None and Path(ann.fname).suffix == ".json":
+                ann.save()
+
+    def _rebootstrap_label_states(self) -> None:
+        """Refresh the ``label_range`` + ``annotation_label``
+        statevariables from the *current* active layer's labels.
+
+        At construction time, :class:`_DUSTrackBase.__init__` reads
+        ``self.ann.labels`` once to seed these statevariables. Any
+        downstream code that changes the active layer's labels
+        (e.g. :meth:`_refresh_dlc_layers` after train / seed, which
+        adds DLC trace layers and may rewrite ``iteration-N``
+        labels via :meth:`_normalize_empty_manual_layer_labels`)
+        leaves the dropdown stale unless this is called. The
+        contents mirror the ``__init__`` bootstrap.
+        """
+        if not self.ann.labels:
+            return
+        first_label = self.ann.labels[0]
+        try:
+            label_int = int(first_label)
+        except (TypeError, ValueError):
+            return  # non-numeric labels skip the range bootstrap
+        self.statevariables["label_range"].set_state(label_int // 10)
+        self.update_annotation_label_states()
+        states = self.statevariables["annotation_label"].states
+        if states:
+            self.statevariables["annotation_label"].set_state(states[0])
 
     def _normalize_dlc_layer_display(self, scope=None):
         """Apply the post-load display convention for DLC-pipeline layers:

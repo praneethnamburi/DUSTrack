@@ -17,6 +17,7 @@ from dustrack import (
     import_seed_bundle_into_project,
     inspect_seed_bundle,
 )
+from dustrack.dlcinterface import _dlc_bodyparts_to_layer_labels
 from dustrack.seed import extract_snapshot_for_seeding as _extract_direct
 
 
@@ -168,6 +169,36 @@ def test_extract_requires_pose_cfg(tmp_path):
 
 def test_top_level_export_matches_module_export():
     assert extract_snapshot_for_seeding is _extract_direct
+
+
+# ---------------------------------------------------------------------------
+# _dlc_bodyparts_to_layer_labels
+# ---------------------------------------------------------------------------
+
+
+def test_bodyparts_to_labels_sequential_point_prefix():
+    assert _dlc_bodyparts_to_layer_labels(["point0", "point1"]) == ["0", "1"]
+
+
+def test_bodyparts_to_labels_sparse_point_prefix():
+    """User-cited case: a project trained with non-sequential
+    bodyparts should preserve the digit identity, not renumber from 0."""
+    assert _dlc_bodyparts_to_layer_labels(["point1", "point3"]) == ["1", "3"]
+
+
+def test_bodyparts_to_labels_non_digit_falls_back_to_indices():
+    """Bodyparts from a foreign-project DLC config (e.g. SuperAnimal
+    body-part names) should renumber to consecutive indices."""
+    assert _dlc_bodyparts_to_layer_labels(["nose", "ear"]) == ["0", "1"]
+
+
+def test_bodyparts_to_labels_mixed_falls_back_to_indices():
+    """Any non-digit bodypart in the set forces the index fallback."""
+    assert _dlc_bodyparts_to_layer_labels(["point0", "ear"]) == ["0", "1"]
+
+
+def test_bodyparts_to_labels_empty():
+    assert _dlc_bodyparts_to_layer_labels([]) == []
 
 
 # ---------------------------------------------------------------------------
