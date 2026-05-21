@@ -15,7 +15,24 @@ from pathlib import Path
 
 import pytest
 
+from dustrack import dlcinterface
 from dustrack.dlcinterface import DUSTrack
+
+
+@pytest.fixture(autouse=True)
+def _dlc_loaded():
+    """Force the lazy DLC loader to ``"done"`` for the existing gate
+    tests, which pre-date the lazy-load refactor and assume DLC is
+    available synchronously. The new "Loading DeepLabCut…" gate gets
+    dedicated tests in :class:`TestCreateDLCProjectGateDuringLoad`
+    that flip the state explicitly.
+    """
+    prior = dlcinterface._DLC_LOAD_STATE
+    dlcinterface._DLC_LOAD_STATE = "done"
+    try:
+        yield
+    finally:
+        dlcinterface._DLC_LOAD_STATE = prior
 
 
 def _make_dlc_root(folder: Path) -> Path:
@@ -179,3 +196,80 @@ class TestReduceJitterNotGated:
         stub = _Stub(fname=str(vid), active_layer_name="manual")
         gates = stub.evaluate()
         assert "Reduce jitter" not in gates
+
+
+class TestCreateDLCProjectGateDuringLoad:
+    """Lazy ``import deeplabcut`` (~7 s) runs on a bg thread fired
+    from :func:`dustrack.open`. Until the loader resolves, the
+    Create DLC Project button stays greyed out with a "Loading
+    DeepLabCut…" tooltip -- a subtle "not ready yet" signal using
+    the same disabled-button affordance as the other gates.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_pending(self):
+        """Override the file-level autouse fixture to flip the
+        loader state to ``"pending"`` (the pre-load shape) so the
+        gate code exercises the "still loading" branch.
+        """
+        prior = dlcinterface._DLC_LOAD_STATE
+        dlcinterface._DLC_LOAD_STATE = "pending"
+        try:
+            yield
+        finally:
+            dlcinterface._DLC_LOAD_STATE = prior
+
+    def test_pending_disables_create_dlc_project(self, tmp_path):
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(fname=str(vid), active_layer_name="manual")
+        enabled, tooltip = stub.evaluate()["Create DLC Project"]
+        assert enabled is False
+        assert "Loading DeepLabCut" in tooltip
+
+    def test_loading_disables_create_dlc_project(self, tmp_path):
+        # Mirror the "loading" state ``_dlc_load_state()`` returns
+        # when the bg thread is in flight (``_DLC_LOAD_THREAD`` set,
+        # ``_DLC_LOAD_STATE == "pending"``). The gate predicate
+        # treats "loading" the same as "pending".
+        prior_thread = dlcinterface._DLC_LOAD_THREAD
+        import threading
+        dlcinterface._DLC_LOAD_THREAD = threading.Thread(target=lambda: None)
+        try:
+            vid = tmp_path / "sample.mp4"
+            vid.write_bytes(b"")
+            stub = _Stub(fname=str(vid), active_layer_name="manual")
+            assert dlcinterface._dlc_load_state() == "loading"
+            enabled, tooltip = stub.evaluate()["Create DLC Project"]
+            assert enabled is False
+            assert "Loading DeepLabCut" in tooltip
+        finally:
+            dlcinterface._DLC_LOAD_THREAD = prior_thread
+
+    def test_missing_disables_create_dlc_project(self, tmp_path):
+        """``find_spec`` said yes, but the actual import raised
+        (broken torch / partial DLC install). The button stays
+        greyed with a "DeepLabCut failed to load" tooltip rather
+        than letting the click raise a generic ImportError.
+        """
+        dlcinterface._DLC_LOAD_STATE = "missing"
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(fname=str(vid), active_layer_name="manual")
+        enabled, tooltip = stub.evaluate()["Create DLC Project"]
+        assert enabled is False
+        assert "DeepLabCut failed to load" in tooltip
+
+    def test_project_membership_wins_over_loading(self, tmp_path):
+        """When the session is already inside a DLC project, the
+        "Already inside" tooltip takes precedence over "Loading…"
+        -- the click would refuse on the membership ground first.
+        """
+        root = _make_dlc_root(tmp_path / "proj")
+        vid = root / "videos" / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(fname=str(vid), active_layer_name="manual")
+        enabled, tooltip = stub.evaluate()["Create DLC Project"]
+        assert enabled is False
+        assert "Already inside DLC project" in tooltip
+        assert "Loading DeepLabCut" not in tooltip

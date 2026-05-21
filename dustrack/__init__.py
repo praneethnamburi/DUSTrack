@@ -59,6 +59,33 @@ Example:
 
 from .__version__ import __version__
 
+# ---------------------------------------------------------------------
+# Qt-binding side-effects historically supplied by ``import deeplabcut``
+# ---------------------------------------------------------------------
+#
+# The 1.2.0a3 lazy-DLC refactor pushed ``import deeplabcut`` from
+# module-import time into an on-demand background thread (~5.6 s shaved
+# off ``import dustrack``). DLC's ``__init__`` was also setting a few
+# environment variables as a side effect; without those, qtpy resolves
+# to PyQt6 on this multi-binding env and the ``_pin_qt_palette``
+# light-mode pin in :class:`DUSTrack` no longer paints correctly
+# (Windows OS dark theme leaks through). Set ``QT_API`` (and the OpenMP
+# guard pair DLC also writes) here, *before* any
+# ``datanavigator`` / ``matplotlib`` / ``qtpy`` import below, so the
+# Qt binding is chosen identically to the pre-refactor world. Gated on
+# ``find_spec("deeplabcut")`` so a deeplabcut-less install (the paper's
+# "Option 1" lightweight path) doesn't override a user-chosen
+# QT_API. Each variable is set with the equivalent of ``setdefault``
+# so an explicit shell-level override still wins.
+import importlib.util as _importlib_util  # noqa: E402
+import os as _os  # noqa: E402
+
+if _importlib_util.find_spec("deeplabcut") is not None:
+    _os.environ.setdefault("QT_API", "pyside6")
+    _os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
+    _os.environ.setdefault("KMP_INIT_AT_FORK", "FALSE")
+    _os.environ.setdefault("PYSIDE6_OPTION_PYTHON_ENUM", "True")
+
 # Order matters: opticalflow has no in-package deps; pointtracking pulls
 # from opticalflow; postprocess pulls VideoAnnotation from pointtracking;
 # dlcinterface pulls pointtracking + postprocess.

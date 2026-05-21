@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import fnmatch
 import functools
+import importlib
+import importlib.util
 import os
 import queue
 import re
@@ -38,18 +40,191 @@ from .seed import (
 )
 from . import _config
 
-try:
-    import deeplabcut
-    from deeplabcut.utils.auxfun_videos import VideoWriter
-    from ruamel.yaml.scanner import ScannerError
-    DLC3 = deeplabcut.__version__.startswith('3.')
-    HAS_DLC = True
-except ImportError:
+# ---------------------------------------------------------------------
+# Lazy DeepLabCut loader
+# ---------------------------------------------------------------------
+#
+# ``import deeplabcut`` runs torch + several heavy submodules; on the
+# dlc3rc14 env it costs ~7 s of wall time. Paying that during
+# ``import dustrack`` blocks the picker and the GUI cold-open even
+# though nothing on the annotation-only path actually touches DLC
+# (Create DLC Project, Train DLC model, the Phase 2 resume path).
+#
+# ``HAS_DLC`` is settled cheaply via ``importlib.util.find_spec`` so
+# the button-gating decision in ``DUSTrack.__init__`` doesn't need the
+# real import; the actual import runs through ``_ensure_dlc_loaded``
+# (synchronous, idempotent, thread-safe) and is normally kicked off by
+# ``_ensure_dlc_loaded_async`` -- a daemon thread fired from
+# ``dustrack.open()`` so DLC loads in parallel with the picker /
+# DUSTrack-construction / user-annotation work. The module globals
+# ``deeplabcut``, ``VideoWriter``, ``ScannerError`` and ``DLC3`` stay
+# ``None`` / ``False`` until the loader populates them; every DLC-using
+# method calls ``_ensure_dlc_loaded()`` as its first line so the names
+# are guaranteed bound at use.
+#
+# Tests can short-circuit the loader by setting the module-level
+# ``_DLC_LOAD_STATE`` to ``"done"`` and pre-binding the names; see
+# ``tests/test_lazy_dlc_loader.py``.
+
+HAS_DLC: bool = importlib.util.find_spec("deeplabcut") is not None
+DLC3: bool = False
+deeplabcut = None  # populated by _ensure_dlc_loaded
+VideoWriter = None  # populated by _ensure_dlc_loaded
+ScannerError = None  # populated by _ensure_dlc_loaded
+
+_DLC_LOAD_LOCK = threading.Lock()
+_DLC_LOAD_STATE: str = "pending"  # "pending" | "loading" | "done" | "missing"
+_DLC_LOAD_THREAD: Optional[threading.Thread] = None
+_DLC_LOAD_CALLBACKS: list = []  # called on the loader thread once "done" / "missing"
+
+
+def _ensure_dlc_loaded() -> bool:
+    """Import ``deeplabcut`` (and friends) on first call; idempotent.
+
+    Returns ``True`` if DLC is available after the call, ``False`` if
+    the package isn't installed. Thread-safe: concurrent callers block
+    on a single import; the second-and-later calls return immediately.
+
+    On success, the module globals ``deeplabcut``, ``VideoWriter``,
+    ``ScannerError`` and ``DLC3`` are bound to the real values. On
+    failure (no DLC installed) the globals stay ``None`` / ``False``.
+    """
+    global deeplabcut, VideoWriter, ScannerError, DLC3, _DLC_LOAD_STATE
+    if _DLC_LOAD_STATE == "done":
+        return True
+    if _DLC_LOAD_STATE == "missing":
+        return False
+    if not HAS_DLC:
+        with _DLC_LOAD_LOCK:
+            _DLC_LOAD_STATE = "missing"
+        _fire_dlc_load_callbacks()
+        return False
+    with _DLC_LOAD_LOCK:
+        if _DLC_LOAD_STATE == "done":
+            return True
+        if _DLC_LOAD_STATE == "missing":
+            return False
+        # We hold the lock; nobody else can flip state until we either
+        # finish the import or fail.
+        try:
+            _dlc = importlib.import_module("deeplabcut")
+            _vw = importlib.import_module("deeplabcut.utils.auxfun_videos").VideoWriter
+            _se = importlib.import_module("ruamel.yaml.scanner").ScannerError
+        except ImportError:
+            _DLC_LOAD_STATE = "missing"
+            _fire_dlc_load_callbacks()
+            return False
+        deeplabcut = _dlc
+        VideoWriter = _vw
+        ScannerError = _se
+        DLC3 = bool(getattr(_dlc, "__version__", "").startswith("3."))
+        _DLC_LOAD_STATE = "done"
+    _fire_dlc_load_callbacks()
+    return True
+
+
+def _ensure_dlc_loaded_async() -> Optional[threading.Thread]:
+    """Fire-and-forget background DLC import. Idempotent.
+
+    Spawns a daemon thread that calls ``_ensure_dlc_loaded()`` on first
+    invocation; later calls (or calls after the load already finished)
+    are no-ops. Returns the loader thread (the existing one on repeat
+    calls) or ``None`` when there is no work to do (DLC missing, or the
+    load already finished synchronously).
+
+    Safe to call from any thread, including before any Qt application
+    exists. The loader thread doesn't touch Qt -- DLC's own
+    ``deeplabcut/__init__.py`` runs in light mode (``DLC loaded in
+    light mode; you cannot use any GUI``) so there's no
+    cross-thread-Qt hazard.
+    """
+    global _DLC_LOAD_THREAD
+    if _DLC_LOAD_STATE in ("done", "missing"):
+        return None
+    if not HAS_DLC:
+        # find_spec said no DLC; flip the state so subsequent sync
+        # callers short-circuit without acquiring the lock.
+        _ensure_dlc_loaded()
+        return None
+    with _DLC_LOAD_LOCK:
+        if _DLC_LOAD_STATE in ("done", "missing"):
+            return None
+        if _DLC_LOAD_THREAD is not None and _DLC_LOAD_THREAD.is_alive():
+            return _DLC_LOAD_THREAD
+        _DLC_LOAD_THREAD = threading.Thread(
+            target=_ensure_dlc_loaded,
+            name="dustrack-dlc-preload",
+            daemon=True,
+        )
+        _DLC_LOAD_THREAD.start()
+        return _DLC_LOAD_THREAD
+
+
+def _dlc_load_state() -> str:
+    """Return the current loader state.
+
+    Public-shaped (single underscore) for the workflow-button gate +
+    tests; the value is one of ``"pending"`` (no import attempted yet),
+    ``"loading"`` is reserved for an in-flight background import (set
+    when ``_ensure_dlc_loaded_async`` is running and the sync call
+    hasn't yet entered the lock), ``"done"`` (DLC is bound), or
+    ``"missing"`` (find_spec returned None, or import raised).
+
+    Today the lock-holding sync path doesn't publish a transitional
+    ``"loading"`` state separately from ``"pending"``; the bg thread
+    transitions ``pending -> done|missing`` once the import returns.
+    Callers should treat ``"loading"`` as a superset of ``"pending"``
+    (i.e. "not yet known to be ready").
+    """
+    if _DLC_LOAD_STATE == "pending" and _DLC_LOAD_THREAD is not None:
+        return "loading"
+    return _DLC_LOAD_STATE
+
+
+def register_dlc_load_callback(cb) -> None:
+    """Register a callback to fire when the lazy DLC load resolves.
+
+    Callbacks run on the loader thread (typically the background
+    daemon) once ``_DLC_LOAD_STATE`` flips to ``"done"`` or
+    ``"missing"``. If the load has already resolved by the time the
+    callback is registered, it fires immediately on the caller's
+    thread.
+
+    Used by ``DUSTrack.__init__`` to schedule a Qt-side refresh of the
+    Workflow-button gates once the bg preload completes. Callbacks
+    must be cheap and exception-safe; an exception in any one callback
+    won't prevent the others from running.
+    """
+    fire_now = False
+    with _DLC_LOAD_LOCK:
+        if _DLC_LOAD_STATE in ("done", "missing"):
+            fire_now = True
+        else:
+            _DLC_LOAD_CALLBACKS.append(cb)
+    if fire_now:
+        try:
+            cb()
+        except Exception:  # noqa: BLE001 -- defensive; callback errors must not propagate.
+            traceback.print_exc()
+
+
+def _fire_dlc_load_callbacks() -> None:
+    """Internal: drain ``_DLC_LOAD_CALLBACKS`` after the loader resolves."""
+    with _DLC_LOAD_LOCK:
+        callbacks = list(_DLC_LOAD_CALLBACKS)
+        _DLC_LOAD_CALLBACKS.clear()
+    for cb in callbacks:
+        try:
+            cb()
+        except Exception:  # noqa: BLE001 -- defensive; one bad callback can't block the rest.
+            traceback.print_exc()
+
+
+if not HAS_DLC:
     warnings.warn(
         'deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.',
         stacklevel=2,
     )
-    HAS_DLC = False
 
 
 EXPERIMENTER = _config.EXPERIMENTER
@@ -1996,6 +2171,19 @@ class DUSTrack(_DUSTrackBase):
                 )
         self._refresh_workflow_button_state()
 
+        # Re-evaluate the gates once the lazy DLC import finishes. The
+        # bg loader (kicked off in ``dustrack.open()``) flips state
+        # from ``pending`` -> ``done`` / ``missing`` on its own thread,
+        # so the callback hops to the Qt thread via a one-shot
+        # ``QTimer.singleShot(0, ...)`` post into the main event loop
+        # before touching the button widgets. ``QTimer.singleShot`` is
+        # safe to call from any thread when given a callable -- it
+        # posts a deferred event onto the parent's thread. Polling
+        # alternative would mirror the ``_run_with_overlay`` 200 ms
+        # tick; one-shot post is cheaper and matches the "fire when
+        # ready" shape of the callback API.
+        self._install_dlc_load_gate_refresh()
+
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
             self.update()
@@ -2098,6 +2286,54 @@ class DUSTrack(_DUSTrackBase):
         # palette).
         sv.setStyleSheet("")
 
+    def _install_dlc_load_gate_refresh(self) -> None:
+        """Re-evaluate workflow gates once the lazy DLC import resolves.
+
+        Poll-based: starts a 250 ms ``QTimer`` on the Qt main thread
+        that watches :func:`_dlc_load_state`; when state transitions
+        out of ``"pending"`` / ``"loading"`` the timer fires
+        :meth:`_refresh_workflow_button_state` once and stops itself.
+        Polling (vs. a cross-thread signal hop from the loader thread)
+        keeps every Qt touch on the main thread and mirrors the
+        ``_run_with_overlay`` pattern already in this file.
+
+        No-op on the mpl-fallback path (no Qt window) and on the
+        ``HAS_DLC=False`` path (Workflow buttons aren't created).
+        """
+        if not HAS_DLC:
+            return
+        if _dlc_load_state() in ("done", "missing"):
+            # Already resolved (e.g. tests pre-bound state, or the
+            # user spent >7 s in the picker on a warm cache). Gates
+            # were already in their final state when
+            # ``_refresh_workflow_button_state()`` ran above.
+            return
+        try:
+            from qtpy.QtCore import QTimer
+        except Exception:  # noqa: BLE001 -- mpl-only / pre-Qt teardown
+            return
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            return
+
+        timer = QTimer(qt_window)
+        timer.setInterval(250)
+
+        def _tick():
+            if _dlc_load_state() in ("done", "missing"):
+                timer.stop()
+                try:
+                    self._refresh_workflow_button_state()
+                except Exception:  # noqa: BLE001 -- defensive; never break the event loop.
+                    traceback.print_exc()
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        # Keep a reference so Qt doesn't garbage-collect the timer
+        # mid-poll. Same convention as the overlay-worker timer above.
+        self._dlc_load_gate_timer = timer
+
     def _refresh_workflow_button_state(self) -> None:
         """Enable / disable Workflow-group buttons based on session state.
 
@@ -2160,14 +2396,39 @@ class DUSTrack(_DUSTrackBase):
 
         # --- Create DLC Project --------------------------------------
         proj_root = _session_inside_dlc_project(self)
-        if proj_root is None:
-            gates["Create DLC Project"] = (True, "")
-        else:
+        dlc_state = _dlc_load_state()
+        if proj_root is not None:
+            # "Inside a project" wins over "still loading" -- the click
+            # would refuse on that ground first.
             gates["Create DLC Project"] = (
                 False,
                 f"Already inside DLC project {proj_root.name!r} — "
                 "use Train DLC model to extend it.",
             )
+        elif dlc_state in ("pending", "loading"):
+            # The bg preload (``_ensure_dlc_loaded_async`` fired from
+            # ``dustrack.open()``) hasn't finished yet. Subtle "we're
+            # not ready" signal via greyed-out button + tooltip; flips
+            # to enabled when ``register_dlc_load_callback`` fires the
+            # post-load gate refresh in ``__init__``.
+            gates["Create DLC Project"] = (
+                False,
+                "Loading DeepLabCut… (this button enables once the "
+                "import completes -- typically a few seconds after "
+                "DUSTrack launches).",
+            )
+        elif dlc_state == "missing":
+            # ``find_spec`` said yes but the import raised. Edge case
+            # (broken torch / dependency conflict / partial DLC
+            # install); ``HAS_DLC=False`` would have skipped button
+            # creation entirely.
+            gates["Create DLC Project"] = (
+                False,
+                "DeepLabCut failed to load. Check the launching "
+                "terminal for the import error.",
+            )
+        else:
+            gates["Create DLC Project"] = (True, "")
 
         # --- Train DLC model -----------------------------------------
         if self._dlcproject is None:
@@ -4961,7 +5222,15 @@ class DLCProject:
         """
         if not HAS_DLC:
             raise RuntimeError('Install deeplabcut to use DLCProject functionality.')
-        
+        # Block here for the real ``deeplabcut`` import. If
+        # ``_ensure_dlc_loaded_async`` already kicked off the loader
+        # this returns immediately; otherwise it does the (~7 s) import
+        # synchronously. Either way, by the time ``DLCProject.__init__``
+        # returns, the module-level ``deeplabcut``, ``VideoWriter``,
+        # ``ScannerError`` and ``DLC3`` globals are bound -- every
+        # method on this instance can use them without a per-call
+        # ensure.
+        _ensure_dlc_loaded()
         config_path = None
         if os.path.isfile(path):
             assert Path(path).stem == 'config' and Path(path).suffix == '.yaml'
@@ -6286,10 +6555,30 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             tracker = dustrack.open('video.mp4', 'manual', dark_mode=True)
     """
     if path is None:
+        # No-arg form: pop the picker BEFORE firing the bg DLC load.
+        # DLC's ``__init__`` prints ``Loading DLC X.X.X...`` as one of
+        # its first lines (fires ~10 ms into the bg thread) -- if we
+        # spawned the loader thread before this point, that print
+        # races the picker's Qt init (first ``QApplication([])`` +
+        # ``QFileDialog.getOpenFileNames`` is several hundred ms on
+        # Windows) and the user sees "Loading DLC..." in the terminal
+        # before the dialog appears. Deferring the fire-async until
+        # after the picker keeps the picker pop snappy + clean; DLC
+        # still loads concurrently with DUSTrack construction + user
+        # annotation, which is the actual overlap window that hides
+        # the ~7 s import cost behind work the user is doing anyway.
         picked = _prompt_for_videos()
         if picked is None:
             return None
         path = picked
+
+    # Kick off the DLC preload now (either right after the picker
+    # returned, or immediately if a path was supplied). Idempotent
+    # and cheap when DLC is missing (``find_spec`` short-circuits
+    # without spawning a thread). Workflow-button gating in
+    # ``DUSTrack.__init__`` reads the loader state to keep Create
+    # DLC Project disabled until the import resolves.
+    _ensure_dlc_loaded_async()
 
     queued: list[Path] = []
     if isinstance(path, (list, tuple)):
@@ -6374,6 +6663,7 @@ def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coo
     Returns:
         list: Paths to saved image files.
     """
+    _ensure_dlc_loaded()
     cap = VideoWriter(video_file_name)
     cap.set_bbox(*map(int, coords))
     indexlength = int(np.ceil(np.log10(len(cap))))

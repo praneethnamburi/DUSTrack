@@ -606,6 +606,59 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   `av.container.core.open` calls.
 
 ### Added
+- **Lazy `import deeplabcut`** (`dustrack/__init__.py`,
+  `dustrack/dlcinterface.py`). The DLC import (~7 s on the dlc3rc14
+  env) used to run at module-import time inside a top-level
+  ``try: import deeplabcut`` block, so every ``import dustrack`` --
+  including the CLI ``dustrack`` shell command -- paid the full cost
+  before the picker could pop. Refactored into three pieces:
+  - ``HAS_DLC`` now resolves via ``importlib.util.find_spec`` (cheap,
+    no actual import) so button-gating decisions in
+    ``DUSTrack.__init__`` don't need the real DLC.
+  - ``_ensure_dlc_loaded()`` (synchronous, idempotent, thread-safe)
+    imports DLC on first call and binds the module-level
+    ``deeplabcut`` / ``VideoWriter`` / ``ScannerError`` / ``DLC3``
+    globals. Called at the top of ``DLCProject.__init__`` and the
+    legacy ``_extract_frames`` helper so every DLC-using callsite
+    routes through one entry point.
+  - ``_ensure_dlc_loaded_async()`` (fire-and-forget daemon thread,
+    idempotent) is kicked off from ``dustrack.open()`` after the
+    picker returns (or immediately if a path was supplied). DLC
+    loads concurrently with DUSTrack construction + user annotation;
+    by the time the user clicks Create DLC Project the import is
+    typically done.
+  - Companion ``register_dlc_load_callback`` + ``_dlc_load_state``
+    helpers expose the loader state for the Workflow-button gate
+    refresh (250 ms ``QTimer`` poll in ``__init__`` that flips Create
+    DLC Project from greyed-out to enabled once the loader resolves)
+    and for any future consumer that wants to react to the load
+    finishing.
+
+  ``import dustrack`` clean-interpreter median dropped **8.45 s →
+  2.83 s** (≈3×, 5.6 s shaved); the remaining ~7 s DLC cost is fully
+  hidden behind the picker / GUI construction / user-annotation
+  window on the typical session. Workflow-button gate gained two
+  new states for Create DLC Project: ``"Loading DeepLabCut…"`` while
+  the bg load is in flight, ``"DeepLabCut failed to load."`` for the
+  rare ``find_spec``-yes-but-import-failed edge case. Project-
+  membership ("Already inside DLC project X") still wins precedence.
+
+  Qt-binding side effects historically supplied by DLC's
+  ``__init__`` are now set explicitly at the top of
+  ``dustrack/__init__.py`` (gated on ``find_spec("deeplabcut")``,
+  via ``setdefault`` so explicit shell overrides still win):
+  ``QT_API=pyside6`` (matches DLC's choice; without it qtpy resolves
+  to PyQt6 on multi-binding envs and ``_pin_qt_palette``'s light-mode
+  pin stops working), plus the OpenMP guard pair
+  ``KMP_DUPLICATE_LIB_OK=True`` / ``KMP_INIT_AT_FORK=FALSE`` and
+  ``PYSIDE6_OPTION_PYTHON_ENUM=True``. 14 new tests in
+  ``tests/test_lazy_dlc_loader.py`` (state-machine, async return
+  shape, idempotency, callback fan-out incl. one-failure-doesn't-
+  block-others, real ``deeplabcut`` import smoke); 5 new tests in
+  ``tests/test_workflow_button_gates.py`` (pending / loading /
+  missing states + project-membership-wins-over-loading); existing
+  gate tests pinned via an autouse fixture that forces loader state
+  to ``"done"``.
 - **Cross-session recent-videos + recent-folders history; picker
   remembers last folder** (`dustrack/_config.py`,
   `dustrack/dlcinterface.py`). The no-arg picker now lands at the
