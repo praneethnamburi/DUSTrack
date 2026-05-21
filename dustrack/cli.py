@@ -1,7 +1,7 @@
 """Console-script entry point for DUSTrack.
 
 Wired via ``[project.scripts]`` in ``pyproject.toml`` so users get the
-no-command-line ergonomic shipped in 1.2.0a3:
+no-command-line ergonomic shipped in 1.2.0a2:
 
     $ dustrack
 
@@ -10,7 +10,7 @@ and blocks until the window closes. The first selected video becomes
 the active session; any additional selections stash on
 ``tracker._video_queue`` for the future multi-video navigation work.
 
-Intentionally argument-less for 1.2.0a3 -- proving out the
+Intentionally argument-less for 1.2.0a2 -- proving out the
 no-CLI ergonomic is the goal. A path-argument form (``dustrack
 S:/path/to/video.mp4``) is a natural follow-up but not required by
 the "no command line" success criterion.
