@@ -50,24 +50,14 @@ For longer videos or ultrasound videos with repetitive motions, deep learning si
 
 ## Quick Start
 
-```python
-import dustrack
-import datanavigator
+After installation, type `dustrack` at any shell prompt:
 
-# Launch the GUI with an example video
-video_path = datanavigator.get_example_video()  # or use your own video path
-d = dustrack.open(video_path, "pn")
-# The second argument is the name of the "layer" for storing tracking annotations.
-# If you omit it, DUSTrack defaults to "iteration-0" -- the canonical seed name
-# for the DLC training pipeline (next iteration lands as "iteration-1").
-
-# To resume later, `dustrack.open(...)` auto-detects whether the path is a
-# bare video (start fresh) or a DLC project (resume in place):
-#   dustrack.open('video.mp4')                          # fresh, single video
-#   dustrack.open('path/to/project/')                   # resume from project root
-#   dustrack.open('path/to/project/config.yaml')        # resume from config
-#   dustrack.open('path/to/project/videos/video.mp4')   # resume on a specific video
+```sh
+dustrack
 ```
+
+A file picker opens — select one or more videos and DUSTrack launches
+on the first one. No Python code required.
 
 **Next steps:**
 - Use the GUI to mark points of interest in your video (see [Keyboard shortcuts](https://github.com/praneethnamburi/DUSTrack/raw/main/docs/source/resources/keyboard_shortcuts.png))
@@ -75,6 +65,33 @@ d = dustrack.open(video_path, "pn")
 - Export tracking results as a `.json` file for further analysis
 
 For detailed tutorials and examples, see the [documentation](https://DUSTrack.readthedocs.io).
+
+### Scripting and resume
+
+The same workflow is reachable from Python via `dustrack.open(...)`,
+which auto-detects whether the path is a bare video (start fresh) or
+a DLC project (resume in place):
+
+```python
+import dustrack
+import datanavigator
+
+# Zero-argument launch (same as the `dustrack` shell command):
+dustrack.open()                                      # pops the file picker
+
+# Start fresh on a specific video:
+video_path = datanavigator.get_example_video()       # or use your own
+d = dustrack.open(video_path, "pn")
+# The second argument is the name of the "layer" for storing tracking
+# annotations. If you omit it, DUSTrack defaults to "iteration-0" -- the
+# canonical seed name for the DLC training pipeline (next iteration
+# lands as "iteration-1").
+
+# Resume in place from a previous DLC project:
+dustrack.open('path/to/project/')                    # resume from project root
+dustrack.open('path/to/project/config.yaml')         # resume from config
+dustrack.open('path/to/project/videos/video.mp4')    # resume on a specific video
+```
 
 ## Documentation
 
