@@ -306,6 +306,19 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   the `utils.Video` subclass.
 
 ### Added
+- **`dustrack.extract_snapshot_for_seeding(snapshot_path, destination_path)`**
+  (`dustrack/seed.py`). First piece of the "seed an empty project
+  from an external snapshot" flow. Given a `.pt` inside an existing
+  DLC3 project's `dlc-models-pytorch/iteration-N/<modelfolder>/train/`,
+  copies the snapshot + its `pytorch_config.yaml` into the destination
+  folder — the minimal pair needed for another project to treat the
+  weights as if they were the result of its own iteration-0 training
+  run. `learning_stats.csv`, `train.txt`, sibling snapshots, and the
+  `test/pose_cfg.yaml` are deliberately omitted. Absolute paths
+  inside `pytorch_config.yaml` (`metadata.project_path` /
+  `metadata.pose_config_path`) are copied verbatim; the eventual
+  importer (the upcoming "Create DLC Project" modal when the active
+  manual layer is empty) is responsible for rewriting them.
 - **`DLCProject.train_iteration(...)`** — explicit-args sibling of
   `DLCProject.process()`. Where `process()` auto-infers state and picks
   sane defaults for CLI ergonomics, `train_iteration` assumes the
