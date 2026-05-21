@@ -4046,31 +4046,44 @@ class DLCProject:
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
     # refine can be both bool or string, if string, it is the path of the model to initialize weights from
-    def process(self, iteration_num=None, maxiters=None, refine: Union[bool, str]=True, create_video=True, source_snapshot=None, **kwargs):
+    def process(self, iteration_num=None, maxiters=None, refine: Union[bool, str]=True, create_video=True, source_iteration=None, source_snapshot=None, **kwargs):
         """
         Automated workflow: extract frames, train, evaluate, and analyze.
-        
+
         This is the main method for handling the full DLC pipeline. It intelligently
         decides what steps to run based on the current project state:
         - If iteration already evaluated: just analyze videos
         - If frames need extraction: extract them
         - If not trained: train the model
         - If refining: initialize weights from previous iteration
-        
+
         Args:
-            iteration_num (int or str, optional): Iteration to process. 
+            iteration_num (int or str, optional): Iteration to process.
                 Can be integer or 'latest'. Defaults to 'latest'.
-            maxiters (int, optional): Training iterations. 
-                Defaults: 500000 (DLC2) or 1000 epochs (DLC3).
-            refine (bool): Use transfer learning from previous iteration. Defaults to True.
+            maxiters (int, optional): Training iterations.
+                Defaults: 500000 (DLC2) or 50 epochs (DLC3). The DLC3
+                default is tuned for fast in-loop iteration; the GUI
+                exposes the field so callers can override per-click.
+            refine (bool or str): Use transfer learning. ``True`` initialises
+                weights from an in-project snapshot (see ``source_iteration``
+                / ``source_snapshot``); ``False`` starts from random init;
+                a string path is treated as an external snapshot file
+                (DLC3 only — routes through ``train(snapshot_path=...)``).
+                Defaults to True.
             create_video (bool): Create labeled output video. Defaults to True.
-            source_snapshot (int, optional): Specific snapshot for weight initialization.
+            source_iteration (int, optional): In-project iteration to copy
+                weights from when refining. Defaults to None (let
+                ``initialize_weights`` pick its own default = second-to-last
+                iteration). Must point at a trained iteration when set.
+            source_snapshot (int, optional): Specific snapshot for weight
+                initialization. Pair with ``source_iteration`` to target an
+                arbitrary in-project snapshot.
             **kwargs: Additional arguments.
                 - videos: List of videos to analyze (can be indices or paths).
-        
+
         Returns:
             self: For method chaining.
-        
+
         Example:
             >>> proj = DLCProject('path/to/project')
             >>> proj.process()  # Full automated workflow
@@ -4080,12 +4093,21 @@ class DLCProject:
         else:
             assert isinstance(iteration_num, int)
 
+        if source_iteration is not None:
+            assert isinstance(source_iteration, int)
+            if not self.iteration_is_trained(source_iteration):
+                trained = [i for i, snaps in self.all_snapshots.items() if snaps]
+                raise ValueError(
+                    f"source_iteration={source_iteration} is not a trained iteration. "
+                    f"Trained iterations: {trained}"
+                )
+
         if maxiters is None:
             if DLC3:
-                # TEMPORARY: dropped from 1000 → 50 to speed up the
-                # datanavigator/DUSTrack test-bed iteration loop
-                # (S:\_corpus\dustrack\). REVERT to 1000 before 1.1.0rc2
-                # ships.
+                # Fast-iteration default for the typical annotate→train→
+                # review→annotate loop; the GUI Training options modal
+                # surfaces this so callers can override per-click without
+                # editing source.
                 maxiters = 50 # epochs
             else:
                 maxiters = 500000
@@ -4098,19 +4120,22 @@ class DLCProject:
             return self.evaluate().analyze_videos(create_video=create_video)
 
         self.extract_frames() # do this every time in case there are any updates to the manual annotations.
-        
+
         if self.latest_iteration_is_trained():
             self.increment_iteration() # increment iteration in the config.yaml file
-        
+
         if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
             self.create_training_dataset()
-        
+
         if isinstance(refine, bool) and refine:
             if not self.latest_iteration_is_trained() and self.current_iteration == self.latest_iteration:
-                if source_snapshot is not None:
+                if source_iteration is None and source_snapshot is not None:
+                    # Backward-compat: when only snapshot is given,
+                    # default the source iteration to second-to-last.
                     source_iteration = self.latest_iteration - int(not self.latest_iteration_is_trained())
-                else:
-                    source_iteration = None
+                # Otherwise pass source_iteration through (None lets
+                # initialize_weights pick its own default = second-to-last
+                # + best snapshot).
                 self.initialize_weights(source_iteration=source_iteration, source_snapshot=source_snapshot)
 
         if not self.current_iteration_is_trained():
