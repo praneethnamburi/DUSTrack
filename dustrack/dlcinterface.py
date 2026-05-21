@@ -2334,6 +2334,20 @@ class DUSTrack(_DUSTrackBase):
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
 
+        # Qt path: empty-active-layer guard runs first so the user
+        # can bail before configuring any training options. The
+        # active manual layer is "empty" when no label has any frames
+        # -- typical scenarios: (a) the user just seeded iteration-0
+        # from an external snapshot and clicked Train without
+        # labeling any iteration-1 frames, (b) the user opened a
+        # fresh video and clicked Train without annotating anything.
+        # In either case, training will use whatever labels exist in
+        # ``labeled-data/``; the modal confirms intent so it's not a
+        # surprise.
+        if not any(self.ann.data.values()):
+            if not self._prompt_empty_layer_train_confirm(qt_window):
+                return self  # user cancelled -- UI left intact
+
         # Qt path: prompt for training options FIRST, then run the
         # existing pre-flight scan. The Training options modal owns the
         # full ``DLCProject.train_iteration`` kwarg surface (refine_mode
@@ -2756,6 +2770,45 @@ class DUSTrack(_DUSTrackBase):
         if options is None:
             return None
         return _training_options_to_train_iteration_kwargs(options)
+
+    def _prompt_empty_layer_train_confirm(self, qt_window) -> bool:
+        """Modal that fires when Train DLC is clicked with an empty
+        active manual layer. Returns True iff the user confirmed
+        ``Continue training``.
+
+        "Empty active layer" means no label has any frames -- the
+        check at the call site is ``not any(self.ann.data.values())``,
+        the same predicate used by ``_rewire_to_in_project_paths``
+        to decide whether a layer needs an on-disk save. The empty
+        layer itself is *not* saved by this path -- the pre-flight
+        scan downstream only acts on layers with diffs or
+        incompleteness, and an empty layer has neither.
+
+        User intent in this state: "train for more iterations without
+        new labels." Training will reuse whatever labels already
+        exist in ``labeled-data/``; if none do (e.g. a freshly-seeded
+        iteration-1), DLC will fail downstream with its own error.
+        """
+        ConfirmOverlay = _make_confirm_overlay_class()
+        body = (
+            f"Active layer {self.ann.name!r} has no labels.\n\n"
+            "Training will reuse the labels already in "
+            "'labeled-data/' from previous iterations. The empty "
+            "active layer will not be saved.\n\n"
+            "Continue without adding new labels?"
+        )
+        result = ConfirmOverlay(
+            qt_window,
+            title="No annotations in active layer",
+            message=body,
+            buttons=[
+                ("Continue training", "primary"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="warning",
+        ).exec_()
+        return result == "Continue training"
 
     def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
         """Single modal for the combined save-state + incompleteness

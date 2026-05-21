@@ -30,6 +30,18 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Changed
+- **Empty-active-layer guard on Train DLC model** (`dlcinterface.py`).
+  Qt path only. Before the Training options modal opens, if the
+  active manual layer has no labels (``not any(self.ann.data.values())``),
+  a confirm overlay surfaces: "Active layer has no labels. Training
+  will reuse the labels already in 'labeled-data/' from previous
+  iterations. The empty active layer will not be saved. Continue
+  without adding new labels?" Default is Cancel. The empty layer is
+  not auto-saved -- the existing pre-flight scan only touches layers
+  with diffs or incompleteness, and an empty layer has neither.
+  Motivating use cases: training iteration-1 right after seeding
+  iteration-0 from an external snapshot (no manual refinements
+  added yet), or clicking Train on a fresh video by accident.
 - **`DUSTrack.process_dlc_project` routes through
   `DLCProject.train_iteration` on the Qt path** (`dlcinterface.py`).
   The Qt button click now opens the Training options modal first; on
@@ -310,13 +322,16 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   (`dustrack/seed.py`). First piece of the "seed an empty project
   from an external snapshot" flow. Given a `.pt` inside an existing
   DLC3 project's `dlc-models-pytorch/iteration-N/<modelfolder>/train/`,
-  copies the snapshot + its `pytorch_config.yaml` into the destination
-  folder — the minimal pair needed for another project to treat the
-  weights as if they were the result of its own iteration-0 training
-  run. `learning_stats.csv`, `train.txt`, sibling snapshots, and the
-  `test/pose_cfg.yaml` are deliberately omitted. Absolute paths
-  inside `pytorch_config.yaml` (`metadata.project_path` /
-  `metadata.pose_config_path`) are copied verbatim; the eventual
+  copies three files into the destination folder: the snapshot,
+  its `pytorch_config.yaml`, and the sibling `test/pose_cfg.yaml`
+  (one level up from `train/`). All three are required at inference
+  time -- DLC's pytorch `analyze_videos` reads each one via
+  `DLCLoader.model_cfg` + `read_plainconfig(...test/pose_cfg.yaml)`
+  (`deeplabcut/pose_estimation_pytorch/apis/videos.py:425`).
+  `learning_stats.csv`, `train.txt`, and sibling snapshots are
+  deliberately omitted. Absolute paths inside `pytorch_config.yaml`
+  (`metadata.project_path` / `metadata.pose_config_path`) and
+  `pose_cfg.yaml` (`dataset`) are copied verbatim; the eventual
   importer (the upcoming "Create DLC Project" modal when the active
   manual layer is empty) is responsible for rewriting them.
 - **`DLCProject.train_iteration(...)`** — explicit-args sibling of

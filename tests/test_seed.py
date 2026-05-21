@@ -16,16 +16,19 @@ from dustrack.seed import extract_snapshot_for_seeding as _extract_direct
 
 
 def _make_fake_train_dir(tmp_path: Path) -> Path:
-    """Construct a fake ``dlc-models-pytorch/iteration-0/.../train/`` folder."""
-    train_dir = (
+    """Construct a fake ``dlc-models-pytorch/iteration-0/.../train/``
+    folder (and sibling ``test/`` with a pose_cfg.yaml)."""
+    modelfolder = (
         tmp_path
         / "fake_project-x-2026-01-01"
         / "dlc-models-pytorch"
         / "iteration-0"
         / "fake_projectJan01-trainset95shuffle1"
-        / "train"
     )
+    train_dir = modelfolder / "train"
+    test_dir = modelfolder / "test"
     train_dir.mkdir(parents=True)
+    test_dir.mkdir(parents=True)
     (train_dir / "snapshot-best-270.pt").write_bytes(b"\x80\x02fake-torch-pickle")
     (train_dir / "snapshot-250.pt").write_bytes(b"\x80\x02fake-older-snapshot")
     (train_dir / "pytorch_config.yaml").write_text(
@@ -41,6 +44,19 @@ def _make_fake_train_dir(tmp_path: Path) -> Path:
         + "\n"
     )
     (train_dir / "learning_stats.csv").write_text("epoch,loss\n1,0.5\n")
+    (test_dir / "pose_cfg.yaml").write_text(
+        textwrap.dedent(
+            """
+            dataset_type: multi-animal-imgaug
+            num_joints: 2
+            all_joints_names:
+            - point0
+            - point1
+            net_type: resnet_50
+            """
+        ).strip()
+        + "\n"
+    )
     return train_dir
 
 
@@ -56,11 +72,15 @@ def test_extract_copies_snapshot_and_config(tmp_path):
     assert (dest / "pytorch_config.yaml").read_text() == (
         train_dir / "pytorch_config.yaml"
     ).read_text()
+    assert (dest / "pose_cfg.yaml").read_text() == (
+        train_dir.parent / "test" / "pose_cfg.yaml"
+    ).read_text()
 
 
 def test_extract_omits_training_provenance(tmp_path):
-    """Only the .pt and pytorch_config.yaml are copied; other train/
-    files (learning_stats.csv, train.txt, sibling snapshots) are not."""
+    """Only the .pt, pytorch_config.yaml, and pose_cfg.yaml are
+    copied; other train/ files (learning_stats.csv, train.txt,
+    sibling snapshots) are not."""
     train_dir = _make_fake_train_dir(tmp_path)
     snapshot = train_dir / "snapshot-best-270.pt"
     dest = tmp_path / "bundle"
@@ -70,6 +90,7 @@ def test_extract_omits_training_provenance(tmp_path):
     assert {p.name for p in dest.iterdir()} == {
         "snapshot-best-270.pt",
         "pytorch_config.yaml",
+        "pose_cfg.yaml",
     }
 
 
@@ -123,6 +144,19 @@ def test_extract_requires_pytorch_config(tmp_path):
 
     with pytest.raises(
         FileNotFoundError, match="No pytorch_config.yaml alongside the snapshot"
+    ):
+        extract_snapshot_for_seeding(snapshot, tmp_path / "bundle")
+
+
+def test_extract_requires_pose_cfg(tmp_path):
+    """Missing test/pose_cfg.yaml is rejected with a clear message
+    (DLC's analyze_videos hard-errors without it)."""
+    train_dir = _make_fake_train_dir(tmp_path)
+    (train_dir.parent / "test" / "pose_cfg.yaml").unlink()
+    snapshot = train_dir / "snapshot-best-270.pt"
+
+    with pytest.raises(
+        FileNotFoundError, match="No test/pose_cfg.yaml"
     ):
         extract_snapshot_for_seeding(snapshot, tmp_path / "bundle")
 
