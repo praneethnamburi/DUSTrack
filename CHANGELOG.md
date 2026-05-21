@@ -429,6 +429,56 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   six layers constructed against a shared reader add zero
   `av.container.core.open` calls.
 
+### Added
+- **Workflow-button gating** (`dustrack/dlcinterface.py`). The three
+  DLC-aware Workflow-group buttons now disable themselves (visible
+  but greyed, with tooltip) when their click handler would otherwise
+  fail or scaffold a bogus project:
+  - **Create DLC Project** disables when the session is already
+    inside a DLC project (either `self._dlcproject` is set, or the
+    video path walks up to a `config.yaml + videos/ + labeled-data/`
+    triad). Avoids creating a nested project at
+    `<project>/videos/<video>/<new-project>/` that nothing downstream
+    handles. Tooltip names the project root.
+  - **Train DLC model** disables when `self._dlcproject is None`,
+    replacing the click-time `ValueError("DLCProject not created. Use
+    create_dlc_project() to create it.")` with a discoverable greyed
+    button + tooltip.
+  - **Apply manual corrections** disables when there's no overlay
+    layer set, or when the active layer is already the corrections
+    output (`dlccorr`). Mirrors the two `ValueError` paths in
+    `apply_manual_corrections`.
+
+  **Reduce jitter is intentionally not gated.** Its real precondition
+  is "every frame of the active layer is fully annotated", which is a
+  data property; the cheap name-pattern proxy (`_is_dense_layer_name`)
+  is correct for rendering style but would false-disable a fully-
+  annotated manual layer. Deferred until a cheap data-side check
+  exists. The runtime sparse-labels guard in
+  `lk_moving_average_filter` is the existing source of truth.
+
+  New module-level helper `_session_inside_dlc_project(dustrack)`
+  consolidates the in-project check (short-circuits on `_dlcproject`,
+  walks up `fname` via the existing `_find_dlc_config`). New methods
+  `DUSTrack._evaluate_workflow_gates()` (pure-state predicate, unit-
+  testable) and `_refresh_workflow_button_state()` (Qt-side
+  `setEnabled` / `setToolTip` writer). `_qss_for_group` grew a
+  `QPushButton:disabled` rule (desaturated bg `#d8d8d8`, dim grey
+  italic text `#888888`, dashed border `#b0b0b0`) so disabled buttons
+  read as such across all four group palettes; without it the
+  enabled-state QSS won over Qt's built-in disabled paint and
+  `setEnabled(False)` produced no visual change. Refresh fires at end of
+  `__init__`, after `_rewire_to_in_project_paths` (post-Create
+  success), after `remove_current_layer` (layers may drop), at the
+  tail of `DLCProject.annotate` (Phase-2 open path that sets
+  `_dlcproject` *after* DUSTrack `__init__` ran), and on every
+  `annotation_layer` / `annotation_overlay` dropdown change via
+  dnav 1.4.0rc2+'s `StateVariable.add_on_change`. 16 new tests
+  (`tests/test_workflow_button_gates.py` + 5 added to
+  `tests/test_open.py::TestSessionInsideDLCProject`); Qt round-trip
+  left to manual smoke per the existing posture for
+  `ConfirmOverlay` / palette-pin.
+
 ### Notes — out of scope, kept for next session
 - First-time PyAV TOC build on `M:` is ~37 s on a never-opened video,
   cached on disk after. Network-drive first-touch cost, not a code

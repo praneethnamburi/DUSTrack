@@ -15,6 +15,7 @@ from dustrack.dlcinterface import (
     _find_dlc_config,
     _find_video_index,
     _is_dlc_project_root,
+    _session_inside_dlc_project,
 )
 
 
@@ -120,6 +121,72 @@ class TestFindVideoIndex:
         # handles via rebase_to_config.
         proj = self._StubProject(["vidA"])
         assert _find_video_index(proj, "/totally/different/path/vidA.mp4") == 0
+
+
+class TestSessionInsideDLCProject:
+    """The Workflow-button "Create DLC Project" gate predicate.
+
+    The function reads two cheap pieces of state off a dustrack-like
+    object: ``_dlcproject`` (which carries the project root via its
+    ``config_path``) and ``fname`` (the video path, which may resolve
+    into a project via ancestor walk). Either positive signal counts;
+    only both-negative returns None.
+    """
+
+    class _Stub:
+        """Minimal duck-type for ``_session_inside_dlc_project``."""
+
+        def __init__(self, fname=None, dlcproject=None):
+            self.fname = fname
+            self._dlcproject = dlcproject
+
+    class _StubProject:
+        def __init__(self, config_path):
+            self.config_path = config_path
+
+    def test_bare_video_returns_none(self, tmp_path):
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        assert _session_inside_dlc_project(self._Stub(fname=str(vid))) is None
+
+    def test_video_inside_project_returns_root(self, tmp_path):
+        root = _make_dlc_root(tmp_path / "proj")
+        vid = root / "videos" / "sample.mp4"
+        vid.write_bytes(b"")
+        assert (
+            _session_inside_dlc_project(self._Stub(fname=str(vid))) == root
+        )
+
+    def test_dlcproject_attribute_short_circuits(self, tmp_path):
+        """A bare video outside any project tree but with
+        ``_dlcproject`` set (the post-create-success state) still
+        reports as inside-project."""
+        root = _make_dlc_root(tmp_path / "proj")
+        # video lives OUTSIDE the project — _find_dlc_config would
+        # return None — but _dlcproject is set, so the short-circuit
+        # path returns the project's config-derived root.
+        outside_vid = tmp_path / "elsewhere.mp4"
+        outside_vid.write_bytes(b"")
+        proj = self._StubProject(config_path=str(root / "config.yaml"))
+        stub = self._Stub(fname=str(outside_vid), dlcproject=proj)
+        assert _session_inside_dlc_project(stub) == root
+
+    def test_missing_fname_returns_none_without_dlcproject(self):
+        stub = self._Stub(fname=None, dlcproject=None)
+        assert _session_inside_dlc_project(stub) is None
+
+    def test_missing_dlcproject_attribute_ok(self, tmp_path):
+        """Defensive: a dustrack-like object without the
+        ``_dlcproject`` attribute at all still works (the helper uses
+        getattr with a default)."""
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+
+        class _MinimalStub:
+            def __init__(self, fname):
+                self.fname = fname
+
+        assert _session_inside_dlc_project(_MinimalStub(str(vid))) is None
 
 
 class TestOpenDispatchErrors:

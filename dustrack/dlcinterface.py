@@ -14,7 +14,7 @@ import threading
 import traceback
 import warnings
 from pathlib import Path, PureWindowsPath, PurePosixPath
-from typing import Literal, Mapping, Union
+from typing import Literal, Mapping, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -126,13 +126,25 @@ def _qss_for_group(spec: dict) -> str:
     it without dragging the whole ``DUSTrack`` class into the styler
     closure. Inputs are color-hex strings keyed by ``bg/fg/border/
     hover/pressed``.
+
+    The ``:disabled`` rule paints workflow buttons whose gate
+    predicate has refused (see ``DUSTrack._refresh_workflow_button_state``).
+    Without it, the ``QPushButton`` selector above wins over Qt's
+    built-in disabled styling and the button keeps its enabled
+    look. Three cues compound for visibility across all four group
+    palettes: a uniform desaturated bg, dim italic text, and a dashed
+    border. No perf cost -- QSS is parsed once per button at add-time
+    and Qt swaps style on enable/disable without re-parsing.
     """
     return (
         f"QPushButton {{ background-color: {spec['bg']}; "
         f"color: {spec['fg']}; border: 1px solid {spec['border']}; "
         f"padding: 4px; }} "
         f"QPushButton:hover {{ background-color: {spec['hover']}; }} "
-        f"QPushButton:pressed {{ background-color: {spec['pressed']}; }}"
+        f"QPushButton:pressed {{ background-color: {spec['pressed']}; }} "
+        f"QPushButton:disabled {{ background-color: #d8d8d8; "
+        f"color: #888888; font-style: italic; "
+        f"border: 1px dashed #b0b0b0; }}"
     )
 
 
@@ -1715,6 +1727,19 @@ class DUSTrack(_DUSTrackBase):
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
 
+        # Workflow-button gating: re-evaluate enabled state whenever the
+        # active or overlay dropdown changes. The single refresh helper
+        # is also called once below (initial state) and at every other
+        # site that mutates _dlcproject / fname / annotation state.
+        # ``add_on_change`` is a dnav 1.4.0rc2+ surface; this class
+        # already floors on >=1.4.0, so the attribute is guaranteed.
+        for _sv_name in ("annotation_layer", "annotation_overlay"):
+            if _sv_name in self.statevariables.names:
+                self.statevariables[_sv_name].add_on_change(
+                    self._refresh_workflow_button_state
+                )
+        self._refresh_workflow_button_state()
+
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
             self.update()
@@ -1816,6 +1841,107 @@ class DUSTrack(_DUSTrackBase):
         # so the palette change actually takes effect (QSS wins over
         # palette).
         sv.setStyleSheet("")
+
+    def _refresh_workflow_button_state(self) -> None:
+        """Enable / disable Workflow-group buttons based on session state.
+
+        Three gates run here:
+
+        - **Create DLC Project** is disabled when the session already
+          sits inside a DLC project (either ``self._dlcproject`` is
+          set, or the video path resolves into a project tree). DLC's
+          ``copy_videos`` would otherwise scaffold a nested project at
+          ``<project>/videos/`` whose downstream paths nothing handles.
+        - **Train DLC model** is disabled when ``self._dlcproject`` is
+          None. Replaces the click-time ``ValueError("DLCProject not
+          created. ...")`` with a greyed-out button + tooltip.
+        - **Apply manual corrections** is disabled when there's no
+          overlay layer set, or when the active layer is already the
+          corrections output. Mirrors the two
+          :class:`ValueError` paths in :meth:`apply_manual_corrections`.
+
+        ``Reduce jitter`` is intentionally *not* gated here: its real
+        precondition is "every frame in the active layer is fully
+        annotated", which is a data property rather than a name-pattern
+        property. The cheap name-based proxy
+        (:func:`_is_dense_layer_name`) is correct for rendering style
+        but would false-disable a fully-annotated manual layer; the
+        gate is deferred until a cheap data-side check exists. See
+        :func:`lk_moving_average_filter`'s sparse-labels guard for the
+        canonical run-time check.
+
+        Qt-only: walks ``self.buttons`` and writes ``setEnabled`` +
+        ``setToolTip`` on each Button's ``_qt_btn`` attribute. The
+        helper no-ops on any button whose Qt handle is missing (the
+        legacy mpl-fallback path; no longer supported as a first-class
+        deployment, kept working for users on pinned older versions).
+        """
+        if not HAS_DLC:
+            # The Workflow group's DLC buttons aren't added when
+            # deeplabcut is missing; nothing to gate.
+            return
+        gates = self._evaluate_workflow_gates()
+        for label, (enabled, tooltip) in gates.items():
+            if label not in self.buttons:
+                continue
+            btn = self.buttons[label]
+            qt_btn = getattr(btn, "_qt_btn", None)
+            if qt_btn is None:
+                continue
+            qt_btn.setEnabled(enabled)
+            qt_btn.setToolTip(tooltip)
+
+    def _evaluate_workflow_gates(self) -> dict:
+        """Compute ``{button_label: (enabled, tooltip)}`` for the gated buttons.
+
+        Pulled out of :meth:`_refresh_workflow_button_state` so the
+        gate semantics can be unit-tested without standing up a Qt
+        window. Reads only ``self._dlcproject`` /
+        ``self._current_overlay`` / ``self.ann`` / ``self.fname`` --
+        the same state the click handlers themselves consult.
+        """
+        gates: dict = {}
+
+        # --- Create DLC Project --------------------------------------
+        proj_root = _session_inside_dlc_project(self)
+        if proj_root is None:
+            gates["Create DLC Project"] = (True, "")
+        else:
+            gates["Create DLC Project"] = (
+                False,
+                f"Already inside DLC project {proj_root.name!r} — "
+                "use Train DLC model to extend it.",
+            )
+
+        # --- Train DLC model -----------------------------------------
+        if self._dlcproject is None:
+            gates["Train DLC model"] = (
+                False,
+                "Create a DLC project first.",
+            )
+        else:
+            gates["Train DLC model"] = (True, "")
+
+        # --- Apply manual corrections --------------------------------
+        ann = getattr(self, "ann", None)
+        ann_name = getattr(ann, "name", None) if ann is not None else None
+        if self._current_overlay is None:
+            gates["Apply manual corrections"] = (
+                False,
+                "Set an overlay layer (typically a 'dlc_*' trace) "
+                "first.",
+            )
+        elif ann_name == self.CORRECTIONS_LAYER_NAME:
+            gates["Apply manual corrections"] = (
+                False,
+                "Switch the active layer back to your manual "
+                f"annotations — {self.CORRECTIONS_LAYER_NAME!r} is the "
+                "output, not the input.",
+            )
+        else:
+            gates["Apply manual corrections"] = (True, "")
+
+        return gates
 
     def _apply_dark_theme(self):
         """Apply dark theme to the GUI for better ultrasound visibility."""
@@ -2013,11 +2139,15 @@ class DUSTrack(_DUSTrackBase):
         if qt_window is None:
             self._dlcproject = _build_project()
             self._rewire_to_in_project_paths()
+            self._refresh_workflow_button_state()
             return self._dlcproject
 
         def _on_success(project: DLCProject):
             self._dlcproject = project
             self._rewire_to_in_project_paths()
+            # Create now disables (session sits inside the new project)
+            # and Train enables (_dlcproject is set).
+            self._refresh_workflow_button_state()
 
         self._run_with_overlay(
             qt_window,
@@ -3444,6 +3574,7 @@ class DUSTrack(_DUSTrackBase):
             # mpl fallback: drop the layer silently.
             self.remove_annotation_layer(layer_name)
             self.update()
+            self._refresh_workflow_button_state()
             return
 
         ConfirmOverlay = _make_confirm_overlay_class()
@@ -3493,6 +3624,11 @@ class DUSTrack(_DUSTrackBase):
         if result == "Remove layer":
             self.remove_annotation_layer(layer_name)
             self.update()
+            # Removing the active or overlay layer may change which
+            # buttons are valid; the statevar on_change covers the
+            # active/overlay re-pick but not the more general "an
+            # overlay layer disappeared from the dropdown" case.
+            self._refresh_workflow_button_state()
 
     def copy_existing_annotations_from_overlay(self, event=None):
         """
@@ -5018,6 +5154,10 @@ class DLCProject:
         # with the DLC chain -- _restructure_annotation_order keeps the
         # two paths in lockstep.
         ret._restructure_annotation_order()
+        # ``_dlcproject`` was None when DUSTrack.__init__ ran its initial
+        # gate evaluation; re-run now that it's set so "Train DLC model"
+        # enables and "Create DLC Project" disables.
+        ret._refresh_workflow_button_state()
         ret.update()
 
         return ret
@@ -5117,6 +5257,30 @@ def _find_video_index(project, video_path):
         if name == target_stem:
             return i
     return None
+
+
+def _session_inside_dlc_project(dustrack) -> Optional[Path]:
+    """Return the DLC project root the session sits inside, or None.
+
+    Reuses :func:`_find_dlc_config` for the filesystem walk-up so the
+    structural check (``config.yaml + videos/ + labeled-data/``) stays
+    in one place. ``self._dlcproject`` is checked first as the cheap
+    short-circuit: a session that was opened via ``dustrack.open(<project>)``
+    or that survived a successful ``create_dlc_project`` already knows
+    its project; we only fall back to walking up ``self.fname``'s
+    ancestors when the attribute is unset (e.g. a video opened bare
+    that happens to live inside an existing project tree).
+    """
+    proj = getattr(dustrack, "_dlcproject", None)
+    if proj is not None:
+        config_path = getattr(proj, "config_path", None)
+        if config_path is not None:
+            return Path(config_path).parent
+    fname = getattr(dustrack, "fname", None)
+    if fname is None:
+        return None
+    config = _find_dlc_config(fname)
+    return config.parent if config is not None else None
 
 
 def open(path, layer_name=None, **dustrack_kwargs):
