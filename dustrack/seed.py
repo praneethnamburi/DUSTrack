@@ -33,16 +33,92 @@ rewriting them when wiring the bundle into a destination project.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import yaml
+
+
+# Per-user persistence for the "seed bundles root" the picker modal
+# remembers between sessions. Path stays out of the project tree so
+# every dustrack session on this machine shares it.
+_USER_CONFIG_DIR = Path.home() / ".dustrack"
+_USER_CONFIG_PATH = _USER_CONFIG_DIR / "config.json"
+
+
+def _read_user_config() -> dict:
+    if not _USER_CONFIG_PATH.is_file():
+        return {}
+    try:
+        return json.loads(_USER_CONFIG_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_user_config(cfg: dict) -> None:
+    _USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _USER_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+def get_seed_bundles_root() -> Optional[Path]:
+    """Read the remembered seed-bundles root from
+    ``~/.dustrack/config.json``. Returns ``None`` if unset or the
+    path no longer exists on disk."""
+    root = _read_user_config().get("seed_bundles_root")
+    if not root:
+        return None
+    p = Path(root)
+    return p if p.is_dir() else None
+
+
+def set_seed_bundles_root(path: Union[str, Path, None]) -> None:
+    """Persist the seed-bundles root path so the Create-DLC-Project
+    seeding modal can populate its bundle list without forcing the
+    user to navigate from scratch each time. Pass ``None`` to forget
+    the current value."""
+    cfg = _read_user_config()
+    if path is None:
+        cfg.pop("seed_bundles_root", None)
+    else:
+        cfg["seed_bundles_root"] = str(Path(path).resolve())
+    _write_user_config(cfg)
+
+
+def list_seed_bundles(root: Union[str, Path]) -> list[dict]:
+    """Scan ``root`` for valid seed bundles and return their metadata.
+
+    Each subdirectory that passes :func:`inspect_seed_bundle` is
+    included; invalid folders are silently skipped (the picker modal
+    is allowed to show "no bundles found" rather than surfacing a
+    long list of validation errors).
+
+    Returns:
+        list[dict]: One entry per valid bundle, sorted by folder name.
+        Each entry carries every field :func:`inspect_seed_bundle`
+        returns plus ``name`` (the bundle folder's name relative to
+        ``root``) and ``path`` (the absolute bundle folder path).
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    bundles = []
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir():
+            continue
+        try:
+            info = inspect_seed_bundle(sub)
+        except (FileNotFoundError, ValueError):
+            continue
+        bundles.append({"name": sub.name, "path": sub, **info})
+    return bundles
 
 
 def extract_snapshot_for_seeding(
     snapshot_path: Union[str, Path],
     destination_path: Union[str, Path],
+    description: str = "",
 ) -> Path:
     """Copy a DLC3 snapshot + its ``pytorch_config.yaml`` + sibling
     ``test/pose_cfg.yaml`` into a seed bundle.
@@ -54,7 +130,12 @@ def extract_snapshot_for_seeding(
         destination_path: Folder to write the bundle into. Created if
             missing; pre-existing unrelated files are preserved, but
             matching ``snapshot-*.pt`` / ``pytorch_config.yaml`` /
-            ``pose_cfg.yaml`` are overwritten.
+            ``pose_cfg.yaml`` / ``description.txt`` are overwritten.
+        description: Optional human-readable description of the
+            bundle (one paragraph; what the model tracks, training
+            corpus, intended use). Written to ``description.txt`` in
+            the bundle and surfaced by the seeding-modal picker.
+            Empty string skips the file.
 
     Returns:
         Path: The destination folder (as a :class:`pathlib.Path`).
@@ -96,6 +177,10 @@ def extract_snapshot_for_seeding(
     shutil.copy2(snapshot_path, destination_path / snapshot_path.name)
     shutil.copy2(pytorch_config, destination_path / pytorch_config.name)
     shutil.copy2(pose_cfg, destination_path / pose_cfg.name)
+    if description:
+        (destination_path / "description.txt").write_text(
+            description.strip() + "\n"
+        )
 
     return destination_path
 
@@ -150,12 +235,20 @@ def inspect_seed_bundle(bundle_path: Union[str, Path]) -> dict:
         )
     net_type = pytorch_cfg_data.get("net_type", "")
 
+    description_path = bundle_path / "description.txt"
+    description = (
+        description_path.read_text().strip()
+        if description_path.is_file()
+        else ""
+    )
+
     return {
         "snapshot": pt_files[0],
         "pytorch_config": pytorch_config,
         "pose_cfg": pose_cfg,
         "bodyparts": list(bodyparts),
         "net_type": net_type,
+        "description": description,
     }
 
 

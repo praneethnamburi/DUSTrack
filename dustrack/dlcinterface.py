@@ -29,7 +29,13 @@ from datanavigator import VideoReader, cpu
 
 from .postprocess import lk_moving_average_filter
 from .pointtracking import VideoAnnotation, VideoAnnotations, _DUSTrackBase
-from .seed import import_seed_bundle_into_project, inspect_seed_bundle
+from .seed import (
+    get_seed_bundles_root,
+    import_seed_bundle_into_project,
+    inspect_seed_bundle,
+    list_seed_bundles,
+    set_seed_bundles_root,
+)
 from . import _config
 
 try:
@@ -1564,6 +1570,208 @@ def _make_training_options_class():
     return TrainingOptionsDialog
 
 
+def _make_seed_bundle_picker_class():
+    """Build :class:`SeedBundlePickerDialog` lazily, mirroring
+    :func:`_make_training_options_class`'s qtpy-import-on-demand
+    pattern. Shown when the user clicks Create DLC Project on an
+    empty active manual layer and a seed-bundles root has been
+    remembered (so we have a list of candidate bundles ready
+    instead of forcing a Browse).
+
+    Returns one of:
+      - ``("use", info_dict)`` -- user picked a bundle from the list.
+      - ``("browse",)`` -- user wants to Browse to a bundle elsewhere
+        (caller falls through to ``QFileDialog``).
+      - ``("set_root", new_root)`` -- user picked a new bundles root
+        and the dialog should re-open against that root.
+      - ``None`` -- user cancelled.
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
+        QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    )
+
+    _ROLE_QSS = {
+        "primary": (
+            "QPushButton { background-color: #3a86ff; color: white; "
+            "  border: 1px solid #2a76ef; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4a96ff; }"
+            "QPushButton:pressed { background-color: #2a76ef; }"
+        ),
+        "neutral": (
+            "QPushButton { background-color: #555555; color: white; "
+            "  border: 1px solid #444444; padding: 6px 24px; "
+            "  font-size: 11pt; }"
+            "QPushButton:hover { background-color: #666666; }"
+            "QPushButton:pressed { background-color: #444444; }"
+        ),
+    }
+
+    class SeedBundlePickerDialog(QObject):
+        def __init__(self, main_window, *, root, bundles):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._result = None
+            self._loop = QEventLoop()
+            self._bundles = bundles
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_seed_picker_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_seed_picker_overlay { "
+                "  background-color: rgba(0, 0, 0, 200); "
+                "}"
+                "QLabel { color: white; }"
+                "#dustrack_seed_picker_title { color: white; "
+                "  font-size: 22pt; font-weight: bold; }"
+                "#dustrack_seed_picker_subtitle { color: #cccccc; "
+                "  font-size: 10pt; }"
+                "QListWidget { background-color: white; "
+                "  font-size: 11pt; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setAlignment(Qt.AlignCenter)
+            outer.addStretch(1)
+
+            title_lbl = QLabel("Choose seed bundle")
+            title_lbl.setObjectName("dustrack_seed_picker_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title_lbl)
+
+            subtitle = QLabel(f"From: {root}")
+            subtitle.setObjectName("dustrack_seed_picker_subtitle")
+            subtitle.setAlignment(Qt.AlignCenter)
+            outer.addWidget(subtitle)
+
+            content = QWidget()
+            content.setMaximumWidth(720)
+            content.setMinimumWidth(560)
+            content_layout = QVBoxLayout(content)
+            content_layout.setSpacing(8)
+
+            self._list = QListWidget()
+            self._list.setMinimumHeight(220)
+            for b in bundles:
+                desc = b.get("description") or "(no description)"
+                bodyparts = b.get("bodyparts") or []
+                label = (
+                    f"{b['name']}\n"
+                    f"  bodyparts: {bodyparts}\n"
+                    f"  {desc}"
+                )
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, b)
+                self._list.addItem(item)
+            self._list.setCurrentRow(0)
+            self._list.itemDoubleClicked.connect(
+                lambda _item: self._on_use_clicked()
+            )
+            content_layout.addWidget(self._list)
+
+            # Buttons row 1: primary action + escape hatch.
+            row1 = QHBoxLayout()
+            row1.setAlignment(Qt.AlignCenter)
+            self._use_btn = QPushButton("Use selected")
+            self._use_btn.setMinimumWidth(160)
+            self._use_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._use_btn.clicked.connect(self._on_use_clicked)
+            self._browse_btn = QPushButton("Browse elsewhere…")
+            self._browse_btn.setMinimumWidth(160)
+            self._browse_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._browse_btn.clicked.connect(self._on_browse_clicked)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setMinimumWidth(160)
+            self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+            row1.addWidget(self._use_btn)
+            row1.addWidget(self._browse_btn)
+            row1.addWidget(self._cancel_btn)
+            content_layout.addLayout(row1)
+
+            # Row 2: change-root affordance, smaller / less prominent.
+            row2 = QHBoxLayout()
+            row2.setAlignment(Qt.AlignCenter)
+            self._set_root_btn = QPushButton("Change bundles root…")
+            self._set_root_btn.setMinimumWidth(220)
+            self._set_root_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._set_root_btn.clicked.connect(self._on_set_root_clicked)
+            row2.addWidget(self._set_root_btn)
+            content_layout.addLayout(row2)
+
+            outer.addWidget(content, alignment=Qt.AlignCenter)
+            outer.addStretch(1)
+
+            main_window.installEventFilter(self)
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._use_btn.setFocus()
+
+        # -- Slots ----------------------------------------------------
+
+        def _on_use_clicked(self):
+            item = self._list.currentItem()
+            if item is None:
+                return
+            info = item.data(Qt.UserRole)
+            self._result = ("use", info)
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_browse_clicked(self):
+            self._result = ("browse",)
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_set_root_clicked(self):
+            new_root = QFileDialog.getExistingDirectory(
+                self._mw,
+                "Choose seed bundles root folder",
+                "",
+                QFileDialog.ShowDirsOnly,
+            )
+            if not new_root:
+                return  # user cancelled the folder picker, leave dialog open
+            self._result = ("set_root", new_root)
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel_clicked(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        # -- Lifecycle (mirror ConfirmOverlay) ------------------------
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            self._loop.exec_()
+            return self._result
+
+    return SeedBundlePickerDialog
+
+
 class DUSTrack(_DUSTrackBase):
     """
     Interactive video point annotator with DeepLabCut integration.
@@ -2485,16 +2693,26 @@ class DUSTrack(_DUSTrackBase):
             return self._dlcproject.annotate()
 
         # Qt path: empty-active-layer guard runs first so the user
-        # can bail before configuring any training options. The
-        # active manual layer is "empty" when no label has any frames
-        # -- typical scenarios: (a) the user just seeded iteration-0
-        # from an external snapshot and clicked Train without
-        # labeling any iteration-1 frames, (b) the user opened a
-        # fresh video and clicked Train without annotating anything.
-        # In either case, training will use whatever labels exist in
-        # ``labeled-data/``; the modal confirms intent so it's not a
-        # surprise.
+        # can bail before configuring any training options. Two
+        # sub-cases, distinguished by whether *any* labels exist in
+        # the project (other manual layers OR previously-extracted
+        # ``labeled-data/`` from prior iterations):
+        #
+        # - No labels anywhere (the freshly-seeded iteration-1 case):
+        #   training would fail downstream because
+        #   ``create_training_dataset`` has nothing to write. Hard-
+        #   block with an error overlay; the user must annotate
+        #   frames (or use Apply manual corrections to copy a DLC
+        #   trace into a manual layer) before training.
+        # - Labels exist elsewhere (mid-refinement: user clicked
+        #   Train without adding new labels this pass): training is
+        #   feasible by reusing the existing ``labeled-data/`` and/or
+        #   running ``extract_frames`` on the other manual layer.
+        #   Confirm intent with the existing modal.
         if not any(self.ann.data.values()):
+            if not self._has_trainable_labels():
+                self._prompt_no_trainable_labels(qt_window)
+                return self  # hard block -- UI left intact
             if not self._prompt_empty_layer_train_confirm(qt_window):
                 return self  # user cancelled -- UI left intact
 
@@ -2923,44 +3141,112 @@ class DUSTrack(_DUSTrackBase):
 
     def _prompt_seed_bundle(self, qt_window) -> Optional[str]:
         """Multi-step modal sequence that fires when ``Create DLC Project``
-        is clicked with an empty active manual layer. Walks the user
-        through a Browse-for-bundle pick, validates it via
-        :func:`inspect_seed_bundle`, and asks for a final confirmation
-        showing the detected bodyparts.
+        is clicked with an empty active manual layer.
+
+        Two entry points depending on whether a seed-bundles root has
+        been remembered:
+
+        - **Root set + non-empty**: opens a list-picker
+          (:class:`SeedBundlePickerDialog`) showing every valid bundle
+          under the root with its name + bodyparts + description.
+          Quick-select; no file-dialog navigation required.
+        - **No root set / empty root**: opens the legacy
+          :class:`ConfirmOverlay` -> ``QFileDialog`` -> confirm path.
+          After a successful pick, offers to remember the picked
+          bundle's parent as the bundles root so next session uses
+          the picker.
 
         Returns the validated bundle folder path on Accept, or ``None``
         on any Cancel / invalid bundle path. Caller (``create_dlc_project``)
         treats ``None`` as "user bailed -- leave the UI alone".
         """
+        # Loop so the picker's "Change bundles root" action can
+        # re-open the dialog against the new root, and "Browse
+        # elsewhere" can fall through to the file-dialog branch.
+        while True:
+            root = get_seed_bundles_root()
+            if root is not None and root.is_dir():
+                bundles = list_seed_bundles(root)
+            else:
+                bundles = []
+
+            if bundles:
+                action = self._pick_from_seed_bundles(qt_window, root, bundles)
+                if action is None:
+                    return None
+                kind = action[0]
+                if kind == "use":
+                    info = action[1]
+                    bundle_path = str(info["path"])
+                    if self._confirm_seed_bundle(qt_window, bundle_path, info):
+                        return bundle_path
+                    return None
+                if kind == "set_root":
+                    set_seed_bundles_root(action[1])
+                    continue  # re-list against the new root
+                if kind == "browse":
+                    # Fall through to legacy Browse flow below, but
+                    # don't loop -- a Browse pick should either
+                    # accept and return, or cancel out.
+                    pass
+
+            # Legacy flow: explain + Browse + validate + confirm.
+            picked = self._browse_for_seed_bundle(qt_window)
+            if picked is None:
+                return None
+            # First-time-Browse polite ask: remember the parent as
+            # the root so the picker takes over next session. Skip
+            # if a root is already configured (user already declined
+            # or has a different setup in mind).
+            if get_seed_bundles_root() is None:
+                self._maybe_remember_seed_bundles_root(qt_window, picked)
+            return picked
+
+    def _pick_from_seed_bundles(self, qt_window, root, bundles):
+        """Drive :class:`SeedBundlePickerDialog`. Returns the
+        dialog's raw result tuple (or ``None`` on cancel)."""
+        PickerDialog = _make_seed_bundle_picker_class()
+        return PickerDialog(qt_window, root=root, bundles=bundles).exec_()
+
+    def _browse_for_seed_bundle(self, qt_window) -> Optional[str]:
+        """Legacy seed-bundle flow used when no bundles root is set
+        (or the picker user clicked Browse elsewhere): intent
+        overlay -> ``QFileDialog`` -> validate -> confirm. Returns
+        the validated bundle path on accept, ``None`` on any cancel
+        or invalid bundle."""
         from qtpy.QtWidgets import QFileDialog
 
         ConfirmOverlay = _make_confirm_overlay_class()
 
-        # Step 1: explain the empty-layer situation and confirm intent.
-        result = ConfirmOverlay(
-            qt_window,
-            title="No annotations in active layer",
-            message=(
-                f"Active layer {self.ann.name!r} has no labels. To create "
-                "a DLC project from this session, either annotate frames "
-                "manually first, or seed iteration-0 from a pre-trained "
-                "snapshot bundle (a folder containing snapshot-*.pt + "
-                "pytorch_config.yaml + pose_cfg.yaml).\n\n"
-                "Inference from the bundled snapshot will run on the "
-                "current video and load as a dense reference overlay; "
-                "your manual refinements then become iteration-1."
-            ),
-            buttons=[
-                ("Browse for seed bundle…", "primary"),
-                ("Cancel", "neutral"),
-            ],
-            default="Cancel",
-            severity="warning",
-        ).exec_()
-        if result != "Browse for seed bundle…":
-            return None
+        # Only show the intent overlay when there's no remembered
+        # root -- if the user got here via "Browse elsewhere" from
+        # the picker, they already understand the situation.
+        if get_seed_bundles_root() is None:
+            result = ConfirmOverlay(
+                qt_window,
+                title="No annotations in active layer",
+                message=(
+                    f"Active layer {self.ann.name!r} has no labels. "
+                    "To create a DLC project from this session, "
+                    "either annotate frames manually first, or seed "
+                    "iteration-0 from a pre-trained snapshot bundle "
+                    "(a folder containing snapshot-*.pt + "
+                    "pytorch_config.yaml + pose_cfg.yaml).\n\n"
+                    "Inference from the bundled snapshot will run on "
+                    "the current video and load as a dense reference "
+                    "overlay; your manual refinements then become "
+                    "iteration-1."
+                ),
+                buttons=[
+                    ("Browse for seed bundle…", "primary"),
+                    ("Cancel", "neutral"),
+                ],
+                default="Cancel",
+                severity="warning",
+            ).exec_()
+            if result != "Browse for seed bundle…":
+                return None
 
-        # Step 2: folder picker.
         bundle_dir = QFileDialog.getExistingDirectory(
             qt_window,
             "Choose seed bundle folder",
@@ -2970,7 +3256,6 @@ class DUSTrack(_DUSTrackBase):
         if not bundle_dir:
             return None
 
-        # Step 3: validate.
         try:
             info = inspect_seed_bundle(bundle_dir)
         except (FileNotFoundError, ValueError) as exc:
@@ -2988,15 +3273,26 @@ class DUSTrack(_DUSTrackBase):
             ).exec_()
             return None
 
-        # Step 4: confirm with detected info.
+        if self._confirm_seed_bundle(qt_window, bundle_dir, info):
+            return bundle_dir
+        return None
+
+    def _confirm_seed_bundle(self, qt_window, bundle_path, info) -> bool:
+        """Final confirm-with-detected-info overlay shared by the
+        picker and Browse paths. Returns True iff the user clicked
+        ``Create and seed``.
+        """
+        ConfirmOverlay = _make_confirm_overlay_class()
+        description = info.get("description") or "(no description)"
         result = ConfirmOverlay(
             qt_window,
             title="Confirm seed bundle",
             message=(
-                f"Bundle: {bundle_dir}\n"
+                f"Bundle: {bundle_path}\n"
                 f"Snapshot: {info['snapshot'].name}\n"
                 f"Bodyparts ({len(info['bodyparts'])}): {info['bodyparts']}\n"
-                f"Net type: {info['net_type'] or '(unset)'}\n\n"
+                f"Net type: {info.get('net_type') or '(unset)'}\n"
+                f"Description: {description}\n\n"
                 "Create the project, install this snapshot as iteration-0, "
                 "and run inference on the current video?"
             ),
@@ -3007,10 +3303,89 @@ class DUSTrack(_DUSTrackBase):
             default="Cancel",
             severity="info",
         ).exec_()
-        if result != "Create and seed":
-            return None
+        return result == "Create and seed"
 
-        return bundle_dir
+    def _maybe_remember_seed_bundles_root(self, qt_window, bundle_path) -> None:
+        """After the first successful Browse pick, ask the user if
+        they want to remember the bundle's parent folder as the
+        seed-bundles root so the next session opens the list-picker
+        directly. No-op if they say no (the next Browse will ask
+        again)."""
+        ConfirmOverlay = _make_confirm_overlay_class()
+        parent = Path(bundle_path).parent
+        result = ConfirmOverlay(
+            qt_window,
+            title="Remember bundles location?",
+            message=(
+                f"Use this folder as your seed-bundles root?\n\n"
+                f"{parent}\n\n"
+                "Next time you click Create DLC Project on an empty "
+                "layer, DUSTrack will list every bundle in this "
+                "folder so you don't have to browse."
+            ),
+            buttons=[
+                ("Remember it", "primary"),
+                ("Not now", "neutral"),
+            ],
+            default="Remember it",
+            severity="info",
+        ).exec_()
+        if result == "Remember it":
+            set_seed_bundles_root(parent)
+
+    def _has_trainable_labels(self) -> bool:
+        """True if the project has *any* source of labels training
+        could consume: at least one non-empty manual annotation layer
+        in the session, or at least one ``.h5`` under the project's
+        ``labeled-data/`` folder (already-extracted labels from
+        prior iterations).
+
+        Pure predicate -- no side effects. Used by
+        :meth:`process_dlc_project` to decide between hard-blocking
+        the Train DLC click and falling through to the
+        "Continue training without new data?" confirm.
+        """
+        for ann in self.annotations:
+            if not self._is_manual_layer_name(ann.name):
+                continue
+            if any(ann.data.values()):
+                return True
+        if self._dlcproject is not None:
+            labels_dir = Path(self._dlcproject.paths["labels"])
+            if labels_dir.is_dir():
+                for _ in labels_dir.rglob("*.h5"):
+                    return True
+        return False
+
+    def _prompt_no_trainable_labels(self, qt_window) -> None:
+        """Hard-block overlay for the Train DLC path when the active
+        manual layer is empty AND no other source of labels exists in
+        the project (no other non-empty manual layer, no
+        ``labeled-data/*.h5``). Distinct from
+        :meth:`_prompt_empty_layer_train_confirm` -- there's nothing
+        to confirm, the user has to add labels before training can do
+        anything.
+
+        Typical trigger: freshly-seeded project, user clicks Train
+        before annotating any iteration-1 frames.
+        """
+        ConfirmOverlay = _make_confirm_overlay_class()
+        ConfirmOverlay(
+            qt_window,
+            title="No labels to train on",
+            message=(
+                f"Active layer {self.ann.name!r} has no labels, and no "
+                "other annotation layer or 'labeled-data/' file in this "
+                "project has any either. Training would have nothing "
+                "to consume.\n\n"
+                "Annotate some frames in the active layer first, or "
+                "use 'Apply manual corrections' to convert a DLC "
+                "prediction trace into a manual annotation layer."
+            ),
+            buttons=[("OK", "neutral")],
+            default="OK",
+            severity="error",
+        ).exec_()
 
     def _prompt_empty_layer_train_confirm(self, qt_window) -> bool:
         """Modal that fires when Train DLC is clicked with an empty

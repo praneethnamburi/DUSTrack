@@ -81,18 +81,43 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   :meth:`DUSTrack.create_dlc_project` also lets callers drive the
   same flow programmatically (Qt or non-Qt). The non-empty path is
   unchanged.
-- **Empty-active-layer guard on Train DLC model** (`dlcinterface.py`).
-  Qt path only. Before the Training options modal opens, if the
-  active manual layer has no labels (``not any(self.ann.data.values())``),
-  a confirm overlay surfaces: "Active layer has no labels. Training
-  will reuse the labels already in 'labeled-data/' from previous
-  iterations. The empty active layer will not be saved. Continue
-  without adding new labels?" Default is Cancel. The empty layer is
-  not auto-saved -- the existing pre-flight scan only touches layers
-  with diffs or incompleteness, and an empty layer has neither.
-  Motivating use cases: training iteration-1 right after seeding
-  iteration-0 from an external snapshot (no manual refinements
-  added yet), or clicking Train on a fresh video by accident.
+- **Train DLC guard: hard-block on no-labels-anywhere, confirm
+  otherwise** (`dlcinterface.py`). The empty-active-layer guard
+  now distinguishes two situations:
+  - **Hard block** when ``not self._has_trainable_labels()`` --
+    active layer empty AND no other manual layer in the session
+    has data AND no ``*.h5`` exists under ``<project>/labeled-data/``.
+    Typical trigger: freshly-seeded project, user clicks Train
+    before annotating any iteration-1 frames. ``_prompt_no_trainable_labels``
+    surfaces an error overlay instructing the user to annotate
+    first or run Apply manual corrections to convert a DLC trace
+    into a manual layer.
+  - **Confirm modal** when labels exist elsewhere: mid-refinement,
+    user clicked Train without adding new labels this pass; training
+    is feasible by reusing the existing ``labeled-data/`` or by
+    running ``extract_frames`` on the other manual layer. The
+    confirm wording explains the situation; default is Cancel.
+- **Seed-bundle picker + remembered root**
+  (`dlcinterface.py`, `seed.py`). The Create-DLC-Project seeding
+  modal opens a list-picker (``SeedBundlePickerDialog``) when a
+  seed-bundles root has been configured: every valid bundle in
+  the root is listed inline by name + bodyparts + description.
+  Actions: ``Use selected`` / ``Browse elsewhere…`` /
+  ``Change bundles root…`` / ``Cancel``. The picker falls back
+  to the previous Browse-only flow when no root is configured,
+  and auto-offers to remember the picked bundle's parent as the
+  root after a successful Browse so the next session opens the
+  picker directly. Persistence lives at ``~/.dustrack/config.json``
+  (key ``seed_bundles_root``). New public API in ``dustrack.seed``:
+  ``get_seed_bundles_root``, ``set_seed_bundles_root``,
+  ``list_seed_bundles``.
+- **Bundle ``description.txt`` support** (`seed.py`).
+  ``extract_snapshot_for_seeding`` accepts a ``description=``
+  kwarg and writes ``description.txt`` into the bundle;
+  ``inspect_seed_bundle`` reads it and surfaces it via the
+  ``"description"`` key, which the picker shows alongside
+  bodyparts so users can identify bundles without opening the
+  folder.
 - **`DUSTrack.process_dlc_project` routes through
   `DLCProject.train_iteration` on the Qt path** (`dlcinterface.py`).
   The Qt button click now opens the Training options modal first; on

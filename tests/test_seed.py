@@ -14,8 +14,11 @@ import yaml
 
 from dustrack import (
     extract_snapshot_for_seeding,
+    get_seed_bundles_root,
     import_seed_bundle_into_project,
     inspect_seed_bundle,
+    list_seed_bundles,
+    set_seed_bundles_root,
 )
 from dustrack.dlcinterface import _dlc_bodyparts_to_layer_labels
 from dustrack.seed import extract_snapshot_for_seeding as _extract_direct
@@ -433,6 +436,125 @@ def test_import_propagates_invalid_bundle_errors(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="No snapshot"):
         import_seed_bundle_into_project(project, bundle)
+
+
+# ---------------------------------------------------------------------------
+# description.txt support
+# ---------------------------------------------------------------------------
+
+
+def test_extract_writes_description_when_provided(tmp_path):
+    train_dir = _make_fake_train_dir(tmp_path)
+    snapshot = train_dir / "snapshot-best-270.pt"
+    dest = tmp_path / "bundle"
+
+    extract_snapshot_for_seeding(
+        snapshot, dest,
+        description="Tracks point0/point1 on a synthetic fixture.",
+    )
+
+    assert (dest / "description.txt").read_text().strip() == (
+        "Tracks point0/point1 on a synthetic fixture."
+    )
+
+
+def test_extract_skips_description_file_when_empty(tmp_path):
+    bundle = _make_real_bundle(tmp_path)
+    assert not (bundle / "description.txt").exists()
+
+
+def test_inspect_returns_description_when_present(tmp_path):
+    train_dir = _make_fake_train_dir(tmp_path)
+    snapshot = train_dir / "snapshot-best-270.pt"
+    dest = tmp_path / "bundle"
+    extract_snapshot_for_seeding(snapshot, dest, description="hello world")
+
+    info = inspect_seed_bundle(dest)
+    assert info["description"] == "hello world"
+
+
+def test_inspect_returns_empty_description_when_absent(tmp_path):
+    bundle = _make_real_bundle(tmp_path)
+    info = inspect_seed_bundle(bundle)
+    assert info["description"] == ""
+
+
+# ---------------------------------------------------------------------------
+# seed_bundles_root persistence + list_seed_bundles
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_user_config(tmp_path, monkeypatch):
+    """Redirect ``~/.dustrack/`` to a fresh tmp folder for the
+    duration of one test so set_seed_bundles_root / get_... don't
+    touch the real user config."""
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    import dustrack.seed as _seed_mod
+    monkeypatch.setattr(_seed_mod, "_USER_CONFIG_DIR", fake_home / ".dustrack")
+    monkeypatch.setattr(
+        _seed_mod, "_USER_CONFIG_PATH",
+        fake_home / ".dustrack" / "config.json",
+    )
+    yield fake_home
+
+
+def test_get_seed_bundles_root_returns_none_when_unset(isolated_user_config):
+    assert get_seed_bundles_root() is None
+
+
+def test_set_and_get_seed_bundles_root_roundtrip(tmp_path, isolated_user_config):
+    bundles_dir = tmp_path / "bundles"
+    bundles_dir.mkdir()
+    set_seed_bundles_root(bundles_dir)
+    assert get_seed_bundles_root() == bundles_dir.resolve()
+
+
+def test_set_seed_bundles_root_none_clears_value(tmp_path, isolated_user_config):
+    bundles_dir = tmp_path / "bundles"
+    bundles_dir.mkdir()
+    set_seed_bundles_root(bundles_dir)
+    set_seed_bundles_root(None)
+    assert get_seed_bundles_root() is None
+
+
+def test_get_seed_bundles_root_drops_stale_path(tmp_path, isolated_user_config):
+    """A configured path that no longer exists on disk is treated as
+    unset rather than returned as-is."""
+    bundles_dir = tmp_path / "bundles"
+    bundles_dir.mkdir()
+    set_seed_bundles_root(bundles_dir)
+    bundles_dir.rmdir()
+    assert get_seed_bundles_root() is None
+
+
+def test_list_seed_bundles_skips_invalid_subfolders(tmp_path):
+    """Only subdirectories that pass ``inspect_seed_bundle`` are
+    returned; loose files and incomplete bundles are silently
+    dropped."""
+    root = tmp_path / "root"
+    root.mkdir()
+
+    train_dir = _make_fake_train_dir(tmp_path / "src")
+    snapshot = train_dir / "snapshot-best-270.pt"
+    extract_snapshot_for_seeding(
+        snapshot, root / "valid_bundle",
+        description="A valid bundle",
+    )
+
+    (root / "stray_file.txt").write_text("ignore me")
+    (root / "incomplete_bundle").mkdir()
+    (root / "incomplete_bundle" / "snapshot-001.pt").write_bytes(b"")
+
+    bundles = list_seed_bundles(root)
+    assert [b["name"] for b in bundles] == ["valid_bundle"]
+    assert bundles[0]["description"] == "A valid bundle"
+    assert bundles[0]["path"] == root / "valid_bundle"
+
+
+def test_list_seed_bundles_returns_empty_for_missing_root(tmp_path):
+    assert list_seed_bundles(tmp_path / "does_not_exist") == []
 
 
 # ---------------------------------------------------------------------------

@@ -69,8 +69,11 @@ from .dlcinterface import DUSTrack, DLCProject, open
 from .convert import convert_to_mono
 from .seed import (
     extract_snapshot_for_seeding,
+    get_seed_bundles_root,
     import_seed_bundle_into_project,
     inspect_seed_bundle,
+    list_seed_bundles,
+    set_seed_bundles_root,
 )
 
 # ``_dlc_patch`` exposes two independent runtime patches for DLC:
