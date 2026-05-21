@@ -39,6 +39,9 @@ classifiers = [
 ]
 keywords = ["video", "tracking", "computer-vision", "motion-analysis", "point-tracking"]
 
+[project.scripts]
+dustrack = "dustrack.cli:main"
+
 [project.optional-dependencies]
 docs = [
     "sphinx==6.2.1",

@@ -3650,10 +3650,57 @@ class DUSTrack(_DUSTrackBase):
                 if choice == "save":
                     dustrack_self._save_unsaved_layers(unsaved)
                 # "discard" falls through to the original closeEvent
+            # History write happens after the unsaved-diff gate so a
+            # cancelled close does NOT pollute the recent list. Wrapped
+            # because a config-write failure (read-only home, disk full)
+            # must never strand the user with an un-closeable window.
+            try:
+                dustrack_self._record_session_in_history()
+            except Exception:
+                pass
             original_close_event(event)
 
         qt_window.closeEvent = closeEvent
         qt_window._dustrack_close_guard_installed = True
+
+    def _record_session_in_history(self) -> None:
+        """Write the current session's video (and, for multi-video
+        sessions, the common parent folder) to the cross-session
+        recent-history store.
+
+        Called from the close-guard. Single-video sessions add only
+        the active video path to ``recent_videos``. Multi-video
+        sessions (``self._video_queue`` non-empty, set when
+        :func:`dustrack.open` is invoked with a list / picker
+        multi-pick) additionally add the common parent folder of the
+        active video + every queued path to ``recent_folders`` -- so
+        the future "Open recent" modal can offer a folder-of-videos
+        entry alongside individual files.
+
+        Robust to missing attributes (``fname`` is the only required
+        signal); the close-guard caller already wraps in try/except.
+        """
+        fname = getattr(self, "fname", None)
+        if not fname:
+            return
+        try:
+            _config.record_recent_video(fname)
+        except Exception:
+            # Best-effort -- if the JSON store is unwritable, drop
+            # the entry but don't fail the close.
+            pass
+        queue = getattr(self, "_video_queue", None) or []
+        if queue:
+            all_paths = [Path(fname), *queue]
+            try:
+                common = Path(os.path.commonpath([str(p) for p in all_paths]))
+                if common.is_dir():
+                    _config.record_recent_folder(common)
+            except (ValueError, OSError):
+                # Mixed drives on Windows raise ValueError from
+                # ``commonpath``. Drop the folder entry quietly; the
+                # individual videos are still in ``recent_videos``.
+                pass
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``
@@ -6125,16 +6172,19 @@ def _prompt_for_videos(parent=None):
 
     Bootstraps a ``QApplication`` if one isn't already running (same
     pattern as :func:`_pin_qt_palette`), so this works as the very first
-    Qt call in a fresh process. Returns:
+    Qt call in a fresh process. The picker opens at the last folder
+    a video was picked from this machine (via
+    :func:`dustrack._config.get_last_video_picker_dir`), or at the OS
+    default on a fresh install. Returns:
 
     - ``list[Path]`` -- user picked one or more files (order preserved
       as the user clicked them).
     - ``None`` -- user cancelled, OR qtpy isn't importable in the env
       (mpl-only install path); caller falls back to a no-op.
 
-    Files-only by design for 1.2.0a3. Folder-picker support (pick a
-    directory, recurse for videos) is on the 1.2.0 roadmap and arrives
-    alongside the multi-video swap-state contract.
+    Files-only by design for the first cut. Folder-picker support
+    (pick a directory, recurse for videos) bundles with the multi-
+    video swap-state work in the 1.2.0 roadmap.
     """
     try:
         from qtpy.QtWidgets import QApplication, QFileDialog
@@ -6143,10 +6193,11 @@ def _prompt_for_videos(parent=None):
     _ = QApplication.instance() or QApplication([])
     exts = " ".join(f"*.{e}" for e in _VIDEO_PICKER_EXTENSIONS)
     file_filter = f"Videos ({exts});;All files (*.*)"
+    start_dir = _config.get_last_video_picker_dir()
     paths, _selected_filter = QFileDialog.getOpenFileNames(
         parent,
         "Open video(s) for DUSTrack",
-        "",
+        str(start_dir) if start_dir is not None else "",
         file_filter,
     )
     if not paths:

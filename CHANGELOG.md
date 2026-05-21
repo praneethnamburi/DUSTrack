@@ -30,6 +30,13 @@ command line" gap. List-form `open([p0, p1, ...])` is also new:
 first path dispatches, rest land on `tracker._video_queue` for the
 forthcoming multi-video navigation work.
 
+Cross-session history: the picker remembers the last folder a video
+was picked from, and DUSTrack's close-guard writes opened videos to
+a `recent_videos` list (multi-video sessions also write the common
+parent folder to `recent_folders`). Both stored in
+`~/.dustrack/config.json` for the future "pick from history" modal
+that bundles with the seed-window work post-multi-video.
+
 Earlier 1.2.0 scope items (dnav 1.5.0 adoption + DLC `.h5` reclaim)
 came along with the 1.2.0a1 relocation. The originally-scheduled
 `fast_traces=True` Qt-tier was explored on a throwaway branch
@@ -599,6 +606,36 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   `av.container.core.open` calls.
 
 ### Added
+- **Cross-session recent-videos + recent-folders history; picker
+  remembers last folder** (`dustrack/_config.py`,
+  `dustrack/dlcinterface.py`). The no-arg picker now lands at the
+  folder the user picked from last time (single source of truth:
+  ``_config.get_last_video_picker_dir`` -- parent of the most-recent
+  existing entry in ``recent_videos``, falling back to the most-
+  recent existing entry in ``recent_folders``, falling back to the
+  OS default on a fresh install). DUSTrack's close-guard
+  (``_install_close_guard`` tail) writes ``self.fname`` to
+  ``recent_videos`` on every successful close; for multi-video
+  sessions (``self._video_queue`` non-empty), the common parent
+  folder is also written to ``recent_folders``. Both lists are
+  dedup-prepended, capped at 25 entries, and filtered to paths-that-
+  still-exist on read (stale on-disk entries are kept so a re-mounted
+  network drive can recover them). New public-ish accessors:
+  ``dustrack._config.get_recent_videos`` / ``get_recent_folders`` /
+  ``record_recent_video`` / ``record_recent_folder`` /
+  ``get_last_video_picker_dir``. Stage for the post-multi-video
+  "pick from history" modal: history collection starts now so the
+  future modal opens against a non-empty list. **Refactor**:
+  ``_read_user_config`` / ``_write_user_config`` lifted from
+  ``seed.py`` into ``_config.py`` as the canonical home for
+  cross-session JSON state; ``seed.py`` re-exports the symbols for
+  back-compat (and the ``test_seed.py::isolated_user_config``
+  fixture patches both modules so existing seed-bundles-root tests
+  keep passing). 25 new tests in
+  ``tests/test_user_config_recent.py`` (round-trip, dedup, cap,
+  stale filtering, last-picker-dir derivation, picker directory
+  arg, single-video and multi-video close-guard writes, mixed-
+  drives commonpath fallback).
 - **Zero-argument launch + `dustrack` console entry**
   (`dustrack/dlcinterface.py`, `dustrack/cli.py`, `pyproject.toml`).
   Closes the "user does not need to use the command line" gap.

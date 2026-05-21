@@ -488,15 +488,23 @@ def test_inspect_returns_empty_description_when_absent(tmp_path):
 def isolated_user_config(tmp_path, monkeypatch):
     """Redirect ``~/.dustrack/`` to a fresh tmp folder for the
     duration of one test so set_seed_bundles_root / get_... don't
-    touch the real user config."""
+    touch the real user config.
+
+    Canonical home for the IO is :mod:`dustrack._config`; ``seed.py``
+    re-exports the names for back-compat. Patch both so any callsite
+    still pointing at the seed-side re-export reads the redirected
+    file too.
+    """
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
+    cfg_dir = fake_home / ".dustrack"
+    cfg_path = cfg_dir / "config.json"
+    import dustrack._config as _cfg_mod
     import dustrack.seed as _seed_mod
-    monkeypatch.setattr(_seed_mod, "_USER_CONFIG_DIR", fake_home / ".dustrack")
-    monkeypatch.setattr(
-        _seed_mod, "_USER_CONFIG_PATH",
-        fake_home / ".dustrack" / "config.json",
-    )
+    monkeypatch.setattr(_cfg_mod, "_USER_CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(_cfg_mod, "_USER_CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(_seed_mod, "_USER_CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(_seed_mod, "_USER_CONFIG_PATH", cfg_path)
     yield fake_home
 
 

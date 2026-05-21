@@ -209,10 +209,13 @@ class TestOpenDispatchErrors:
 
         captured = {}
 
+        class _FakeTracker:
+            """Setattr-friendly stand-in so ``open`` can stash ``_video_queue``."""
+
         def _fake_dustrack(*args, **kwargs):
             captured["args"] = args
             captured["kwargs"] = kwargs
-            return object()  # stand-in; open() returns the constructor result
+            return _FakeTracker()
 
         # Patch the symbol the open() function actually resolves --
         # ``dustrack.dlcinterface.DUSTrack``.

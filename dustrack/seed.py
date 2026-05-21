@@ -40,26 +40,15 @@ from typing import Optional, Union
 
 import yaml
 
-
-# Per-user persistence for the "seed bundles root" the picker modal
-# remembers between sessions. Path stays out of the project tree so
-# every dustrack session on this machine shares it.
-_USER_CONFIG_DIR = Path.home() / ".dustrack"
-_USER_CONFIG_PATH = _USER_CONFIG_DIR / "config.json"
-
-
-def _read_user_config() -> dict:
-    if not _USER_CONFIG_PATH.is_file():
-        return {}
-    try:
-        return json.loads(_USER_CONFIG_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _write_user_config(cfg: dict) -> None:
-    _USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _USER_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+# User-config IO lives in ``_config.py`` (canonical home) -- re-exported
+# here so existing direct callers (and the seed-bundles-root accessors
+# below) keep working without paths or imports changing externally.
+from ._config import (
+    _USER_CONFIG_DIR,
+    _USER_CONFIG_PATH,
+    _read_user_config,
+    _write_user_config,
+)
 
 
 def get_seed_bundles_root() -> Optional[Path]:
