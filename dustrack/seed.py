@@ -37,6 +37,8 @@ import shutil
 from pathlib import Path
 from typing import Union
 
+import yaml
+
 
 def extract_snapshot_for_seeding(
     snapshot_path: Union[str, Path],
@@ -96,3 +98,204 @@ def extract_snapshot_for_seeding(
     shutil.copy2(pose_cfg, destination_path / pose_cfg.name)
 
     return destination_path
+
+
+def inspect_seed_bundle(bundle_path: Union[str, Path]) -> dict:
+    """Validate a seed bundle and return its metadata.
+
+    Args:
+        bundle_path: Folder containing ``snapshot-*.pt``,
+            ``pytorch_config.yaml``, and ``pose_cfg.yaml``.
+
+    Returns:
+        dict: ``{"snapshot": Path, "pytorch_config": Path,
+        "pose_cfg": Path, "bodyparts": list[str], "net_type": str}``.
+
+    Raises:
+        FileNotFoundError: If any of the three required files is
+            missing.
+        ValueError: If multiple ``snapshot-*.pt`` files are present
+            (bundle is ambiguous), or if ``pytorch_config.yaml``
+            lacks ``metadata.bodyparts``.
+    """
+    bundle_path = Path(bundle_path)
+    if not bundle_path.is_dir():
+        raise FileNotFoundError(f"Bundle path is not a directory: {bundle_path}")
+
+    pt_files = sorted(bundle_path.glob("snapshot-*.pt"))
+    if not pt_files:
+        raise FileNotFoundError(
+            f"No snapshot-*.pt in bundle: {bundle_path}"
+        )
+    if len(pt_files) > 1:
+        raise ValueError(
+            f"Bundle has {len(pt_files)} snapshot-*.pt files; expected exactly one: "
+            f"{[p.name for p in pt_files]}"
+        )
+
+    pytorch_config = bundle_path / "pytorch_config.yaml"
+    pose_cfg = bundle_path / "pose_cfg.yaml"
+    if not pytorch_config.is_file():
+        raise FileNotFoundError(f"Missing pytorch_config.yaml in bundle: {bundle_path}")
+    if not pose_cfg.is_file():
+        raise FileNotFoundError(f"Missing pose_cfg.yaml in bundle: {bundle_path}")
+
+    with open(pytorch_config) as f:
+        pytorch_cfg_data = yaml.safe_load(f)
+    try:
+        bodyparts = pytorch_cfg_data["metadata"]["bodyparts"]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"pytorch_config.yaml in {bundle_path} has no metadata.bodyparts"
+        )
+    net_type = pytorch_cfg_data.get("net_type", "")
+
+    return {
+        "snapshot": pt_files[0],
+        "pytorch_config": pytorch_config,
+        "pose_cfg": pose_cfg,
+        "bodyparts": list(bodyparts),
+        "net_type": net_type,
+    }
+
+
+def import_seed_bundle_into_project(
+    dlc_project,
+    bundle_path: Union[str, Path],
+    iteration: int = 0,
+    shuffle: int = 1,
+) -> Path:
+    """Wire a seed bundle into a DLC project so DLC sees iteration-N
+    as already trained with the bundled snapshot.
+
+    Side effects:
+      - ``dlc_project.edit_config(bodyparts=<from bundle>)`` -- the
+        project's bodypart list is *overwritten* by the bundle's
+        ``metadata.bodyparts``. The model literally expects those
+        output channels, so the project must match.
+      - Creates ``<project>/dlc-models-pytorch/iteration-<N>/<modelfolder>/{train,test}/``,
+        where ``<modelfolder>`` is the DLC convention
+        ``<Task><date>-trainset<int(frac*100)>shuffle<shuffle>``
+        (see ``deeplabcut/utils/auxiliaryfunctions.get_model_folder``).
+      - Copies the snapshot into ``train/`` and writes
+        ``train/pytorch_config.yaml`` with ``metadata.project_path``
+        and ``metadata.pose_config_path`` rewritten to the destination.
+      - Writes ``test/pose_cfg.yaml`` with its ``dataset`` field
+        rewritten to the new project root.
+      - Writes ``training-datasets/iteration-<N>/UnaugmentedDataSet_<Task><date>/metadata.yaml``
+        with a single shuffle entry matching the manufactured folder.
+        DLC's ``analyze_videos`` resolves shuffles through this file
+        (``TrainingDatasetMetadata.get``), so without it inference
+        raises ``Could not find a shuffle with trainingset fraction
+        X and index N``.
+
+    After this returns, ``dlc_project.analyze_videos(iteration_num=N)``
+    will pick up the bundled snapshot via ``all_snapshots`` (which
+    globs ``*train/snapshot*.pt``) and run inference against the
+    new video without any training having happened.
+
+    Args:
+        dlc_project: A :class:`dustrack.dlcinterface.DLCProject`
+            instance, just constructed (typically with an empty
+            active manual layer -- ``bodyparts: []`` in
+            ``config.yaml``, no iteration-N folder yet).
+        bundle_path: Folder produced by
+            :func:`extract_snapshot_for_seeding`.
+        iteration: Iteration number to install the bundle under
+            (default 0).
+        shuffle: Shuffle number for the model folder name (default
+            1, matching DLC's ``analyze_videos`` default).
+
+    Returns:
+        Path: The created modelfolder (``.../iteration-<N>/<modelfolder>``).
+
+    Raises:
+        FileNotFoundError, ValueError: from :func:`inspect_seed_bundle`.
+    """
+    info = inspect_seed_bundle(bundle_path)
+
+    dlc_project.edit_config(bodyparts=info["bodyparts"])
+
+    cfg = dlc_project.config
+    proj_id = f"{cfg['Task']}{cfg['date']}"
+    train_frac = cfg["TrainingFraction"][0]
+    modelfolder_name = (
+        f"{proj_id}-trainset{int(train_frac * 100)}shuffle{shuffle}"
+    )
+
+    project_root = Path(dlc_project.config_path).parent
+    modelfolder = (
+        project_root
+        / "dlc-models-pytorch"
+        / f"iteration-{iteration}"
+        / modelfolder_name
+    )
+    train_dir = modelfolder / "train"
+    test_dir = modelfolder / "test"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot: byte-identical copy, original filename preserved so
+    # the epoch number is visible.
+    shutil.copy2(info["snapshot"], train_dir / info["snapshot"].name)
+
+    # pytorch_config.yaml: rewrite the two absolute paths inside
+    # metadata to the destination project. Other fields (model arch,
+    # bodyparts, training hyperparameters) are preserved verbatim --
+    # they describe the bundled snapshot's identity, not the project.
+    with open(info["pytorch_config"]) as f:
+        pytorch_cfg_data = yaml.safe_load(f)
+    pytorch_cfg_data.setdefault("metadata", {})
+    pytorch_cfg_data["metadata"]["project_path"] = str(project_root)
+    pytorch_cfg_data["metadata"]["pose_config_path"] = str(
+        train_dir / "pytorch_config.yaml"
+    )
+    with open(train_dir / "pytorch_config.yaml", "w") as f:
+        yaml.safe_dump(pytorch_cfg_data, f, sort_keys=False)
+
+    # pose_cfg.yaml: rewrite the ``dataset`` field (project root).
+    # Inference's read_plainconfig at videos.py:425 only consumes a
+    # handful of fields (dataset_type, num_joints, all_joints_names,
+    # net_type); ``dataset`` is preserved as provenance.
+    with open(info["pose_cfg"]) as f:
+        pose_cfg_data = yaml.safe_load(f)
+    pose_cfg_data["dataset"] = str(project_root)
+    with open(test_dir / "pose_cfg.yaml", "w") as f:
+        yaml.safe_dump(pose_cfg_data, f, sort_keys=False)
+
+    # training-datasets/iteration-N/UnaugmentedDataSet_<Task><date>/metadata.yaml
+    # registers the shuffle so DLC's inference path can resolve it.
+    # ``analyze_videos`` calls ``TrainingDatasetMetadata.get(trainset_index,
+    # index)`` (``deeplabcut/generate_training_dataset/metadata.py:186``)
+    # to look up the shuffle by (train_fraction, index); without an
+    # entry it raises ``Could not find a shuffle with trainingset
+    # fraction X and index N``. We write a minimal record matching
+    # the modelfolder we just produced. ``split`` is a local index
+    # into a data_splits map that's only written when DLC owns the
+    # save (``metadata.py:225``) and only consumed when
+    # ``load_splits=True`` (training time); using ``split: 1`` here
+    # is the same harmless value DLC writes for a single-shuffle
+    # project.
+    trainset_dir = (
+        project_root
+        / "training-datasets"
+        / f"iteration-{iteration}"
+        / f"UnaugmentedDataSet_{proj_id}"
+    )
+    trainset_dir.mkdir(parents=True, exist_ok=True)
+    metadata_payload = {
+        "shuffles": {
+            modelfolder_name: {
+                "train_fraction": float(train_frac),
+                "index": shuffle,
+                "split": 1,
+                "engine": "pytorch",
+            }
+        }
+    }
+    with open(trainset_dir / "metadata.yaml", "w") as f:
+        f.write("# Generated by dustrack.import_seed_bundle_into_project\n")
+        f.write("---\n")
+        yaml.safe_dump(metadata_payload, f, sort_keys=False)
+
+    return modelfolder

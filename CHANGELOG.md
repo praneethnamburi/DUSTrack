@@ -30,6 +30,23 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Changed
+- **Create DLC Project on an empty active layer routes through a
+  Seed-from-bundle modal** (`dlcinterface.py`). Qt path only. When
+  ``not any(self.ann.data.values())`` at click time, a three-step
+  sequence runs: (a) confirm-intent overlay ("Browse for seed
+  bundle… / Cancel"), (b) QFileDialog folder picker, (c) detected-
+  bodyparts preview ("Create and seed / Cancel"). On accept, a new
+  ``DLCProject`` is scaffolded, the bundle is installed as
+  iteration-0's trained model via ``import_seed_bundle_into_project``,
+  and ``analyze_videos(iteration_num=0)`` runs inline (under the
+  existing ``ProgressOverlay`` with ``_SEED_PROJECT_PHASES``). On
+  Done, ``_refresh_dlc_layers`` loads the predictions as a dense
+  ``dlc_iteration-0`` overlay and points the active layer at an
+  empty ``iteration-1`` manual layer for refinement. The
+  ``seed_bundle_path=`` kwarg on
+  :meth:`DUSTrack.create_dlc_project` also lets callers drive the
+  same flow programmatically (Qt or non-Qt). The non-empty path is
+  unchanged.
 - **Empty-active-layer guard on Train DLC model** (`dlcinterface.py`).
   Qt path only. Before the Training options modal opens, if the
   active manual layer has no labels (``not any(self.ann.data.values())``),
@@ -318,6 +335,23 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   the `utils.Video` subclass.
 
 ### Added
+- **`dustrack.inspect_seed_bundle(bundle_path)`** + **`dustrack.import_seed_bundle_into_project(dlc_project, bundle_path, iteration=0, shuffle=1)`**
+  (`dustrack/seed.py`). The other half of the seeding flow.
+  ``inspect_seed_bundle`` validates a bundle and returns its
+  resolved file paths + bodyparts (for the modal preview);
+  ``import_seed_bundle_into_project`` wires the bundle into an
+  existing ``DLCProject`` so DLC sees iteration-N as already
+  trained. Side effects: overwrites project bodyparts from the
+  bundle, manufactures
+  ``dlc-models-pytorch/iteration-N/<modelfolder>/{train,test}/``,
+  rewrites the path fields inside ``pytorch_config.yaml`` and
+  ``pose_cfg.yaml`` to the destination, and registers the shuffle
+  in ``training-datasets/iteration-N/.../metadata.yaml`` (the
+  registry DLC's ``TrainingDatasetMetadata.get`` consults at
+  inference). After import, ``analyze_videos(iteration_num=N)``
+  produces predictions without training; an end-to-end slow test
+  pins the contract on a real pia02 video + the interosseous
+  bundle.
 - **`dustrack.extract_snapshot_for_seeding(snapshot_path, destination_path)`**
   (`dustrack/seed.py`). First piece of the "seed an empty project
   from an external snapshot" flow. Given a `.pt` inside an existing

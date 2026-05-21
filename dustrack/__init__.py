@@ -67,7 +67,11 @@ from .pointtracking import VideoAnnotation, VideoAnnotations
 from .postprocess import lk_moving_average_filter
 from .dlcinterface import DUSTrack, DLCProject, open
 from .convert import convert_to_mono
-from .seed import extract_snapshot_for_seeding
+from .seed import (
+    extract_snapshot_for_seeding,
+    import_seed_bundle_into_project,
+    inspect_seed_bundle,
+)
 
 # ``_dlc_patch`` exposes two independent runtime patches for DLC:
 #

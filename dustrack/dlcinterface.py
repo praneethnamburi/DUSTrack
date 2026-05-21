@@ -29,6 +29,7 @@ from datanavigator import VideoReader, cpu
 
 from .postprocess import lk_moving_average_filter
 from .pointtracking import VideoAnnotation, VideoAnnotations, _DUSTrackBase
+from .seed import import_seed_bundle_into_project, inspect_seed_bundle
 from . import _config
 
 try:
@@ -261,6 +262,10 @@ _CREATE_PROJECT_PHASES = [
     (re.compile(r"adding.*video|copying.*video", re.IGNORECASE), "Copying video"),
     (re.compile(r"config.*yaml|writing.*config", re.IGNORECASE), "Writing config"),
     (re.compile(r"labeled-data|extract", re.IGNORECASE), "Preparing labeled-data folders"),
+]
+_SEED_PROJECT_PHASES = _CREATE_PROJECT_PHASES + [
+    (re.compile(r"installing seed bundle", re.IGNORECASE), "Installing seed bundle"),
+    (re.compile(r"analyze_videos|analyzing video", re.IGNORECASE), "Analyzing videos"),
 ]
 _PROGRESS_PATTERNS = [
     re.compile(r"[Ee]poch\s+(\d+)\s*/\s*(\d+)"),
@@ -2093,7 +2098,9 @@ class DUSTrack(_DUSTrackBase):
         self.update()
 
 
-    def create_dlc_project(self, event=None, name=None, path=None, experimenter=_config.EXPERIMENTER) -> DLCProject:
+    def create_dlc_project(self, event=None, name=None, path=None,
+                           experimenter=_config.EXPERIMENTER,
+                           seed_bundle_path=None) -> DLCProject:
         """
         Create a new DeepLabCut project using current annotations as training labels.
 
@@ -2104,11 +2111,29 @@ class DUSTrack(_DUSTrackBase):
         warnings before continuing). On non-Qt backends the call runs
         synchronously and returns the new :class:`DLCProject`.
 
+        1.2.0a2: if the active manual layer is empty when the user
+        clicks Create DLC Project on the Qt path, a multi-step
+        Seed-from-bundle modal opens
+        (:meth:`_prompt_seed_bundle`). Picking a valid bundle routes
+        through a seeding flow that: (a) creates the project as
+        usual, (b) calls :func:`import_seed_bundle_into_project` to
+        install the bundle's snapshot as iteration-0's trained model
+        (overwriting the project's bodyparts with the bundle's), and
+        (c) runs ``analyze_videos(iteration_num=0)`` to produce a
+        dense reference layer the user can refine into iteration-1.
+        ``seed_bundle_path`` may also be passed programmatically to
+        bypass the modal.
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
             name (str, optional): Project name. Defaults to "{video_name}_{annotation_layer}".
             path (str, optional): Directory for project. Defaults to video's parent directory.
             experimenter (str, optional): Experimenter name. Defaults to config value.
+            seed_bundle_path (str, optional): Path to a seed bundle
+                folder (as produced by
+                :func:`extract_snapshot_for_seeding`). When supplied,
+                the seeding flow runs unconditionally (Qt or non-Qt),
+                bypassing the empty-layer-triggered modal.
 
         Returns:
             DLCProject: The newly created project instance on the sync
@@ -2120,6 +2145,29 @@ class DUSTrack(_DUSTrackBase):
         """
         if not HAS_DLC:
             raise ImportError('deeplabcut is not installed. Cannot create DLC project.')
+
+        qt_window = self._find_qt_window()
+        active_layer_empty = not any(self.ann.data.values())
+
+        # Qt path with empty active layer + no explicit bundle: open
+        # the seeding modal sequence. The user can still cancel out
+        # at every step (intent -> folder pick -> confirm). Cancel
+        # leaves the UI intact (returns None).
+        if (
+            active_layer_empty
+            and seed_bundle_path is None
+            and qt_window is not None
+        ):
+            seed_bundle_path = self._prompt_seed_bundle(qt_window)
+            if seed_bundle_path is None:
+                return None  # user cancelled at some step
+
+        # An empty active manual layer still needs an on-disk JSON
+        # for DLCProject's constructor: ``copy_annotations`` reads
+        # ``<video_stem>_annotations_<suffix>.json`` and the
+        # constructor's all-same-labels assert iterates the resulting
+        # files. The empty save writes ``{}`` (or ``{label: {}}``);
+        # both pass through fine.
         self.ann.save()
         if name is None:
             name = f"{self.name}_{self.ann.name}"
@@ -2135,7 +2183,62 @@ class DUSTrack(_DUSTrackBase):
                 annotation_suffix=self.ann.name,
             )
 
-        qt_window = self._find_qt_window()
+        # Seeding path: run project creation + bundle import +
+        # iteration-0 inference inside a single work_fn. The bundle's
+        # bodyparts override the empty-derived bodyparts from the
+        # constructor (see import_seed_bundle_into_project), and the
+        # iteration-0 modelfolder is manufactured so DLC sees
+        # iteration-0 as already trained.
+        if seed_bundle_path is not None:
+
+            def _build_seed_and_analyze():
+                project = _build_project()
+                print("Installing seed bundle...")
+                import_seed_bundle_into_project(project, seed_bundle_path)
+                print("Running analyze_videos on iteration-0 ...")
+                project.analyze_videos(
+                    iteration_num=0, create_video=False,
+                )
+                return project
+
+            if qt_window is None:
+                # Programmatic / non-Qt path: run synchronously.
+                project = _build_seed_and_analyze()
+                self._dlcproject = project
+                self._rewire_to_in_project_paths()
+                self._refresh_dlc_layers()
+                self._refresh_workflow_button_state()
+                return project
+
+            def _on_seed_success(project: DLCProject):
+                self._dlcproject = project
+                self._rewire_to_in_project_paths()
+                # Pulls predictions from videos/iteration-0/ into a
+                # dense overlay layer and points the active layer at
+                # an empty iteration-1 manual.
+                self._refresh_dlc_layers()
+                self._refresh_workflow_button_state()
+
+            self._run_with_overlay(
+                qt_window,
+                work_fn=_build_seed_and_analyze,
+                on_success=_on_seed_success,
+                title="Creating + seeding DLC project",
+                initial_phase="Scaffolding project",
+                hint=(
+                    "Output is also streamed to the launching terminal. "
+                    "Predictions will load when you click Done."
+                ),
+                show_progress_bar=False,
+                phase_patterns=_SEED_PROJECT_PHASES,
+                success_summary=(
+                    f"Project '{name}' seeded from bundle. "
+                    "Iteration-0 predictions loaded."
+                ),
+            )
+            return None
+
+        # Standard (non-seeded) path.
         if qt_window is None:
             self._dlcproject = _build_project()
             self._rewire_to_in_project_paths()
@@ -2770,6 +2873,97 @@ class DUSTrack(_DUSTrackBase):
         if options is None:
             return None
         return _training_options_to_train_iteration_kwargs(options)
+
+    def _prompt_seed_bundle(self, qt_window) -> Optional[str]:
+        """Multi-step modal sequence that fires when ``Create DLC Project``
+        is clicked with an empty active manual layer. Walks the user
+        through a Browse-for-bundle pick, validates it via
+        :func:`inspect_seed_bundle`, and asks for a final confirmation
+        showing the detected bodyparts.
+
+        Returns the validated bundle folder path on Accept, or ``None``
+        on any Cancel / invalid bundle path. Caller (``create_dlc_project``)
+        treats ``None`` as "user bailed -- leave the UI alone".
+        """
+        from qtpy.QtWidgets import QFileDialog
+
+        ConfirmOverlay = _make_confirm_overlay_class()
+
+        # Step 1: explain the empty-layer situation and confirm intent.
+        result = ConfirmOverlay(
+            qt_window,
+            title="No annotations in active layer",
+            message=(
+                f"Active layer {self.ann.name!r} has no labels. To create "
+                "a DLC project from this session, either annotate frames "
+                "manually first, or seed iteration-0 from a pre-trained "
+                "snapshot bundle (a folder containing snapshot-*.pt + "
+                "pytorch_config.yaml + pose_cfg.yaml).\n\n"
+                "Inference from the bundled snapshot will run on the "
+                "current video and load as a dense reference overlay; "
+                "your manual refinements then become iteration-1."
+            ),
+            buttons=[
+                ("Browse for seed bundle…", "primary"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="warning",
+        ).exec_()
+        if result != "Browse for seed bundle…":
+            return None
+
+        # Step 2: folder picker.
+        bundle_dir = QFileDialog.getExistingDirectory(
+            qt_window,
+            "Choose seed bundle folder",
+            "",
+            QFileDialog.ShowDirsOnly,
+        )
+        if not bundle_dir:
+            return None
+
+        # Step 3: validate.
+        try:
+            info = inspect_seed_bundle(bundle_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            ConfirmOverlay(
+                qt_window,
+                title="Invalid seed bundle",
+                message=(
+                    f"The selected folder is not a usable seed bundle:\n\n"
+                    f"{exc}\n\n"
+                    "Re-click 'Create DLC Project' to try again."
+                ),
+                buttons=[("OK", "neutral")],
+                default="OK",
+                severity="error",
+            ).exec_()
+            return None
+
+        # Step 4: confirm with detected info.
+        result = ConfirmOverlay(
+            qt_window,
+            title="Confirm seed bundle",
+            message=(
+                f"Bundle: {bundle_dir}\n"
+                f"Snapshot: {info['snapshot'].name}\n"
+                f"Bodyparts ({len(info['bodyparts'])}): {info['bodyparts']}\n"
+                f"Net type: {info['net_type'] or '(unset)'}\n\n"
+                "Create the project, install this snapshot as iteration-0, "
+                "and run inference on the current video?"
+            ),
+            buttons=[
+                ("Create and seed", "primary"),
+                ("Cancel", "neutral"),
+            ],
+            default="Cancel",
+            severity="info",
+        ).exec_()
+        if result != "Create and seed":
+            return None
+
+        return bundle_dir
 
     def _prompt_empty_layer_train_confirm(self, qt_window) -> bool:
         """Modal that fires when Train DLC is clicked with an empty
