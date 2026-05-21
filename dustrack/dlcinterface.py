@@ -2116,6 +2116,21 @@ class DUSTrack(_DUSTrackBase):
         failure paths fold into the overlay rather than popping a
         separate :class:`QMessageBox`.
 
+        1.2.0a2: a **Training options modal** runs before everything
+        else (Qt path only). It surfaces
+        :meth:`DLCProject.train_iteration`'s arg surface in the UI:
+        refine_mode (scratch / in-project / external), source
+        iteration/snapshot picker for in-project, Browse... for
+        external ``.pt``, training epochs (DLC3) / iterations (DLC2),
+        and a create-labeled-video toggle. Cancel returns to the UI
+        without kicking off training. On accept, the underlying call
+        routes through :meth:`DLCProject.train_iteration` (the
+        explicit-args sibling of :meth:`DLCProject.process`) -- so the
+        DLC2 silent-drop bug on ``refine=<str>`` is gone, and external
+        snapshots work on both DLC versions (DLC3 via
+        ``train_network(snapshot_path=...)``, DLC2 via a pose_cfg
+        ``init_weights`` edit).
+
         A **unified pre-flight** runs before the overlay starts,
         scanning *every* manual annotation layer in the session
         (file-pattern detection -- ``.json`` alongside the video,
@@ -2150,23 +2165,24 @@ class DUSTrack(_DUSTrackBase):
 
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
-            *args: Additional positional arguments forwarded to
-                :meth:`DLCProject.process`.
-            **kwargs: Additional keyword arguments forwarded to
-                :meth:`DLCProject.process`. Note that ``create_video``
-                defaults to ``False`` on this UI path (vs. ``True`` for
-                direct :meth:`DLCProject.process` calls) -- the
-                annotate -> train -> review -> annotate loop doesn't
-                need a labeled mp4 each pass. Pass ``create_video=True``
-                explicitly to override.
+            *args: Forwarded to :meth:`DLCProject.process` on the
+                non-Qt fallback path; **ignored on the Qt path** (the
+                Training options modal owns the kwarg surface there).
+            **kwargs: Same -- non-Qt fallback only. ``create_video``
+                defaults to ``False`` on the non-Qt path
+                (vs. ``True`` for direct :meth:`DLCProject.process`
+                calls) so the annotate -> train -> review -> annotate
+                loop doesn't write a labeled mp4 each pass; the Qt
+                path's create-labeled-video checkbox owns this on its
+                own.
 
         Returns:
             DUSTrack: ``self`` on the Qt path (training is asynchronous;
             the same DUSTrack will refresh in place when the user
-            clicks Done). Also ``self`` if the user cancels the
-            pre-flight modal -- the UI is left intact for manual
-            fixes. On the fallback path, the freshly-launched
-            DUSTrack from :meth:`DLCProject.annotate`.
+            clicks Done). Also ``self`` if the user cancels either
+            the Training options modal or the pre-flight modal -- the
+            UI is left intact. On the fallback path, the
+            freshly-launched DUSTrack from :meth:`DLCProject.annotate`.
 
         Raises:
             ImportError: If ``deeplabcut`` isn't installed.
@@ -2177,17 +2193,27 @@ class DUSTrack(_DUSTrackBase):
         if self._dlcproject is None:
             raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
 
-        # UI-only default: skip labeled-video generation. The
-        # annotate -> train -> review -> annotate loop doesn't need a
-        # labeled mp4 each pass; CLI callers of DLCProject.process()
-        # still default to create_video=True.
-        kwargs.setdefault('create_video', False)
-
         qt_window = self._find_qt_window()
         if qt_window is None:
+            # Non-Qt fallback: no Training options modal possible, so
+            # route through ``DLCProject.process()`` (auto-infer + sane
+            # defaults). The Qt path uses ``train_iteration`` below with
+            # explicit args supplied by the modal.
+            kwargs.setdefault('create_video', False)
             plt.close(self.figure)
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
+
+        # Qt path: prompt for training options FIRST, then run the
+        # existing pre-flight scan. The Training options modal owns the
+        # full ``DLCProject.train_iteration`` kwarg surface (refine_mode
+        # + in-project source picker OR external Browse + epochs +
+        # create_video), so positional ``*args`` / ``**kwargs`` passed
+        # to this method are ignored on the Qt path -- the user picks
+        # per-click.
+        training_kwargs = self._prompt_training_options(qt_window)
+        if training_kwargs is None:
+            return self  # user cancelled the Training options modal
 
         # Pre-flight: scan every manual annotation layer for
         # in-memory-vs-disk diffs AND/OR frames missing one or more
@@ -2205,7 +2231,7 @@ class DUSTrack(_DUSTrackBase):
             self._apply_pre_flight_remediations(issues)
 
         def _train():
-            self._dlcproject.process(*args, **kwargs)
+            self._dlcproject.train_iteration(**training_kwargs)
 
         def _on_success(_unused):
             # Refresh layers BEFORE the user clicks Done so the new
@@ -2576,6 +2602,30 @@ class DUSTrack(_DUSTrackBase):
                 lines.append("  (no incomplete frames)")
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
+
+    def _prompt_training_options(self, qt_window):
+        """Show the Training options modal and return kwargs ready to
+        splat into :meth:`DLCProject.train_iteration`.
+
+        Builds the initial state via
+        :func:`_default_training_options` from the live ``DLCProject``,
+        runs :class:`TrainingOptionsDialog` synchronously, and
+        translates the user's choices via
+        :func:`_training_options_to_train_iteration_kwargs`.
+
+        Returns:
+            dict | None: kwargs for ``train_iteration``, or ``None``
+            if the user clicked Cancel (caller returns without
+            kicking off training).
+        """
+        TrainingOptionsDialog = _make_training_options_class()
+        initial_state = _default_training_options(self._dlcproject)
+        options = TrainingOptionsDialog(
+            qt_window, initial_state=initial_state,
+        ).exec_()
+        if options is None:
+            return None
+        return _training_options_to_train_iteration_kwargs(options)
 
     def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
         """Single modal for the combined save-state + incompleteness
