@@ -30,6 +30,31 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Fixed
+- **Pre-flight incomplete-frame scan uses project bodyparts**
+  (`dlcinterface.py`). ``_scan_incomplete_frames`` now accepts an
+  optional ``target_labels=`` argument; ``_scan_unsaved_and_incomplete``
+  passes the project's ``config['bodyparts']`` (mapped through
+  ``_dlc_bodyparts_to_layer_labels``) when a project is set.
+  Closes a bug surfaced by the seed-from-bundle visual smoke: a
+  layer where the user touched only label ``"0"`` of a
+  ``["point0", "point1"]`` project was treated as complete by the
+  legacy "active labels = labels with any annotation" rule, so the
+  Save-and-clean modal didn't fire and training proceeded on
+  single-bodypart frames. Project-aware mode considers every
+  bodypart required regardless of whether the user has annotated
+  it yet. Legacy ``target_labels=None`` mode preserved for the
+  no-project / empty-bodyparts edge cases.
+- **Post-clean re-check for trainable labels** (`dlcinterface.py`).
+  After the Save-and-clean pre-flight remediation runs in
+  ``process_dlc_project``, the trainable-labels predicate is
+  re-evaluated. If cleaning dropped every annotated frame (typical
+  post-seed case: user annotated only one of the project's
+  bodyparts, every frame got dropped as incomplete) AND no other
+  labels exist anywhere in the project, the same
+  ``_prompt_no_trainable_labels`` overlay used at click-time fires
+  and training is hard-blocked. Without this, DLC's
+  ``create_training_dataset`` would fail downstream with a less
+  helpful message.
 - **Seeding overlay progress bar + radio-button visibility** (`dlcinterface.py`).
   Two visual nits on the 1.2.0a2 modals. (a) The Create-and-seed
   ``ProgressOverlay`` was opened with ``show_progress_bar=False``,

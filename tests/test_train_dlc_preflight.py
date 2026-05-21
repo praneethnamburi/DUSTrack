@@ -72,6 +72,83 @@ class TestScanIncompleteFrames:
         assert DUSTrack._scan_incomplete_frames(data) == {}
 
 
+class TestScanIncompleteFramesProjectAware:
+    """``target_labels=<list>`` mode: required labels come from the
+    project's bodyparts, not from "which labels have any data".
+    Closes the post-seed bug where a layer with only ``"0"`` touched
+    looked complete despite the project requiring both ``"0"`` and
+    ``"1"``.
+    """
+
+    def test_target_labels_drives_missing_detection(self):
+        # User annotated label "0" at frame 10 but never touched
+        # "1"; project bodyparts demand both.
+        data = {
+            "0": {10: [1.0, 1.0]},
+            "1": {},
+        }
+        result = DUSTrack._scan_incomplete_frames(
+            data, target_labels=["0", "1"],
+        )
+        assert result == {10: ["1"]}
+
+    def test_target_labels_with_all_complete(self):
+        data = {
+            "0": {0: [1.0, 1.0], 1: [2.0, 2.0]},
+            "1": {0: [3.0, 3.0], 1: [4.0, 4.0]},
+        }
+        assert DUSTrack._scan_incomplete_frames(
+            data, target_labels=["0", "1"],
+        ) == {}
+
+    def test_target_labels_treats_absent_label_keys_as_missing(self):
+        # Project bodyparts include "2" but the data dict has no
+        # "2" key at all (layer never declared it). Every annotated
+        # frame is then missing "2".
+        data = {
+            "0": {5: [1.0, 1.0]},
+            "1": {5: [2.0, 2.0]},
+        }
+        result = DUSTrack._scan_incomplete_frames(
+            data, target_labels=["0", "1", "2"],
+        )
+        assert result == {5: ["2"]}
+
+    def test_target_labels_overrides_legacy_empty_fallback(self):
+        # Legacy mode would return {} (no active labels). Project-
+        # aware mode reports each annotated frame as missing every
+        # required label that has no data.
+        data = {
+            "0": {5: [1.0, 1.0]},  # annotated only "0"
+        }
+        result = DUSTrack._scan_incomplete_frames(
+            data, target_labels=["1", "3"],
+        )
+        # Frame 5 is in all_frames (it has annotations), and neither
+        # "1" nor "3" cover it. ``"0"`` annotation is acknowledged
+        # via all_frames but doesn't count as a required label.
+        assert result == {5: ["1", "3"]}
+
+    def test_target_labels_none_preserves_legacy_behavior(self):
+        # The legacy callers (no project, or project-bodyparts list
+        # is empty) still see the "active labels = labels with any
+        # frame" semantics.
+        data = {
+            "0": {10: [1.0, 1.0]},
+            "1": {},
+        }
+        assert DUSTrack._scan_incomplete_frames(data) == {}
+        assert DUSTrack._scan_incomplete_frames(data, target_labels=None) == {}
+
+    def test_empty_target_labels_returns_empty(self):
+        # ``target_labels=[]`` -- no required labels -- treats every
+        # frame as complete (degenerate but well-defined).
+        data = {"0": {5: [1.0, 1.0]}}
+        assert DUSTrack._scan_incomplete_frames(
+            data, target_labels=[],
+        ) == {}
+
+
 class TestBuildDroppedIncompletePayload:
     def test_payload_contains_present_labels_only(self):
         data = {
@@ -257,10 +334,11 @@ def _make_ann_stub(name, fname, data):
     return SimpleNamespace(name=name, fname=(None if fname is None else str(fname)), data=data)
 
 
-def _scan_with_stub_self(video_fname, ann_stubs):
+def _scan_with_stub_self(video_fname, ann_stubs, dlcproject=None):
     stub = SimpleNamespace(
         fname=str(video_fname),
         annotations=ann_stubs,
+        _dlcproject=dlcproject,
         _is_manual_layer_name=DUSTrack._is_manual_layer_name,
         _is_manual_annotation_layer=DUSTrack._is_manual_annotation_layer,
         _normalize_layer_data=DUSTrack._normalize_layer_data,
@@ -339,6 +417,43 @@ class TestScanUnsavedAndIncomplete:
         assert "iteration-0" in result
         assert result["iteration-0"]["incomplete"] == {}
         assert ("0", 6) in result["iteration-0"]["diff"]["added"]
+
+    def test_project_bodyparts_drive_incomplete_detection(self, tmp_path):
+        """The bug surfaced by the user 2026-05-21: with a project
+        carrying bodyparts ['point0', 'point1'], a layer that
+        annotates only label '0' should be flagged as incomplete
+        (every frame missing '1'). Pre-fix, the legacy "active
+        labels = labels with any data" rule treated the layer as
+        complete because only '0' had data."""
+        video = tmp_path / "v.mp4"
+        data = {
+            "0": {5: [1.0, 1.0], 6: [1.0, 1.0]},
+            "1": {},
+        }
+        ann = _make_ann_stub("iteration-1", fname=None, data=data)
+        fake_project = SimpleNamespace(
+            config={"bodyparts": ["point0", "point1"]},
+        )
+        result = _scan_with_stub_self(video, [ann], dlcproject=fake_project)
+        assert "iteration-1" in result
+        assert result["iteration-1"]["incomplete"] == {5: ["1"], 6: ["1"]}
+
+    def test_project_without_bodyparts_falls_back_to_legacy(self, tmp_path):
+        """Defensive: if the project's bodyparts list is empty (the
+        moment between create_dlc_project and import_seed_bundle_into_project,
+        say), the scan should fall back to the legacy active-labels
+        rule instead of trivially marking nothing incomplete."""
+        video = tmp_path / "v.mp4"
+        data = {
+            "0": {5: [1.0, 1.0], 6: [1.0, 1.0]},
+            "1": {5: [2.0, 2.0]},  # frame 6 missing "1"
+        }
+        ann = _make_ann_stub("iteration-1", fname=None, data=data)
+        fake_project = SimpleNamespace(config={"bodyparts": []})
+        result = _scan_with_stub_self(video, [ann], dlcproject=fake_project)
+        # Legacy rule: "0" and "1" are both active (both have data),
+        # frame 6 missing "1" still flagged.
+        assert result["iteration-1"]["incomplete"] == {6: ["1"]}
 
 
 class TestNormalizeLayerData:

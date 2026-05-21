@@ -2741,6 +2741,19 @@ class DUSTrack(_DUSTrackBase):
             if not self._prompt_unified_pre_flight(qt_window, issues):
                 return self  # user cancelled -- UI left intact
             self._apply_pre_flight_remediations(issues)
+            # Cleaning can drop every frame of a layer (typical
+            # post-seed case: user annotated only one label out of
+            # the project bodyparts, every annotated frame is
+            # incomplete, all frames get dropped). Re-evaluate the
+            # trainable-labels predicate after the remediation; if
+            # nothing is left to train on, hard-block here with the
+            # same overlay :meth:`_has_trainable_labels` uses at the
+            # click-time entry guard. Without this, the cleaning
+            # leaves a project that DLC will fail on at
+            # create_training_dataset time with a confusing message.
+            if not self._has_trainable_labels():
+                self._prompt_no_trainable_labels(qt_window)
+                return self
 
         def _train():
             self._dlcproject.train_iteration(**training_kwargs)
@@ -2770,28 +2783,50 @@ class DUSTrack(_DUSTrackBase):
         return self
 
     @staticmethod
-    def _scan_incomplete_frames(data: dict) -> dict:
-        """Find frames missing one or more bodyparts in an annotation
-        ``data`` dict (``{label: {frame: [x, y]}}``).
+    def _scan_incomplete_frames(
+        data: dict, target_labels: list[str] | None = None,
+    ) -> dict:
+        """Find frames missing one or more required bodyparts in an
+        annotation ``data`` dict (``{label: {frame: [x, y]}}``).
 
-        Considers only labels with at least one annotation -- empty
-        labels are UI placeholders and shouldn't fail every frame.
+        Two modes:
+
+        - ``target_labels=None`` (legacy, project-unaware): "required"
+          = labels that have at least one annotation. Empty labels
+          are treated as UI placeholders so they don't fail every
+          frame. This is the right behavior for a session without a
+          DLC project, where the user's declared label set may be the
+          default ``[" 0"]`` bootstrap with no project bodyparts to
+          anchor against.
+        - ``target_labels=<list>`` (project-aware): "required" =
+          exactly that list. Used when a ``DLCProject`` exists and
+          its ``config['bodyparts']`` are the load-bearing label
+          set -- training fails if a frame is missing any of them,
+          regardless of whether the user has touched that label
+          anywhere in the layer yet. Closes the case where a
+          seeded project has bodyparts ``["point0", "point1"]``
+          but the user annotated only the ``"0"`` label, and
+          pre-flight wrongly reported the layer as complete.
+
         Returns ``{frame: [missing_label, ...]}`` for incomplete
         frames, frame-sorted with missing-labels lists in the same
-        order as the active label list. Empty dict iff every active
-        frame has every active label.
+        order as the required-label list. Empty dict iff every
+        annotated frame has every required label.
 
         Pure data-in / data-out; testable from synthetic dicts.
         """
-        active_labels = [L for L, frames in data.items() if frames]
-        if not active_labels:
+        if target_labels is None:
+            required = [L for L, frames in data.items() if frames]
+        else:
+            required = list(target_labels)
+        if not required:
             return {}
         all_frames: set = set()
-        for L in active_labels:
-            all_frames.update(data[L].keys())
+        for L, frames in data.items():
+            all_frames.update(frames.keys())
         incomplete: dict = {}
         for frame in sorted(all_frames):
-            missing = [L for L in active_labels if frame not in data[L]]
+            missing = [L for L in required if frame not in data.get(L, {})]
             if missing:
                 incomplete[frame] = missing
         return incomplete
@@ -3055,12 +3090,31 @@ class DUSTrack(_DUSTrackBase):
         file there's nothing to diff against. Pre-2026-05-21 the
         inclusion check required a file match too, which silently
         skipped unsaved-but-incomplete layers on first-time training.
+
+        Project-aware incomplete scan (1.2.0a2): when ``self._dlcproject``
+        is set, derives the required-label set from
+        ``config['bodyparts']`` (mapped through
+        :func:`_dlc_bodyparts_to_layer_labels`) and hands it to
+        :meth:`_scan_incomplete_frames` as ``target_labels``. Catches
+        the post-seeding case where the user has annotated, say, only
+        the ``"0"`` label but the project bodyparts demand both
+        ``"0"`` and ``"1"`` -- the legacy "active labels = labels
+        with any annotation" rule wrongly reported those frames as
+        complete.
         """
+        target_labels: list[str] | None = None
+        if self._dlcproject is not None:
+            bodyparts = self._dlcproject.config.get("bodyparts") or []
+            if bodyparts:
+                target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
+
         issues: dict = {}
         for ann in self.annotations:
             if not self._is_manual_layer_name(ann.name):
                 continue
-            incomplete = self._scan_incomplete_frames(ann.data)
+            incomplete = self._scan_incomplete_frames(
+                ann.data, target_labels=target_labels,
+            )
             diff = {"added": [], "removed": [], "modified": []}
             if self._is_manual_annotation_layer(
                 self.fname, ann.fname, ann.name
