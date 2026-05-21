@@ -2,7 +2,7 @@
 
 Wall-clock numbers for the user-felt DUSTrack workflow on the
 `interosseous_pn24-x` pia02 DLC project, tracked across releases.
-Two axes:
+Three axes:
 
 - **Steady-state per-frame responsiveness** — once a session is
   open, how fast does `browser.update()` repaint after a navigation
@@ -16,6 +16,13 @@ Two axes:
   [`24_benchmark_cold_open.py`](tests/qt_learning/24_benchmark_cold_open.py).
   Dominant cost on pia02-scale sessions (120 videos, many annotation
   layers per video, network-drive video paths).
+- **Post-processing throughput** — `lk_moving_average_filter`
+  (the `Reduce jitter` GUI button) wall-clock + memory, tracked
+  across the 2026-05-21 perf pass. Probes
+  [`25_benchmark_lk_rstc.py`](tests/qt_learning/25_benchmark_lk_rstc.py)
+  (micro + macro per-LK-call benches on the dnav example video) and
+  [`_reduce_jitter_real_bench.py`](tests/qt_learning/_reduce_jitter_real_bench.py)
+  (end-to-end on the pia02 real-shape fixture).
 
 Companion document
 [`datanavigator/BENCHMARKING.md`](../datanavigator/BENCHMARKING.md)
@@ -252,6 +259,152 @@ first paint drain (processEvents x20)      106.20 ms
   a code bug; pre-building TOCs server-side or warming them on
   project open would help.
 
+## Post-processing throughput -- summary
+
+Wall-clock + memory for the `Reduce jitter` GUI path
+(`process_with_lk` → `lk_moving_average_filter`, parallel,
+`save_raw=False` GUI default), measured on the pia02 fixture at
+`S:\_corpus\dustrack\pia02_s001_011_RFA2_min1_15s.mp4` (1111 frames,
+706×558, 73.94 fps, 1 label, 1075 windows at the default 0.5 s =
+37-frame window).
+
+env: `dlc3rc14`.
+
+### Reduce jitter -- real-video end-to-end
+
+| Branch / fix                                          | Wall time | Cumulative speedup |
+|-------------------------------------------------------|-----------|--------------------|
+| 1.2.0a1 baseline (pre-perf-pass, commit `1fc10c6`)    | **20.28 s** | 1.00×            |
+| 1.2.0a2 LK perf pass (commit `6d3bb03`, save_raw=True) | **16.01 s** | **1.27×**        |
+
+The 1.2.0a2 post-processing perf pass is three independent wins
+folded together; numbers below from the example-video bench
+([`25_benchmark_lk_rstc.py`](tests/qt_learning/25_benchmark_lk_rstc.py),
+720p, 16-frame window, mode-minor interleaved, demuxer state
+normalised between benches to avoid one bench's exit state poisoning
+the next).
+
+| Micro-bench                                       | base      | final    | speedup    | parity     |
+|---------------------------------------------------|----------:|---------:|-----------:|------------|
+| `lk_rstc_full` (forward + reverse, 16 frames)     | 1343 ms   | 247 ms   | **5.44×**  | bit-exact  |
+| `lk_full` (single direction, 16 frames + decode)  | 217 ms    | 213 ms   | unchanged  | bit-exact  |
+| `lk2_pair` (15 LK calls, pre-decoded frames)      | 34 ms     | 33 ms    | unchanged  | bit-exact  |
+| `movavg` parallel (286 windows × 16 frames)       | 6.43 s    | 5.79 s   | 1.11×      | bit-exact  |
+| `movavg` sequential (same shape)                  | 21.9 s    | 21.8 s   | unchanged  | bit-exact  |
+
+1. **`lucas_kanade_rstc` decodes each frame once across forward +
+   reverse passes** (`dustrack/opticalflow.py:158`). Pre-fix the
+   function called `lucas_kanade` twice; the reverse direction's
+   PyAV+TOC backward seeks (~60 ms / frame surcharge on 720p — see
+   [[videoreader-demuxer-state-bench-artifact]]) dominated. Now
+   decodes the window once, shares the frame list via `frames[::-1]`,
+   delegates to the canonical `_lk_track_frames` helper.
+   - `lk_rstc_full`: **1343 ms → 247 ms (5.44×)**, bit-exact.
+   - Drives the reduce_jitter wall-clock improvement above — the
+     same code path runs per window inside the moving-average filter.
+
+2. **`cv.setNumThreads(1)` scoped via try/finally around the
+   parallel ThreadPoolExecutor block** (`dustrack/postprocess.py:447`).
+   cv2 defaults to `cpu_count` internal threads on Windows
+   (Concurrency framework). With a `cpu_count`-sized Python worker
+   pool every cv call inside every worker spawns up to `cpu_count`
+   more internal threads — `cpu_count²` thread-slots fighting for
+   `cpu_count` cores. Sweep on the 24-core dev box, 300-frame bench,
+   `save_raw=False`:
+
+   | cv_threads | workers | median (s) |
+   |-----------:|--------:|-----------:|
+   | 24 (default) | 28 (default) | 6.49 |
+   | 1 | 8 | 5.77 |
+   | 1 | 24 | 5.73 |
+   | 2 | 12 | 5.76 |
+   | 8 | 4 | 6.93 |
+
+   Final: `cv=1` + executor default. ~12% faster, parity bit-exact.
+   `cv.setNumThreads` is global; restoring it in `finally` keeps cv
+   defaults intact for any concurrent caller.
+
+3. **GUI `Reduce jitter` defaults to `save_raw=False`**
+   (`dustrack/dlcinterface.py:2775`). `process_with_lk` does
+   `kwargs.setdefault("save_raw", False)` so the button path skips
+   the per-window `.pkl` sidecar. Direct API callers (wobble +
+   gaitmusic `.rawlk` consumers, see
+   [[lkmovavg-pkl-consumers]]) still default to `save_raw=True`
+   because they call `lk_moving_average_filter` themselves. Trade:
+   peak Python memory for the accumulator drops from `W·N·L·16` to
+   `N·L·20` bytes — **35 MB → 2.9 MB on the pia02 W=15, L=4,
+   N=36 715 shape** (~12×). Wall time on the example bench is
+   essentially unchanged (post-processing is <0.3 % of the LK call
+   budget; the win is the .pkl I/O round-trip on real videos and the
+   accumulator allocation, not CPU). FP summation order differs
+   between modes, so `save_raw=False` output is numerically close
+   (`max|delta| = 2.27e-13` on the 300-frame example bench) but not
+   bit-exact vs `save_raw=True`.
+
+Bundled bug-fix: **`postprocess.gray` switched to `COLOR_RGB2GRAY`**
+(was `COLOR_BGR2GRAY` on RGB input from dnav `VideoReader`, swapping
+the R/B coefficients in BT.601 luminance). Unified with
+`dustrack.opticalflow._gray_rgb`. Impact on real ultrasound:
+`max|delta| = 0.02 px`, `p99 = 0.005 px` (R = G = B on grayscale
+source, so the conversion swap was a no-op). On a generic color
+video (the dnav example) the LK gradient field genuinely differs:
+`max|delta| ≈ 30 px`, `p99 ≈ 11 px` — visible in the parity diff
+against the pre-fix baseline but irrelevant for clinical ultrasound.
+
+### Post-processing -- the bandwidth ceiling (why we stopped)
+
+After the three wins above the `movavg` parallel path plateaus at
+~5.7 s on the 300-frame example bench, with **3.78× speedup of
+sequential on 24 cores (16 % efficiency)**. The GIL-breaking probe
+at [`_movavg_gil_probe.py`](tests/qt_learning/_movavg_gil_probe.py)
+confirmed the cap is **not** the GIL:
+
+| path | rep 0 | rep 1 | rep 2 | rep 3 | rep 4 |
+|---|---:|---:|---:|---:|---:|
+| ThreadPool reference | 5.53 s | — | — | — | — |
+| ProcessPool + shared-memory frames (persistent) | 21.42 s (spawn) | 5.81 s | 5.81 s | 5.72 s | 5.59 s |
+
+Process pools with separate heaps hit the same ~5.7 s plateau as
+the ThreadPool after spawn amortisation. The cap is **memory
+bandwidth from cv2's per-call pyramid build/teardown**: each
+`calcOpticalFlowPyrLK` call internally allocates ~12 MB of pyramid
+(two pyramids × ~6 MB at 720p, 3 levels, int16 gradients), discarded
+at end of call. The bench fires 8008 LK calls → ~96 GB allocation
+traffic → ~17 GB/s, at the DDR4 bandwidth ceiling on this box.
+
+Two approaches tried, **both ruled out** (memory:
+[[lk-perf-dead-ends]]):
+
+- **mimalloc-redirect** via the Microsoft `minject.exe` workflow ran
+  ~5–7 % **slower** than default malloc. Allocator contention isn't
+  the bottleneck; swapping the allocator doesn't reduce the memory
+  traffic itself.
+- **Single-level Numba LK** (`@njit(nogil=True)` with pre-computed
+  Scharr gradients) ran **1.77× faster** than cv2, but parity
+  diverged (p99 = 9.9 px, max = 22 px). Even sub-pixel-per-frame
+  motion regimes still hit ~9 px p99 — the gap is algorithmic
+  (inverse-compositional vs cv's forward-additive, Scharr vs Sobel,
+  no pyramid), not closable without ~500–800 more lines matching
+  cv exactly which then drops the speedup to ~1.3–1.5×.
+
+### Post-processing -- known follow-ons (not chased)
+
+- **Pyramid reuse via the cv2 Python binding is blocked**.
+  `cv.buildOpticalFlowPyramid` works, but `cv.calcOpticalFlowPyrLK`
+  in opencv-python 4.11 doesn't accept the pre-built pyramid as
+  `prevImg` / `nextImg` (only the single-Mat overload is exposed
+  to Python; the `vector<Mat>` C++ overload demands `Ptr<UMat>`).
+  Re-evaluate if a future opencv-python release surfaces it.
+  Memory: [[cv2-pyrlk-pyramid-binding]].
+- **GPU LK** via `cv.cuda.SparsePyrLKOpticalFlow` would bypass the
+  bandwidth ceiling but needs a CUDA-built opencv wheel (cudawarped
+  or source build, ~1–2 hr first-time setup). Spec'd in
+  `specs/dustrack.md → Roadmap → Later`. The per-call overhead on
+  sparse 2-points-per-call workloads only buys ~3× — not the 20–50×
+  dense flow gets — so deferred until a batch reprocessing campaign
+  or a second GPU CV path (NVDEC decode, dense flow) makes the
+  install cost amortise.
+
 ## Methodology
 
 - **Steady-state probes** (09, 14): each iteration sets
@@ -266,6 +419,16 @@ first paint drain (processEvents x20)      106.20 ms
   `VideoBrowser.__init__`, `StateVariables.show`, etc.) under
   `time.perf_counter`, with a `cProfile` pass over the whole
   `annotate()` call. Reports top-N cumulative + self-time entries.
+- **Post-processing probes** (25, `_movavg_gil_probe`,
+  `_reduce_jitter_real_bench`): mode-minor interleaved (rep r runs
+  every micro-bench in turn before rep r+1) per memo
+  [[thermal-confounding-mode-major-iteration]]; demuxer state
+  normalised between benches by reading frame 0 untimed so PyAV+TOC
+  backward-seek artifacts don't poison the next bench's timing
+  ([[videoreader-demuxer-state-bench-artifact]]). Reference output
+  arrays are frozen per-step and parity-diffed across optimisation
+  steps with `np.allclose(atol=1e-6, rtol=0)` (or relaxed for the
+  numerically-equivalent paths e.g. `save_raw=False`).
 - Known-cosmetic Qt warnings (`QFontDatabase: Cannot find font
   directory`, offscreen plugin `does not support raise()` /
   `propagateSizeHints()`) are filtered via a Qt message handler so
@@ -291,6 +454,20 @@ C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe `
 C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe `
     C:\dev\DUSTrack\tests\qt_learning\24_benchmark_cold_open.py `
     --max-layers --top 20
+
+# Post-processing throughput on the example video (LK micro+macro):
+C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe `
+    C:\dev\DUSTrack\tests\qt_learning\25_benchmark_lk_rstc.py `
+    --step myrun [--compare-to base] [--no-movavg-save-raw]
+
+# Reduce jitter end-to-end on the pia02 real-shape fixture:
+C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe `
+    C:\dev\DUSTrack\tests\qt_learning\_reduce_jitter_real_bench.py `
+    --label myrun --save-raw both --n-reps 3
+
+# GIL / ProcessPool feasibility probe (one-off, dead-end finding):
+C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe `
+    C:\dev\DUSTrack\tests\qt_learning\_movavg_gil_probe.py
 ```
 
 The steady-state probes accept `--record LABEL` to append a
