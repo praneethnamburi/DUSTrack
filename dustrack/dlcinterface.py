@@ -3542,8 +3542,23 @@ class DUSTrack(_DUSTrackBase):
             incomplete = info.get("incomplete") or {}
             if incomplete:
                 self._save_dropped_incomplete_sidecar(ann, incomplete)
-                ann.remove_empty_labels()
-                ann.keep_overlapping_frames()
+                # Drop the incomplete frames directly using the scan's
+                # output. The pre-fix pair (remove_empty_labels +
+                # keep_overlapping_frames) silently failed in the
+                # project-aware case: a required-but-empty label (the
+                # user touched only "0" in a ["point0", "point1"]
+                # project) got dropped by remove_empty_labels, and
+                # keep_overlapping_frames then preserved every
+                # incomplete frame because the now-single-label
+                # schema trivially "overlapped" with itself. Routing
+                # mutations through ``ann.remove(label, frame)`` keeps
+                # the revision counter consistent (see
+                # ``feedback_revision_counter_invalidation_pattern``)
+                # and works in both project-aware and legacy modes.
+                for frame in incomplete:
+                    for label in list(ann.data.keys()):
+                        if frame in ann.data[label]:
+                            ann.remove(label, frame)
             ann.save()
         self.update()
 
@@ -6098,7 +6113,48 @@ def _session_inside_dlc_project(dustrack) -> Optional[Path]:
     return config.parent if config is not None else None
 
 
-def open(path, layer_name=None, **dustrack_kwargs):
+# Extensions surfaced as the "Videos" filter group in the no-arg
+# :func:`open` picker. Anything Qt-renderable beyond this list is still
+# reachable via the "All files" fallback. Kept conservative so users
+# don't accidentally pick an audio/image asset and crash on construction.
+_VIDEO_PICKER_EXTENSIONS = ("mp4", "avi", "mov", "mkv", "mts", "m4v", "wmv", "webm")
+
+
+def _prompt_for_videos(parent=None):
+    """Pop a Qt file-picker for one-or-more video files.
+
+    Bootstraps a ``QApplication`` if one isn't already running (same
+    pattern as :func:`_pin_qt_palette`), so this works as the very first
+    Qt call in a fresh process. Returns:
+
+    - ``list[Path]`` -- user picked one or more files (order preserved
+      as the user clicked them).
+    - ``None`` -- user cancelled, OR qtpy isn't importable in the env
+      (mpl-only install path); caller falls back to a no-op.
+
+    Files-only by design for 1.2.0a3. Folder-picker support (pick a
+    directory, recurse for videos) is on the 1.2.0 roadmap and arrives
+    alongside the multi-video swap-state contract.
+    """
+    try:
+        from qtpy.QtWidgets import QApplication, QFileDialog
+    except ImportError:
+        return None
+    _ = QApplication.instance() or QApplication([])
+    exts = " ".join(f"*.{e}" for e in _VIDEO_PICKER_EXTENSIONS)
+    file_filter = f"Videos ({exts});;All files (*.*)"
+    paths, _selected_filter = QFileDialog.getOpenFileNames(
+        parent,
+        "Open video(s) for DUSTrack",
+        "",
+        file_filter,
+    )
+    if not paths:
+        return None
+    return [Path(p) for p in paths]
+
+
+def open(path=None, layer_name=None, **dustrack_kwargs):
     """Open a DUSTrack annotation session; auto-resolves Phase 1 vs Phase 2 from ``path``.
 
     The unified entry point for the DUSTrack workflow. Users hand it a
@@ -6126,7 +6182,11 @@ def open(path, layer_name=None, **dustrack_kwargs):
     the in-project copy gives you Phase 2.
 
     Args:
-        path: Video file, ``config.yaml``, or DLC project folder.
+        path: Video file, ``config.yaml``, DLC project folder, a
+            sequence of any of these (first dispatches, the rest land
+            on ``tracker._video_queue`` for future multi-video
+            navigation), or ``None`` -- ``None`` pops a Qt file picker
+            and lets the user pick one or more videos.
         layer_name: Annotation layer name. Optional in both phases:
             Phase 1 defaults to ``'iteration-0'`` (the canonical seed
             name for the rest of the DLC pipeline -- the next DLC
@@ -6139,19 +6199,30 @@ def open(path, layer_name=None, **dustrack_kwargs):
             ``gamma``, ``brightness``, etc.).
 
     Returns:
-        DUSTrack: Live annotation UI, ready to use.
+        DUSTrack: Live annotation UI, ready to use. ``None`` if the
+        no-arg form's file picker was cancelled.
 
     Raises:
         FileNotFoundError: If ``path`` doesn't exist.
-        ValueError: Path is a directory that isn't a DLC project.
+        ValueError: Path is a directory that isn't a DLC project, or
+            an empty sequence was supplied.
         ImportError: Phase 2 entry on a system without ``deeplabcut``
             installed.
 
     Examples:
-        Fresh annotation (default layer name ``'iteration-0'``)::
+        Zero-argument launch (pops a video picker)::
 
             import dustrack
+            tracker = dustrack.open()
+
+        Fresh annotation (default layer name ``'iteration-0'``)::
+
             tracker = dustrack.open('video.mp4')
+
+        Multi-video launch (first opens; rest stash on
+        ``tracker._video_queue`` until the navigation UI lands)::
+
+            tracker = dustrack.open(['v0.mp4', 'v1.mp4', 'v2.mp4'])
 
         Resume after closing the UI mid-workflow (any of these work)::
 
@@ -6163,6 +6234,22 @@ def open(path, layer_name=None, **dustrack_kwargs):
 
             tracker = dustrack.open('video.mp4', 'manual', dark_mode=True)
     """
+    if path is None:
+        picked = _prompt_for_videos()
+        if picked is None:
+            return None
+        path = picked
+
+    queued: list[Path] = []
+    if isinstance(path, (list, tuple)):
+        if len(path) == 0:
+            raise ValueError("dustrack.open: empty path sequence")
+        # First entry dispatches; the rest ride along as a queue for
+        # the future multi-video swap-state contract (Roadmap *Next
+        # 1.2.0* item 3). No nav UI consumes ``_video_queue`` yet.
+        queued = [Path(q) for q in path[1:]]
+        path = path[0]
+
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"dustrack.open: path does not exist: {path}")
@@ -6183,32 +6270,38 @@ def open(path, layer_name=None, **dustrack_kwargs):
             )
         if layer_name is None:
             layer_name = "iteration-0"
-        return DUSTrack(str(p), layer_name, **dustrack_kwargs)
+        tracker = DUSTrack(str(p), layer_name, **dustrack_kwargs)
+    else:
+        # Phase 2: project found.
+        if not HAS_DLC:
+            raise ImportError(
+                f"dustrack.open: detected a DLC project at {config_path.parent}, "
+                "but deeplabcut is not installed. Install deeplabcut to resume "
+                "the project, or point at a video outside the project to use "
+                "DUSTrack standalone."
+            )
+        project = DLCProject(str(config_path))
 
-    # Phase 2: project found.
-    if not HAS_DLC:
-        raise ImportError(
-            f"dustrack.open: detected a DLC project at {config_path.parent}, "
-            "but deeplabcut is not installed. Install deeplabcut to resume "
-            "the project, or point at a video outside the project to use "
-            "DUSTrack standalone."
+        # If the caller pointed at a specific video inside the project,
+        # respect that; otherwise default to the first video (matches
+        # DLCProject.annotate's own default).
+        video_index = 0
+        if p.is_file():
+            match = _find_video_index(project, p)
+            if match is not None:
+                video_index = match
+
+        tracker = project.annotate(
+            video_index=video_index,
+            new_annotation_suffix=layer_name,
+            **dustrack_kwargs,
         )
-    project = DLCProject(str(config_path))
 
-    # If the caller pointed at a specific video inside the project,
-    # respect that; otherwise default to the first video (matches
-    # DLCProject.annotate's own default).
-    video_index = 0
-    if p.is_file():
-        match = _find_video_index(project, p)
-        if match is not None:
-            video_index = match
-
-    return project.annotate(
-        video_index=video_index,
-        new_annotation_suffix=layer_name,
-        **dustrack_kwargs,
-    )
+    # Stash any list-form leftovers for the future multi-video nav
+    # (Roadmap *Next 1.2.0* item 3). Always set the attribute (even on
+    # the empty case) so consumers don't need a ``getattr`` dance.
+    tracker._video_queue = queued
+    return tracker
 
 
 def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coords: list):

@@ -22,6 +22,14 @@ on DLC2 because DLC2 has no `train_network(snapshot_path=...)`
 runtime override; the new path edits pose_cfg's `init_weights`
 explicitly. `process()` is unchanged for CLI users.
 
+Zero-argument launch: `dustrack.open()` with no path pops a Qt
+multi-select file picker, and a new `dustrack` console-script entry
+point in `pyproject.toml` lets users launch the GUI by typing
+`dustrack` at any shell. Closes the "user does not need to use the
+command line" gap. List-form `open([p0, p1, ...])` is also new:
+first path dispatches, rest land on `tracker._video_queue` for the
+forthcoming multi-video navigation work.
+
 Earlier 1.2.0 scope items (dnav 1.5.0 adoption + DLC `.h5` reclaim)
 came along with the 1.2.0a1 relocation. The originally-scheduled
 `fast_traces=True` Qt-tier was explored on a throwaway branch
@@ -44,6 +52,21 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   bodypart required regardless of whether the user has annotated
   it yet. Legacy ``target_labels=None`` mode preserved for the
   no-project / empty-bodyparts edge cases.
+- **Pre-flight remediation drops incomplete frames directly**
+  (`dlcinterface.py`). ``_apply_pre_flight_remediations`` previously
+  ran ``ann.remove_empty_labels()`` followed by
+  ``ann.keep_overlapping_frames()``. That pair silently failed in
+  the project-aware case: a required-but-empty label (user touched
+  only ``"0"`` of a ``["point0", "point1"]`` project) got dropped
+  by step 1, and step 2 then trivially preserved every incomplete
+  frame under the now-single-label schema. Net effect: Save-and-
+  clean ran, but the layer still had the incomplete frames, the
+  post-clean re-check passed, and DLC failed at
+  ``create_training_dataset`` downstream. Fix: drop incomplete
+  frames directly via ``ann.remove(label, frame)`` using the
+  scan's ``incomplete`` dict as the source of truth -- correct in
+  both project-aware and legacy modes, and routes mutations
+  through the canonical revision-bumping path.
 - **Post-clean re-check for trainable labels** (`dlcinterface.py`).
   After the Save-and-clean pre-flight remediation runs in
   ``process_dlc_project``, the trainable-labels predicate is
@@ -576,6 +599,29 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   `av.container.core.open` calls.
 
 ### Added
+- **Zero-argument launch + `dustrack` console entry**
+  (`dustrack/dlcinterface.py`, `dustrack/cli.py`, `pyproject.toml`).
+  Closes the "user does not need to use the command line" gap.
+  ``dustrack.open()`` with no arguments pops a Qt
+  ``QFileDialog.getOpenFileNames`` (videos + All files filter,
+  multi-select) and threads the picked list through the existing
+  Phase 1 / Phase 2 dispatch; cancel returns ``None`` so the call
+  is safe in REPL / script contexts. ``open()`` also now accepts a
+  list / tuple of paths: the first dispatches, the rest land on
+  ``tracker._video_queue`` (always set, defaults to ``[]``) so the
+  forthcoming multi-video navigation work has a queue to consume.
+  ``str`` and ``Path`` entries coexist in the list form. New
+  ``[project.scripts]`` entry exposes the workflow as a shell
+  command: typing ``dustrack`` from any conda env that has the
+  package installed pops the picker and blocks until the window
+  closes (no Python REPL needed). The picker is files-only in this
+  release; folder selection (recurse for videos) arrives alongside
+  the multi-video swap-state contract on the Roadmap. Helper:
+  ``_prompt_for_videos`` (qtpy-lazy, ``QApplication.instance() or
+  QApplication([])`` bootstrap, returns ``None`` on cancel /
+  mpl-only install). 12 new tests in
+  ``tests/test_open_zero_arg.py`` (picker mocked); modal-loop Qt
+  exec stays manual-smoke per the ConfirmOverlay precedent.
 - **Workflow-button gating** (`dustrack/dlcinterface.py`). The three
   DLC-aware Workflow-group buttons now disable themselves (visible
   but greyed, with tooltip) when their click handler would otherwise

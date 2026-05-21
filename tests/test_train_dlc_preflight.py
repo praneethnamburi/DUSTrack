@@ -438,6 +438,70 @@ class TestScanUnsavedAndIncomplete:
         assert "iteration-1" in result
         assert result["iteration-1"]["incomplete"] == {5: ["1"], 6: ["1"]}
 
+    def test_remediation_drops_frames_via_scan_output(self, tmp_path):
+        """The user-visible bug 2026-05-21: after Save and clean, the
+        pre-fix pair (remove_empty_labels + keep_overlapping_frames)
+        silently failed in the project-aware case -- a required-but-
+        empty label was dropped by step 1, and step 2 then trivially
+        preserved every incomplete frame under the now-single-label
+        schema. The new path uses the scan's ``incomplete`` dict
+        directly via ``ann.remove(label, frame)``.
+
+        Builds a real ``VideoAnnotation`` (with the scatter axis set
+        to a throwaway figure) so the data-mutation path uses the
+        production ``ann.remove`` + revision-bump plumbing, then runs
+        the remediation directly to verify the post-clean state.
+        """
+        import json
+
+        import matplotlib.pyplot as plt
+        from dustrack.pointtracking import VideoAnnotation
+
+        ann_path = tmp_path / "v_annotations_iteration-1.json"
+        with open(ann_path, "w") as f:
+            json.dump({"0": {"10": [1.0, 1.0]}, "1": {}}, f)
+
+        fig, ax = plt.subplots()
+        try:
+            ann = VideoAnnotation(
+                fname=str(ann_path), vname=None, name="iteration-1",
+                ax_list_scatter=[ax],
+                ax_list_trace_x=[ax],
+                ax_list_trace_y=[ax],
+            )
+            assert ann.data == {"0": {10: [1.0, 1.0]}, "1": {}}
+
+            # Hand-build the issues dict the scan would produce.
+            issues = {
+                "iteration-1": {
+                    "diff": {"added": [], "removed": [], "modified": []},
+                    "incomplete": {10: ["1"]},
+                }
+            }
+            # Stub self: only the attributes _apply_pre_flight_remediations
+            # touches. update() is a no-op; _save_dropped_incomplete_sidecar
+            # writes the sidecar (we can let it run).
+            # Stub sidecar write as a no-op -- this test pins the
+            # frame-drop behavior, not the sidecar (covered by its own
+            # tests above). Avoids dragging in the full _build_*_name
+            # + filesystem-write machinery.
+            stub = SimpleNamespace(
+                annotations={"iteration-1": ann},
+                fname=str(tmp_path / "v.mp4"),
+                update=lambda: None,
+                _save_dropped_incomplete_sidecar=lambda _ann, _inc: None,
+            )
+            DUSTrack._apply_pre_flight_remediations(stub, issues)
+
+            # Post-clean: frame 10 dropped from "0"; "1" remains empty.
+            # The trainable-labels check `any(ann.data.values())` is now
+            # False, which is what triggers the hard-block in the live
+            # process_dlc_project path.
+            assert ann.data == {"0": {}, "1": {}}
+            assert not any(ann.data.values())
+        finally:
+            plt.close(fig)
+
     def test_project_without_bodyparts_falls_back_to_legacy(self, tmp_path):
         """Defensive: if the project's bodyparts list is empty (the
         moment between create_dlc_project and import_seed_bundle_into_project,
