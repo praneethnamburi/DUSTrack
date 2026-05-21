@@ -186,11 +186,15 @@ class TestParityNumericLabels:
         _assert_dicts_equal(d_legacy, d_vec)
 
     def test_pia02_shape_2_labels(self):
-        """Mimic a pia02 DLC trace: 36715-frame video, 2 labels, sparse
-        NaNs from low-confidence DLC predictions. Asserts parity at the
-        production shape that's actually hitting the slow path on disk.
+        """Mimic a pia02-style DLC trace: many frames, 2 labels, sparse
+        NaNs from low-confidence DLC predictions. Asserts parity at a
+        shape that exercises the slow legacy per-frame loop; the
+        production shape (36715 frames) is exercised by
+        ``tests/qt_learning/24_benchmark_cold_open.py``. 5000 frames is
+        the smallest size that reliably triggers the legacy hot path
+        on every backend pandas index we've seen.
         """
-        n_frames = 36715
+        n_frames = 5000
         rng = np.random.default_rng(123)
         nan_mask = rng.random((n_frames, 2)) < 0.05
         df = _build_dlc_df(
@@ -293,9 +297,15 @@ def test_vectorised_at_least_as_fast(benchmark_pia02_shape: pd.DataFrame):
 
 @pytest.fixture
 def benchmark_pia02_shape() -> pd.DataFrame:
-    """Pia02-shaped DLC trace: 36715 frames x 2 labels with sparse NaNs."""
+    """Pia02-style DLC trace: 5000 frames x 2 labels with sparse NaNs.
+
+    Smaller than the 36715-frame production shape (which lives in
+    ``tests/qt_learning/24_benchmark_cold_open.py``); chosen so the
+    speedup smoke runs in ~0.5 s while still showing the vectorised /
+    legacy gap clearly.
+    """
     rng = np.random.default_rng(2026)
-    n_frames = 36715
+    n_frames = 5000
     nan_mask = rng.random((n_frames, 2)) < 0.05
     return _build_dlc_df(
         n_frames=n_frames,

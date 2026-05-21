@@ -172,11 +172,25 @@ def test_video_annotation_init_with_video_2(video_fname):
     assert ann.name == "pn"
     assert ann.video.fname == video_fname
 
-    # fname only without "_annotations" in it - this should not be allowed in the future
-    ann_fname = os.path.join(video_folder, f"{vstem}_myann.json")
-    ann = dustrack.VideoAnnotation(fname=ann_fname)
-    assert ann.fname == ann_fname
-    assert ann.fstem == Path(ann_fname).stem
+
+def test_video_annotation_init_with_unconventional_filename(video_fname):
+    """Loading a JSON whose stem does NOT contain ``_annotations`` is
+    currently permissive: the file loads, ``name`` falls back to
+    ``"noname"``, and no associated video is discovered.
+
+    Flagged for tightening -- the long-term plan is to reject paths
+    that don't match ``{vstem}_annotations[_<name>].json`` so the
+    name-discovery rules stay deterministic. Until that lands, this
+    test ratifies the current permissive contract so the change
+    becomes a deliberate one-line update (this test flips from
+    passing to raising) rather than an accidental regression.
+    """
+    video_folder = str(Path(video_fname).parent)
+    vstem = Path(video_fname).stem
+    bad_fname = os.path.join(video_folder, f"{vstem}_myann.json")
+    ann = dustrack.VideoAnnotation(fname=bad_fname)
+    assert ann.fname == bad_fname
+    assert ann.fstem == Path(bad_fname).stem
     assert ann.name == "noname"
     assert ann.video is None
 
@@ -1510,7 +1524,17 @@ def test_video_point_annotator_add_new_label(ann_object):
     )  # buffer should still be empty if we added the annotation to the current layer
 
 
-def test_video_point_annotator_key_bindings(video_fname):
+def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
+    # ann_fname / ann2_fname are requested for their side effect: they
+    # write ``example_video_annotations.json`` (10 frames, label "") and
+    # ``example_video_annotations_pn.json`` (9 frames, label "pn") next
+    # to the example video. The ``_DUSTrackBase(..., annotation_names=
+    # ["", "pn"])`` constructor below reads those files from disk; if
+    # the fixtures aren't requested, the discovery returns empty layers
+    # and the asserts below fail. (Pre-fix, in serial mode pytest
+    # happened to schedule the fixture-touching tests first, masking
+    # this; ``-n auto`` exposed the dependency.)
+    del ann_fname, ann2_fname  # only the on-disk side effect is needed
     v = _DUSTrackBase(
         vid_name=video_fname, annotation_names=["", "pn"]
     )
@@ -1692,8 +1716,15 @@ def test_video_point_annotator_conditional_move(video_fname):
     )  # shouldn't move because there is an annotation at frame 10
 
 
-def test_video_point_annotator_state_variables(video_fname):
-    """Test cycling through the state variables."""
+def test_video_point_annotator_state_variables(video_fname, ann_fname, ann2_fname):
+    """Test cycling through the state variables.
+
+    ``ann_fname`` / ``ann2_fname`` are requested for their on-disk side
+    effect; see ``test_video_point_annotator_key_bindings`` for the
+    full explanation of why the constructor below requires those JSON
+    files on disk.
+    """
+    del ann_fname, ann2_fname
     v = _DUSTrackBase(
         vid_name=video_fname, annotation_names=["", "pn"]
     )
@@ -2262,10 +2293,7 @@ def test_wholesale_data_reassignment_rewraps(ann_object):
 def test_add_label_wraps_new_inner_dict(ann_object):
     """add_label() places a _TrackedFrameDict, not a bare dict, at the new key."""
     new_label = str(int(max(ann_object.labels)) + 1) if ann_object.labels else "0"
-    if new_label in ann_object.labels:
-        new_label = "9"
-    if new_label in ann_object.labels:
-        pytest.skip("no free label slot")
+    assert new_label not in ann_object.labels  # fixture contract: labels are "0","1","2"
     ann_object.add_label(label=new_label)
     inner = ann_object.data[new_label]
     assert isinstance(inner, _TrackedFrameDict)
@@ -2287,8 +2315,7 @@ def test_sort_data_preserves_wrapping(ann_object):
 def test_clip_labels_preserves_wrapping(ann_object):
     """clip_labels() reassigns via setter; inner dicts stay wrapped."""
     frames_present = sorted(ann_object.data[ann_object.labels[0]].keys())
-    if len(frames_present) < 2:
-        pytest.skip("need >=2 annotated frames")
+    assert len(frames_present) >= 2  # fixture contract: 10 frames per label
     ann_object.clip_labels(frames_present[0], frames_present[-1])
     for label in ann_object.labels:
         inner = ann_object.data[label]
@@ -2329,9 +2356,10 @@ def test_revision_consumers_invalidate_on_direct_mutation(video_fname, ann_fname
     )
     ann = v.annotations[Path(ann_fname).stem]
     v.update()  # populate cache
-    cache_before = getattr(ann, "_trace_display_cache_key", None)
-    if cache_before is None:
-        pytest.skip("trace cache not exercised on this build")
+    # Direct attribute access (not getattr-with-default) so a future
+    # build that stops populating ``_trace_display_cache_key`` raises
+    # AttributeError -- a louder signal than the previous silent skip.
+    cache_before = ann._trace_display_cache_key
     # Direct mutation (the bug pattern the guard closes). Use a frame
     # within the video's n_frames so to_trace's ndarray write succeeds.
     label = ann.labels[0]

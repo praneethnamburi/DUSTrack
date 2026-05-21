@@ -1,10 +1,6 @@
 import numpy as np
-import pytest
 from datanavigator import VideoReader, get_example_video
 from dustrack import lucas_kanade, lucas_kanade_rstc
-
-
-pytestmark = pytest.mark.slow
 
 
 def test_lucas_kanade_rstc():
