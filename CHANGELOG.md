@@ -97,6 +97,21 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   QSS now renders the indicator as a white-bordered circle filled
   with the primary-action blue (``#3a86ff``, matching the Train
   button) when checked.
+- **Disabled-feature visibility in Training options modal** (`dlcinterface.py`).
+  Sibling of the prior checked-indicator fix. On the dark
+  ``rgba(0, 0, 0, 200)`` overlay backdrop, the modal's disabled
+  state was nearly indistinguishable from the enabled state --
+  ``_set_row_enabled`` only re-coloured ``QLabel`` children, and a
+  disabled ``QRadioButton`` (e.g. "Refine from in-project iteration"
+  with no trained iterations yet) kept its white text + white
+  indicator border. Now: QSS ``:disabled`` rules mute radio +
+  checkbox text to ``#777777`` and the radio indicator border to
+  ``#666666`` (with a muted ``#4a5a7a`` checked-fill), and
+  ``_set_row_enabled`` applies a ``QGraphicsOpacityEffect`` at 0.40
+  to the whole sub-row so the native ``QComboBox`` / ``QLineEdit`` /
+  ``QSpinBox`` / ``QPushButton`` children dim uniformly instead of
+  relying on Windows-native disabled rendering, which is too subtle
+  on this backdrop.
 - **Empty manual-layer labels after seeding** (`dlcinterface.py`).
   Two compounding issues left the post-seed ``annotation_label``
   dropdown showing the bootstrap default ``"0"`` instead of the

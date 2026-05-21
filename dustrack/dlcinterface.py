@@ -1409,8 +1409,8 @@ def _make_training_options_class():
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
         QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
-        QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton,
-        QSpinBox, QVBoxLayout, QWidget,
+        QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
+        QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
     )
 
     # Reuse ConfirmOverlay's role QSS so Train/Cancel match the visual
@@ -1485,6 +1485,23 @@ def _make_training_options_class():
                 "QRadioButton::indicator:checked { "
                 "  background-color: #3a86ff; "
                 "  border: 2px solid white; "
+                "  border-radius: 8px; "
+                "}"
+                # Disabled state -- mute text + indicator so a disabled
+                # radio (e.g. "Refine from in-project iteration" with no
+                # trained iterations yet) is unmistakably non-actionable
+                # on the dark backdrop. The same colors are reused on
+                # QCheckBox:disabled for consistency.
+                "QRadioButton:disabled { color: #777777; }"
+                "QCheckBox:disabled { color: #777777; }"
+                "QRadioButton::indicator:disabled { "
+                "  background-color: transparent; "
+                "  border: 2px solid #666666; "
+                "  border-radius: 8px; "
+                "}"
+                "QRadioButton::indicator:checked:disabled { "
+                "  background-color: #4a5a7a; "
+                "  border: 2px solid #666666; "
                 "  border-radius: 8px; "
                 "}"
             )
@@ -1652,10 +1669,20 @@ def _make_training_options_class():
 
         def _set_row_enabled(self, row, enabled):
             row.setEnabled(enabled)
+            # QGraphicsOpacityEffect dims the whole row (including the
+            # native QComboBox / QLineEdit / QSpinBox / QPushButton
+            # children, whose Windows-native disabled rendering is too
+            # subtle on this dark backdrop). The QLabel children stay
+            # white when enabled and inherit the opacity fade when
+            # disabled -- no per-label restyling needed.
+            if enabled:
+                row.setGraphicsEffect(None)
+            else:
+                effect = QGraphicsOpacityEffect(row)
+                effect.setOpacity(0.40)
+                row.setGraphicsEffect(effect)
             for child in row.findChildren(QLabel):
-                child.setStyleSheet(
-                    "color: white;" if enabled else "color: #888888;"
-                )
+                child.setStyleSheet("color: white;")
 
         # -- Slots -----------------------------------------------------
 
