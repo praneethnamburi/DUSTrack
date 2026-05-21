@@ -56,3 +56,13 @@ exclude = ["docs/_static/dustrack_applications.mp4"]
 [tool.black]
 line-length = 88
 target-version = ['py37', 'py38', 'py39', 'py310', 'py311', 'py312', 'py313']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Default run skips the slow set. Pre-flight runs the whole suite via
+# ``pytest -m ""`` (clears the marker filter) or ``pytest -m slow`` for
+# the slow set alone.
+addopts = "-ra --strict-markers -m 'not slow'"
+markers = [
+    "slow: real-video / benchmark / multi-second tests; deselected by default (run before release)",
+]

@@ -47,15 +47,22 @@ def signal_list():
     ]
 
 
-@pytest.fixture(scope="function", autouse=True)
-def setup_folders(tmp_path):
-    """Ensure clean cache and clip folders for each test."""
+@pytest.fixture(scope="session", autouse=True)
+def setup_folders(tmp_path_factory):
+    """Point datanavigator's global clip/cache folders at a session-scoped
+    temp dir, restore on session end.
+
+    Was function-scope + autouse, which fired around every one of the
+    ~350 tests; no test in this suite reads the globals during
+    execution (the video fixtures pass ``dest_folder=`` explicitly),
+    so the per-test churn was pure overhead. If a future test ever
+    relies on a clean clip/cache state, that test should request a
+    function-scoped helper explicitly rather than re-broadening this.
+    """
     curr_clip_dir = datanavigator.get_clip_folder()
     curr_cache_dir = datanavigator.get_cache_folder()
-    clip_dir = tmp_path / "clips"
-    cache_dir = tmp_path / "cache"
-    clip_dir.mkdir()
-    cache_dir.mkdir()
+    clip_dir = tmp_path_factory.mktemp("clips")
+    cache_dir = tmp_path_factory.mktemp("cache")
     datanavigator.set_clip_folder(str(clip_dir))
     datanavigator.set_cache_folder(str(cache_dir))
     yield str(clip_dir), str(cache_dir)

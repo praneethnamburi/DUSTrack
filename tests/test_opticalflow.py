@@ -1,7 +1,10 @@
 import numpy as np
+import pytest
 from datanavigator import VideoReader, get_example_video
 from dustrack import lucas_kanade, lucas_kanade_rstc
-from matplotlib import pyplot as plt
+
+
+pytestmark = pytest.mark.slow
 
 
 def test_lucas_kanade_rstc():
@@ -21,19 +24,6 @@ def test_lucas_kanade_rstc():
     rstc_path = lucas_kanade_rstc(
         video, start_frame, end_frame, start_points, end_points
     )
-
-    plt.figure()
-    plt.plot(
-        np.array(
-            [
-                forward_path[:, 0, 0],
-                np.flip(reverse_path, 0)[:, 0, 0],
-                rstc_path[:, 0, 0],
-            ]
-        ).T
-    )
-    plt.legend(["Forward", "Reverse", "RSTC"])
-    plt.show(block=False)
 
     n_frames = end_frame - start_frame + 1
     n_points = len(start_points)
