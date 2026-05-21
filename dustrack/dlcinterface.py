@@ -1612,7 +1612,23 @@ class DUSTrack(_DUSTrackBase):
         assert self._dlcproject is not None
         in_project_video = str(self._dlcproject.video_list[0])
         videos_dir = Path(in_project_video).parent
-        project_root = Path(self._dlcproject.path)
+        # Derive ``project_root`` from the in-project video path
+        # (``videos_dir.parent``) rather than ``self._dlcproject.path``.
+        # ``DLCProject.path`` is whatever the caller passed to the
+        # constructor -- for a brand-new project that's the WORKING
+        # DIRECTORY (parent of the actual project dir), because
+        # ``deeplabcut.create_new_project`` creates the project at
+        # ``<working_dir>/<name>-<experimenter>-<date>/``. The migration
+        # check below ``ann_path.relative_to(project_root)`` then matches
+        # a false-positive "yes, already inside" for any annotation file
+        # sitting next to the original video, because the working dir IS
+        # a prefix of that path -- silently skipping the migration and
+        # stranding those layers at their original (outside-project)
+        # locations. Affected the train pre-flight in particular: it
+        # saved cleaned annotations to the wrong path, leaving the
+        # project's copy stale and feeding the stale file into
+        # ``extract_frames`` -> ``labeled_data``.
+        project_root = videos_dir.parent
 
         self.fname = in_project_video
 

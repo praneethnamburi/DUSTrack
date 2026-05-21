@@ -145,6 +145,51 @@ class TestRewireToInProjectPaths:
         assert ann.saved_to is None
         assert not expected.exists()
 
+    def test_outside_project_migrates_even_when_dlcproject_path_is_working_dir(self, tmp_path):
+        """Regression for the train-pre-flight labeled-data bug.
+
+        ``DLCProject.path`` is set to whatever was passed to the
+        constructor -- for a freshly-created project that's the WORKING
+        DIRECTORY (``deeplabcut.create_new_project`` creates the project
+        at ``<working_dir>/<name>-<experimenter>-<date>/``). Pre-fix the
+        rewire used ``self._dlcproject.path`` as ``project_root`` and the
+        ``ann_path.relative_to(project_root)`` check returned a
+        false-positive "already inside" for any annotation file sitting
+        next to the original video at top-level (the working dir IS a
+        prefix of that path). Layers stranded at their original
+        locations; train pre-flight saved cleaned annotations there;
+        ``extract_frames`` read the stale project copy and propagated
+        the dropped point into ``labeled_data``.
+
+        Fix: derive ``project_root`` from the in-project video path
+        (``videos_dir.parent``), so it always points at the actual
+        project directory regardless of what was passed to
+        ``DLCProject(path=...)``.
+        """
+        top, orig_video, project, project_video = _make_project_layout(tmp_path)
+        manual_path = top / "ex_annotations_manual.json"
+        manual_path.write_text("{}", encoding="utf-8")
+        ann = _make_ann(manual_path, data={"0": {0: [1.0, 2.0]}})
+        fake = SimpleNamespace()
+        fake.fname = str(orig_video)
+        fake.annotations = [ann]
+        # NOTE: ``path=str(top)`` -- mirrors the real production state
+        # where ``DLCProject.__init__`` stored the working directory,
+        # not the project directory. Pre-fix this would have caused
+        # ``ex_annotations_manual.json`` to be treated as "already
+        # inside the project tree" and skip migration.
+        fake._dlcproject = SimpleNamespace(
+            video_list=[str(project_video)],
+            path=str(top),  # the bug-trigger
+        )
+        DUSTrack._rewire_to_in_project_paths(fake)
+        expected = project / "videos" / "ex_annotations_manual.json"
+        assert ann.fname == str(expected), (
+            f"ann.fname should have migrated into the project's videos/ folder, "
+            f"got {ann.fname!r}"
+        )
+        assert expected.exists()
+
     def test_layer_without_fname_skipped(self, tmp_path):
         top, orig_video, project, project_video = _make_project_layout(tmp_path)
         ann = SimpleNamespace(fname=None, fstem=None, data={}, save=lambda *a: None)

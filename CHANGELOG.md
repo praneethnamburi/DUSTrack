@@ -62,6 +62,35 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   via a `frames[::-1]` view, and delegate to a single canonical LK
   loop (`_lk_track_frames`).
 
+- **`_rewire_to_in_project_paths` migrates layers correctly when
+  `DLCProject.path` is the working directory** (`dustrack/dlcinterface.py`).
+  Pre-fix the helper read ``self._dlcproject.path`` as
+  ``project_root``, but ``DLCProject.path`` stores whatever the
+  caller passed in -- for a brand-new project that's the WORKING
+  DIRECTORY (parent of the actual project dir), because
+  ``deeplabcut.create_new_project`` creates the project at
+  ``<working_dir>/<name>-<experimenter>-<date>/``. The migration
+  check ``ann_path.relative_to(project_root)`` then returned a
+  false-positive "yes, already inside" for any annotation file sitting
+  next to the original video (the working dir IS a prefix of that
+  path), which silently skipped the migration and stranded those
+  layers at their original outside-project locations.
+
+  Production impact: train pre-flight saved the cleaned annotations to
+  the wrong path. The project's copy of the JSON stayed stale, and
+  ``extract_frames`` -> ``labeled_data`` propagated the dropped
+  incomplete frame straight into ``CollectedData_*.h5`` -- DLC
+  training ingested the frame the user had asked to drop. User-reported
+  bug today.
+
+  Fix: derive ``project_root`` from the in-project video path
+  (``videos_dir.parent``) so it always points at the actual project
+  directory regardless of what was passed to ``DLCProject(path=...)``.
+  One-line change in ``_rewire_to_in_project_paths`` plus a regression
+  test (``test_outside_project_migrates_even_when_dlcproject_path_is_working_dir``)
+  that pins the bug-trigger: ``DLCProject(path=<working_dir>)`` with
+  an annotation file at top-level must still migrate.
+
 - **Train pre-flight now flags incomplete frames on first-time training**
   (`dustrack/dlcinterface.py:_scan_unsaved_and_incomplete`). Pre-fix
   `_is_manual_annotation_layer` returned False whenever `ann.fname is
