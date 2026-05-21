@@ -2772,6 +2772,16 @@ class DUSTrack(_DUSTrackBase):
                 f"{source_layer_name!r} (no .json filename to anchor to)."
             )
 
+        # GUI default: skip the per-window .pkl sidecar. The .pkl is a
+        # contract for ``pn-projects/wobble`` and ``gaitmusic`` callers
+        # (their ``.rawlk`` property feeds ``lk_gradients`` velocity
+        # estimation) -- but those go through the direct API, not the
+        # button. GUI users almost never inspect per-window data; the
+        # sidecar is ~10-12x larger than the averaged .json and the
+        # write costs a couple of seconds on real videos. Callers who
+        # want it back can pass ``save_raw=True`` explicitly.
+        kwargs.setdefault("save_raw", False)
+
         def _smooth():
             ann_processed = lk_moving_average_filter(source_ann, *args, **kwargs)
             ann_processed.save()

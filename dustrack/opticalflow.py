@@ -56,11 +56,12 @@ def _normalize_init_points(init_points: np.ndarray) -> np.ndarray:
 def _gray_rgb(video, frame_num: int) -> np.ndarray:
     """Decode a frame from a VideoReader / utils.Video and grayscale it.
 
-    Mirrors the original per-video LK behaviour: PyAV+TOC returns RGB so
-    this uses ``COLOR_RGB2GRAY``. The frame-list shape in
-    :py:mod:`dustrack.postprocess` historically used ``COLOR_BGR2GRAY``
-    on the same RGB input -- a documented inconsistency we preserve
-    here for bit-parity, see ``postprocess.gray``.
+    PyAV+TOC returns RGB so this uses ``COLOR_RGB2GRAY`` (BT.601
+    luminance). Unified with :py:mod:`dustrack.postprocess.gray` in
+    the 1.2.0a2 perf pass -- postprocess previously used
+    ``COLOR_BGR2GRAY`` on the same RGB input, which swapped the R/B
+    coefficients and produced a different (but still grayscale)
+    value.
     """
     return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_RGB2GRAY)
 

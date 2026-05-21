@@ -19,6 +19,37 @@ per-frame regression on the production video; the matplotlib trace
 pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
 
 ### Changed
+- **`postprocess.gray` switched to `COLOR_RGB2GRAY`** (was
+  `COLOR_BGR2GRAY` on the same RGB input from dnav `VideoReader`).
+  Bug-fix that unifies the grayscale convention with
+  `dustrack.opticalflow._gray_rgb`. Both sides now compute
+  BT.601 luminance ``Y = 0.299 R + 0.587 G + 0.114 B``; the pre-fix
+  BGR2GRAY-on-RGB path swapped the R/B coefficients. Impact:
+  - Real ultrasound: ``max|delta| = 0.02 px``,
+    ``p99 = 0.005 px`` (RGB channels are equal on grayscale source,
+    so the conversion swap is a no-op). Measured on the pia02
+    1111-frame fixture.
+  - Color video (the dnav example): ``max|delta| ≈ 30 px``,
+    ``p99 ≈ 11 px``. Tracking diverges visibly because the LK
+    gradient field is genuinely different.
+
+  Existing ``_lkmovavg_*.json`` / ``_lkmovavg_*.pkl`` on disk reflect
+  the old (incorrect) computation; subsequent runs will regenerate
+  them with the correct luminance. For clinical ultrasound the
+  difference is below visual perception.
+
+- **GUI ``Reduce jitter`` defaults to ``save_raw=False``**
+  (`dustrack/dlcinterface.py:2775`). `process_with_lk` now
+  ``kwargs.setdefault("save_raw", False)`` so the button path
+  skips the per-window ``.pkl`` sidecar. Callers who want the
+  ``.pkl`` (wobble + gaitmusic ``.rawlk``) still get it by default
+  because they go through the direct
+  ``dustrack.postprocess.lk_moving_average_filter`` API (default
+  there is still ``True``), or by passing ``save_raw=True``
+  explicitly. Saves ~35 MB of allocation + ``dill.dump`` /
+  ``dill.load`` round-trip per GUI ``Reduce jitter`` click on a
+  real-shape video.
+
 - **`lucas_kanade_rstc` decodes each frame once across forward + reverse
   passes** (`dustrack/opticalflow.py:158`). Pre-fix the function called
   `lucas_kanade` twice — one forward (`start → end`) and one reverse

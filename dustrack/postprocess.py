@@ -73,17 +73,29 @@ from .pointtracking import VideoAnnotation
 def gray(video_frame: np.ndarray) -> np.ndarray:
     """
     Convert a color video frame to grayscale.
-    
-    The Lucas-Kanade algorithm operates on grayscale images. This function
-    handles the conversion from BGR (OpenCV default) to grayscale.
-    
+
+    The Lucas-Kanade algorithm operates on grayscale images. Input
+    frames come from dnav ``VideoReader`` (PyAV+TOC) which returns
+    RGB-ordered ndarrays, so we use ``COLOR_RGB2GRAY`` for the
+    mathematically correct ITU-R BT.601 luminance:
+    ``Y = 0.299 R + 0.587 G + 0.114 B``.
+
     Args:
-        video_frame (np.ndarray): Input frame in BGR format (H, W, 3).
+        video_frame (np.ndarray): Input frame in RGB format (H, W, 3).
 
     Returns:
         np.ndarray: Grayscale frame (H, W).
+
+    Pre-2026-05-21 this used ``COLOR_BGR2GRAY`` on the same RGB input
+    -- functionally still grayscale, but it swapped the R and B
+    coefficients, computing ``Y = 0.114 R + 0.587 G + 0.299 B``.
+    Self-consistent within ``lk_moving_average_filter`` (both
+    template and search frames went through the same wrong
+    conversion, so LK gradient + iteration math worked fine), but it
+    diverged from :py:mod:`dustrack.opticalflow` which always used
+    ``COLOR_RGB2GRAY``. Unified to RGB2GRAY in the 1.2.0a2 perf pass.
     """
-    return cv.cvtColor(video_frame, cv.COLOR_BGR2GRAY)
+    return cv.cvtColor(video_frame, cv.COLOR_RGB2GRAY)
 
 
 def lucas_kanade_2(frame_list: list, init_points: np.ndarray, **lk_config) -> np.ndarray:
