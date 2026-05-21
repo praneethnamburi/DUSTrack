@@ -211,7 +211,134 @@ class TestIsManualAnnotationLayer:
         assert not self._check("/data/v1/myvideo_notes_iteration-2.json", "iteration-2")
 
     def test_none_fname_excluded(self):
+        # The file-aware predicate still excludes None fname -- callers
+        # that need the disk file (save-on-close diff) require it. The
+        # incomplete-frame scan uses _is_manual_layer_name below, which
+        # does accept None fname (the first-time-training case).
         assert not self._check(None, "iteration-2")
+
+
+class TestIsManualLayerName:
+    """Name-only predicate: used by the Train pre-flight to decide
+    whether to scan an in-session layer for incomplete frames, before
+    the layer has ever been saved to disk (``ann.fname is None``)."""
+
+    def test_typical_iteration_layer(self):
+        assert DUSTrack._is_manual_layer_name("iteration-0")
+        assert DUSTrack._is_manual_layer_name("iteration-7")
+
+    def test_renamed_user_layer(self):
+        assert DUSTrack._is_manual_layer_name("iter1")
+        assert DUSTrack._is_manual_layer_name("pn")
+        assert DUSTrack._is_manual_layer_name("manual")
+
+    def test_dlccorr_excluded(self):
+        assert not DUSTrack._is_manual_layer_name("dlccorr")
+
+    def test_buffer_excluded(self):
+        assert not DUSTrack._is_manual_layer_name("buffer")
+
+    def test_dlc_prefix_excluded(self):
+        assert not DUSTrack._is_manual_layer_name("dlc_iteration-2")
+        assert not DUSTrack._is_manual_layer_name("dlc_iteration-2_0.500")
+
+
+# ---------- _scan_unsaved_and_incomplete ----------
+# Regression coverage for the first-time-training bug: a freshly-
+# annotated layer with ``ann.fname is None`` (never saved yet) must
+# still be flagged when it has incomplete frames. Pre-2026-05-21 the
+# scan filtered such layers out via the file-aware predicate, so the
+# user clicked Train and got no warning despite the missing bodypart.
+
+from types import SimpleNamespace
+
+
+def _make_ann_stub(name, fname, data):
+    return SimpleNamespace(name=name, fname=(None if fname is None else str(fname)), data=data)
+
+
+def _scan_with_stub_self(video_fname, ann_stubs):
+    stub = SimpleNamespace(
+        fname=str(video_fname),
+        annotations=ann_stubs,
+        _is_manual_layer_name=DUSTrack._is_manual_layer_name,
+        _is_manual_annotation_layer=DUSTrack._is_manual_annotation_layer,
+        _normalize_layer_data=DUSTrack._normalize_layer_data,
+        _load_layer_disk_data=DUSTrack._load_layer_disk_data,
+        _diff_ann_vs_disk=DUSTrack._diff_ann_vs_disk,
+        _scan_incomplete_frames=DUSTrack._scan_incomplete_frames,
+    )
+    return DUSTrack._scan_unsaved_and_incomplete(stub)
+
+
+class TestScanUnsavedAndIncomplete:
+    def test_unsaved_layer_with_incomplete_frame_is_flagged(self, tmp_path):
+        """The bug: first-time training, layer never saved, has an
+        incomplete frame. Pre-2026-05-21 was silently skipped."""
+        video = tmp_path / "v.mp4"
+        data = {
+            "0": {5: [1.0, 1.0], 6: [1.0, 1.0]},
+            "1": {5: [2.0, 2.0]},  # frame 6 missing label "1"
+        }
+        ann = _make_ann_stub("iteration-0", fname=None, data=data)
+        result = _scan_with_stub_self(video, [ann])
+        assert "iteration-0" in result
+        # Disk-diff is skipped on None fname; incomplete is populated.
+        assert result["iteration-0"]["diff"] == {"added": [], "removed": [], "modified": []}
+        assert result["iteration-0"]["incomplete"] == {6: ["1"]}
+
+    def test_unsaved_layer_with_no_incomplete_omitted(self, tmp_path):
+        """Don't false-positive on a clean unsaved layer."""
+        video = tmp_path / "v.mp4"
+        data = {"0": {5: [1.0, 1.0]}, "1": {5: [2.0, 2.0]}}
+        ann = _make_ann_stub("iteration-0", fname=None, data=data)
+        result = _scan_with_stub_self(video, [ann])
+        assert result == {}
+
+    def test_unsaved_dlccorr_layer_skipped(self, tmp_path):
+        """The dlccorr layer name is excluded even when in-session
+        unsaved -- it's not a manual training source."""
+        video = tmp_path / "v.mp4"
+        data = {
+            "0": {5: [1.0, 1.0], 6: [1.0, 1.0]},
+            "1": {5: [2.0, 2.0]},
+        }
+        ann = _make_ann_stub("dlccorr", fname=None, data=data)
+        result = _scan_with_stub_self(video, [ann])
+        assert result == {}
+
+    def test_saved_layer_with_incomplete_still_flagged(self, tmp_path):
+        """Regression guard: the existing (saved-layer) flow must keep
+        working after the inclusion check was loosened."""
+        import json
+        video = tmp_path / "v.mp4"
+        ann_path = tmp_path / "v_annotations_iteration-0.json"
+        data = {
+            "0": {5: [1.0, 1.0], 6: [1.0, 1.0]},
+            "1": {5: [2.0, 2.0]},  # frame 6 missing "1"
+        }
+        with open(ann_path, "w") as f:
+            json.dump({"0": {"5": [1.0, 1.0], "6": [1.0, 1.0]},
+                       "1": {"5": [2.0, 2.0]}}, f)
+        ann = _make_ann_stub("iteration-0", ann_path, data)
+        result = _scan_with_stub_self(video, [ann])
+        assert "iteration-0" in result
+        assert result["iteration-0"]["incomplete"] == {6: ["1"]}
+
+    def test_saved_layer_with_disk_diff_only(self, tmp_path):
+        """Layer is complete in memory but disk differs: diff is
+        populated, incomplete is empty."""
+        import json
+        video = tmp_path / "v.mp4"
+        ann_path = tmp_path / "v_annotations_iteration-0.json"
+        data = {"0": {5: [1.0, 1.0], 6: [2.0, 2.0]}}
+        with open(ann_path, "w") as f:
+            json.dump({"0": {"5": [1.0, 1.0]}}, f)
+        ann = _make_ann_stub("iteration-0", ann_path, data)
+        result = _scan_with_stub_self(video, [ann])
+        assert "iteration-0" in result
+        assert result["iteration-0"]["incomplete"] == {}
+        assert ("0", 6) in result["iteration-0"]["diff"]["added"]
 
 
 class TestNormalizeLayerData:

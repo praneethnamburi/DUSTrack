@@ -62,6 +62,27 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   via a `frames[::-1]` view, and delegate to a single canonical LK
   loop (`_lk_track_frames`).
 
+- **Train pre-flight now flags incomplete frames on first-time training**
+  (`dustrack/dlcinterface.py:_scan_unsaved_and_incomplete`). Pre-fix
+  `_is_manual_annotation_layer` returned False whenever `ann.fname is
+  None`, which is the natural state of a freshly-annotated layer that
+  has never been saved (the first-time-training case). The scan
+  silently skipped that layer, so a click on "Train DLC model" with
+  an incomplete frame in the in-memory `iteration-0` layer went
+  straight to training with no modal. Now inclusion is name-only via
+  a new `_is_manual_layer_name` static predicate (excludes
+  `dlccorr` / `buffer` / `dlc*` -- same exclusion semantics as
+  before); the disk-diff portion is still guarded on `ann.fname`
+  being set AND matching the `<video_stem>_annotations*.json`
+  pattern, so layers without a disk file are scanned for
+  incompleteness but not for stale-on-disk. `_apply_pre_flight_remediations`
+  derives a canonical `ann.fname = <video_stem>_annotations_<layer_name>.json`
+  before save when the layer was previously unsaved, so the Save &
+  clean path works end-to-end. 10 new tests: 6 for `_is_manual_layer_name`,
+  5 for `_scan_unsaved_and_incomplete` covering unsaved-incomplete,
+  unsaved-clean, dlccorr-excluded, saved-incomplete (regression),
+  and saved-with-disk-diff-only.
+
 - **`postprocess.gray` / `opticalflow._gray_rgb` / `enhance_ultrasound_image`
   short-circuit on 2D input** to ride dnav 1.5.0a1's new
   `pix_fmt='gray'` auto-detect (`postprocess.py:gray`,

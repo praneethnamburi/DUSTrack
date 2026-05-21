@@ -1857,6 +1857,34 @@ class DUSTrack(_DUSTrackBase):
         return sidecar
 
     @staticmethod
+    def _is_manual_layer_name(
+        ann_name: str,
+        special_names: tuple = ("dlccorr", "buffer"),
+    ) -> bool:
+        """Name-only predicate for "is this a manual annotation layer?".
+
+        Pure string check on the layer name -- excludes ``dlccorr``
+        (terminal output of apply_manual_corrections), ``buffer``
+        (workspace scratch), and any layer whose name starts with
+        ``"dlc"`` (DLC trace + process_with_lk LK outputs). Symmetric
+        with the name-side of :meth:`_is_manual_annotation_layer`,
+        which adds an on-disk file-pattern check on top.
+
+        Lives separately so callers that care about incomplete-frame
+        scanning -- which only needs the in-memory ``ann.data`` --
+        can include layers that aren't yet saved to disk (``ann.fname
+        is None``). The Train pre-flight uses this for inclusion and
+        then guards the disk-diff portion on ``ann.fname`` being set;
+        save-on-close uses the stricter file-aware predicate because
+        a layer with no disk file has nothing to diff against.
+        """
+        if ann_name in special_names:
+            return False
+        if ann_name.startswith("dlc"):
+            return False
+        return True
+
+    @staticmethod
     def _is_manual_annotation_layer(
         video_fname,
         ann_fname,
@@ -1867,13 +1895,9 @@ class DUSTrack(_DUSTrackBase):
         :meth:`DLCProject.extract_frames`.
 
         Rule: ``.json`` file alongside the video, matching the
-        ``<video_stem>_annotations*.json`` pattern. Excludes
-        ``dlccorr`` (terminal output of apply_manual_corrections,
-        also stripped by the ``_dlccorr`` filter in extract_frames),
-        ``buffer`` (workspace scratch), and any layer whose name
-        starts with ``"dlc"`` (DLC traces and process_with_lk LK
-        outputs land in the video dir but are not manual training
-        sources).
+        ``<video_stem>_annotations*.json`` pattern, AND the layer name
+        passes :meth:`_is_manual_layer_name`. Excludes ``dlccorr`` /
+        ``buffer`` / ``dlc*`` by name.
 
         File-based detection -- doesn't rely on the
         ``iteration-N`` naming convention, so a layer the user
@@ -1894,11 +1918,7 @@ class DUSTrack(_DUSTrackBase):
             f"{video_stem}_annotations_"
         ):
             return False
-        if ann_name in special_names:
-            return False
-        if ann_name.startswith("dlc"):
-            return False
-        return True
+        return DUSTrack._is_manual_layer_name(ann_name, special_names)
 
     @staticmethod
     def _normalize_layer_data(data: dict) -> dict:
@@ -2022,21 +2042,29 @@ class DUSTrack(_DUSTrackBase):
         layers with at least one issue; layers with neither are
         omitted.
 
-        Manual annotation layers are identified by file pattern
-        (see :meth:`_is_manual_annotation_layer`) so the scan is
-        agnostic to which layer is the active one, the overlay, or
-        a placeholder.
+        Inclusion is name-based (see :meth:`_is_manual_layer_name`)
+        so layers that haven't been saved yet -- ``ann.fname is None``,
+        the state after a user opens a fresh video, annotates a
+        partial layer, and clicks Train without saving first -- are
+        still scanned for incompleteness. The disk-diff portion is
+        guarded on ``ann.fname`` being set AND matching the
+        ``<video_stem>_annotations*.json`` pattern; without a disk
+        file there's nothing to diff against. Pre-2026-05-21 the
+        inclusion check required a file match too, which silently
+        skipped unsaved-but-incomplete layers on first-time training.
         """
         issues: dict = {}
         for ann in self.annotations:
-            if not self._is_manual_annotation_layer(
+            if not self._is_manual_layer_name(ann.name):
+                continue
+            incomplete = self._scan_incomplete_frames(ann.data)
+            diff = {"added": [], "removed": [], "modified": []}
+            if self._is_manual_annotation_layer(
                 self.fname, ann.fname, ann.name
             ):
-                continue
-            mem_data = self._normalize_layer_data(ann.data)
-            disk_data = self._load_layer_disk_data(ann.fname)
-            diff = self._diff_ann_vs_disk(mem_data, disk_data)
-            incomplete = self._scan_incomplete_frames(ann.data)
+                mem_data = self._normalize_layer_data(ann.data)
+                disk_data = self._load_layer_disk_data(ann.fname)
+                diff = self._diff_ann_vs_disk(mem_data, disk_data)
             if any(diff.values()) or incomplete:
                 issues[ann.name] = {"diff": diff, "incomplete": incomplete}
         return issues
@@ -2130,9 +2158,19 @@ class DUSTrack(_DUSTrackBase):
     def _apply_pre_flight_remediations(self, issues: dict) -> None:
         """For each layer with issues, drop incomplete frames (with
         recovery sidecar) and save the (possibly trimmed) layer.
+
+        Layers whose ``ann.fname`` is ``None`` (in-session unsaved
+        layers, the first-time-training case) get a canonical fname
+        derived from the video stem + layer name before save:
+        ``<video_stem>_annotations_<layer_name>.json``. The recovery
+        sidecar needs the same path resolved.
         """
         for layer_name, info in issues.items():
             ann = self.annotations[layer_name]
+            if ann.fname is None:
+                ann.fname = str(make_annotation_file_name(
+                    Path(self.fname), annotation_suffix=ann.name
+                ))
             incomplete = info.get("incomplete") or {}
             if incomplete:
                 self._save_dropped_incomplete_sidecar(ann, incomplete)
