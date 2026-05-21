@@ -2759,9 +2759,20 @@ class VideoAnnotation:
         dpi = 200
         # video_data = self.video[start_frame:end_frame+1]
 
+        def _read_frame_rgb(i):
+            # dnav 1.5.0a2 auto-detects monochrome sources and returns
+            # (H, W) gray; downstream matplotlib imshow + ffmpeg encode
+            # in this export path want 3-channel RGB. Replicate Y across
+            # R/G/B when needed; pass through otherwise.
+            arr = self.video[i].asnumpy()
+            if arr.ndim == 2:
+                import cv2 as _cv2
+                arr = _cv2.cvtColor(arr, _cv2.COLOR_GRAY2RGB)
+            return arr
+
         def setup(ann):
             plot_handles = {}
-            first_frame = self.video[start_frame].asnumpy()
+            first_frame = _read_frame_rgb(start_frame)
             ny, nx, _ = first_frame.shape
 
             figure = plt.figure(frameon=False, figsize=((nx / dpi), (ny / dpi)))
@@ -2777,14 +2788,14 @@ class VideoAnnotation:
             plot_handles["ax"] = ax
             plot_handles["figure"] = figure
             return plot_handles
-        
+
         def update(ann, frame_number, plot_handles, scatter_points=None):
             n_pts = len(ann.palette)
             scatter_offsets = np.full((n_pts, 2), np.nan)
             if scatter_points is None:
                 scatter_points = ann.get_at_frame(frame_number)
             scatter_offsets[[int(label) for label in ann.labels], :] = scatter_points
-            plot_handles["im"].set_data(self.video[frame_number].asnumpy())
+            plot_handles["im"].set_data(_read_frame_rgb(frame_number))
             plot_handles['scatter'].set_offsets(scatter_offsets)
         
         prev_backend = plt.get_backend()

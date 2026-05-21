@@ -1142,13 +1142,24 @@ class DUSTrack(_DUSTrackBase):
             skip_clahe = self._clahe_clip <= _CLAHE_CLIP_MIN
             skip_gamma = self._gamma <= _GAMMA_MIN
             if skip_clahe and skip_gamma:
-                return im
-            if skip_clahe:
-                return _apply_gamma_only(im, self._gamma)
-            return enhance_ultrasound_image(
-                im, self._clahe_clip, self._clahe_grid,
-                self._gamma, self._brightness
-            )
+                out = im
+            elif skip_clahe:
+                out = _apply_gamma_only(im, self._gamma)
+            else:
+                out = enhance_ultrasound_image(
+                    im, self._clahe_clip, self._clahe_grid,
+                    self._gamma, self._brightness
+                )
+            # dnav 1.5.0a2 auto-detects monochrome sources and returns
+            # (H, W) gray frames. Coerce to 3-channel RGB here so the
+            # downstream image pane (matplotlib or Qt-native) sees the
+            # same shape regardless of source pix_fmt. The hot perf
+            # paths (LK / postprocess / opticalflow) short-circuit on
+            # 2D upstream of this, so this coerce only fires once per
+            # interactive frame navigation -- negligible.
+            if out.ndim == 2:
+                out = cv.cvtColor(out, cv.COLOR_GRAY2RGB)
+            return out
 
         kwargs['image_process_func'] = image_processor
         # DUSTrack defaults to datanavigator 1.5.0+ Tier 2 (Qt-native
@@ -4496,8 +4507,12 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
         Skips extraction if image file already exists.
         Handles invalid frame indices gracefully.
     """
-    # No need to set a bridge; default 'native' is fine and we use .asnumpy()
-    vr = VideoReader(video_file_name, ctx=cpu(0), num_threads=1)  # HWC RGB uint8
+    # No need to set a bridge; default 'native' is fine and we use .asnumpy().
+    # Force pix_fmt='rgb24' so DLC's labeled-data folder gets 3-channel PNGs
+    # even when the source is monochrome-encoded (dnav 1.5.0a2 would
+    # otherwise auto-detect gray and write 1-channel PNGs that DLC's
+    # ResNet-50 backbone can't ingest).
+    vr = VideoReader(video_file_name, ctx=cpu(0), num_threads=1, pix_fmt='rgb24')  # HWC RGB uint8
     n_frames = len(vr)
     indexlength = max(1, int(np.ceil(np.log10(max(1, n_frames)))))
 

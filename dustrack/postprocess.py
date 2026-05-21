@@ -75,13 +75,17 @@ def gray(video_frame: np.ndarray) -> np.ndarray:
     Convert a color video frame to grayscale.
 
     The Lucas-Kanade algorithm operates on grayscale images. Input
-    frames come from dnav ``VideoReader`` (PyAV+TOC) which returns
-    RGB-ordered ndarrays, so we use ``COLOR_RGB2GRAY`` for the
-    mathematically correct ITU-R BT.601 luminance:
-    ``Y = 0.299 R + 0.587 G + 0.114 B``.
+    frames come from dnav ``VideoReader`` (PyAV+TOC). Since 1.5.0a2,
+    dnav auto-detects monochrome-encoded sources (h265 ``pix_fmt=gray``)
+    and decodes them directly as (H, W) gray ndarrays, skipping the
+    YUV->RGB color matrix. On those inputs this helper is a no-op
+    short-circuit. On the legacy color-source path the frame arrives
+    as RGB and is converted via BT.601 ``COLOR_RGB2GRAY``
+    (``Y = 0.299 R + 0.587 G + 0.114 B``).
 
     Args:
-        video_frame (np.ndarray): Input frame in RGB format (H, W, 3).
+        video_frame (np.ndarray): Input frame -- (H, W, 3) RGB or
+            (H, W) gray.
 
     Returns:
         np.ndarray: Grayscale frame (H, W).
@@ -95,6 +99,8 @@ def gray(video_frame: np.ndarray) -> np.ndarray:
     diverged from :py:mod:`dustrack.opticalflow` which always used
     ``COLOR_RGB2GRAY``. Unified to RGB2GRAY in the 1.2.0a2 perf pass.
     """
+    if video_frame.ndim == 2:
+        return video_frame
     return cv.cvtColor(video_frame, cv.COLOR_RGB2GRAY)
 
 

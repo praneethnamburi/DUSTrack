@@ -66,6 +66,7 @@ from .opticalflow import lucas_kanade, lucas_kanade_rstc
 from .pointtracking import VideoAnnotation, VideoAnnotations
 from .postprocess import lk_moving_average_filter
 from .dlcinterface import DUSTrack, DLCProject, open
+from .convert import convert_to_mono
 
 # ``_dlc_patch`` exposes two independent runtime patches for DLC:
 #

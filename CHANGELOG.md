@@ -62,6 +62,24 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   via a `frames[::-1]` view, and delegate to a single canonical LK
   loop (`_lk_track_frames`).
 
+- **`postprocess.gray` / `opticalflow._gray_rgb` / `enhance_ultrasound_image`
+  short-circuit on 2D input** to ride dnav 1.5.0a1's new
+  `pix_fmt='gray'` auto-detect (`postprocess.py:gray`,
+  `opticalflow.py:_gray_rgb`, `dlcinterface.py:enhance_ultrasound_image`).
+  When dnav decodes a monochrome-encoded source directly as `(H, W)`
+  gray, these helpers no-op the `cvtColor` step. `image_processor`
+  inside `DUSTrack.__init__` coerces the per-frame display path back
+  to 3-channel RGB so the image pane (matplotlib + Qt-native fast
+  render) sees the same shape regardless of source. `export_video`
+  (`pointtracking.py:_read_frame_rgb`) does the same channel-replicate
+  for the encoded output. Combined with the dnav gray path, sequential
+  `decode + gray()` on the S-corpus
+  `pia02_s001_011_RFA2_min1_15s_mono.mp4` clip went **164 → 1886 fps**
+  (11.5x). `_extract_frames_decord` (DLC labeled-data extraction)
+  explicitly passes `pix_fmt='rgb24'` so DLC's ResNet-50 backbone
+  still ingests 3-channel PNGs; the gray path benefit accrues to the
+  LK / postprocess / annotation paths.
+
   Bench (`tests/qt_learning/25_benchmark_lk_rstc.py`, 720p, 16-frame
   window, demuxer state normalised to frame 0 between benches):
   - `lucas_kanade_rstc` (mode='full'): **1 343 ms → 247 ms (5.44×)**.
@@ -215,6 +233,28 @@ pane stays. See portfolio memo `feedback_qt_traces_benchmark_2026_05_20`.
   the `utils.Video` subclass.
 
 ### Added
+- **`dustrack.convert_to_mono(sources, ...)`** (`dustrack/convert.py`):
+  batch re-encode helper that walks a file / list / directory and
+  writes `<stem>_mono.mp4` next to each source via
+  `ffmpeg -c:v libx265 -pix_fmt gray -crf 22 -preset slow`. Originals
+  are never touched. Defaults match the immersionlab telemed
+  convention adjusted for h265's better compression: CRF 22 lands
+  within ~6% of typical ultrasound capture file size while inference
+  parity stays sub-pixel (median 0.19 px, p99 0.72 px on the pia02
+  36715-frame production clip). Skips sources that already have a
+  monochrome `pix_fmt` and outputs that already exist. After
+  conversion, the new files trigger dnav 1.5.0a1's `pix_fmt='gray'`
+  auto-detect path automatically, so no caller-side change is needed
+  to claim the decode-side speedup. Spike artefacts:
+  `S:/_corpus/dustrack/mono_encode_bench_2026-05-21/`. Public via
+  `dustrack.convert_to_mono(...)`.
+- **`tests/test_gray_pix_fmt.py`** (7 tests) — pin the 2D-input
+  short-circuits in `postprocess.gray`, `opticalflow._gray_rgb`, and
+  `enhance_ultrasound_image` plus an end-to-end smoke that opens an
+  h265 monochrome fixture and exercises the gray helpers.
+- **`tests/test_convert_to_mono.py`** (7 tests) — single-file +
+  directory walk + iterable input, skip-existing, skip-already-mono,
+  empty-suffix refusal, missing-source tolerance.
 - **`tests/qt_learning/25_benchmark_lk_rstc.py`** — LK / LK-RSTC /
   `lk_moving_average_filter` benchmark + parity harness. Mode-minor
   interleaving, demuxer state normalised between benches to avoid

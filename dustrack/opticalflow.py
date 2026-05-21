@@ -56,14 +56,19 @@ def _normalize_init_points(init_points: np.ndarray) -> np.ndarray:
 def _gray_rgb(video, frame_num: int) -> np.ndarray:
     """Decode a frame from a VideoReader / utils.Video and grayscale it.
 
-    PyAV+TOC returns RGB so this uses ``COLOR_RGB2GRAY`` (BT.601
-    luminance). Unified with :py:mod:`dustrack.postprocess.gray` in
-    the 1.2.0a2 perf pass -- postprocess previously used
-    ``COLOR_BGR2GRAY`` on the same RGB input, which swapped the R/B
-    coefficients and produced a different (but still grayscale)
-    value.
+    PyAV+TOC normally returns RGB; dnav 1.5.0a2 auto-detects
+    monochrome-encoded sources (h265 ``pix_fmt=gray``) and returns
+    (H, W) gray directly, in which case the cvtColor step short-circuits.
+    Color-source path uses ``COLOR_RGB2GRAY`` (BT.601 luminance);
+    unified with :py:mod:`dustrack.postprocess.gray` in the 1.2.0a2
+    perf pass -- postprocess previously used ``COLOR_BGR2GRAY`` on the
+    same RGB input, which swapped the R/B coefficients and produced a
+    different (but still grayscale) value.
     """
-    return cv.cvtColor(video[frame_num].asnumpy(), cv.COLOR_RGB2GRAY)
+    arr = video[frame_num].asnumpy()
+    if arr.ndim == 2:
+        return arr
+    return cv.cvtColor(arr, cv.COLOR_RGB2GRAY)
 
 
 def _lk_track_frames(
