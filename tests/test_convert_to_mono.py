@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from dustrack.convert import convert_to_mono, _MONO_PIX_FMTS
+from dustrack.batch import convert_to_mono, _MONO_PIX_FMTS
 
 
 FPS = 24

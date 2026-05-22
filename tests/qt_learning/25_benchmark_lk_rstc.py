@@ -61,8 +61,8 @@ from datanavigator import VideoReader
 from datanavigator.examples import get_example_video
 
 import dustrack
-from dustrack.opticalflow import lucas_kanade, lucas_kanade_rstc
-from dustrack.postprocess import lucas_kanade_2, lk_moving_average_filter
+from dustrack.lk_opticalflow import lucas_kanade, lucas_kanade_rstc
+from dustrack.lk_filter import lucas_kanade_2, lk_moving_average_filter
 
 
 ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "dustrack_lk_bench"

@@ -5,8 +5,8 @@ Per-video Lucas-Kanade helpers used by
 :py:mod:`dustrack.pointtracking`).
 
 These are the *per-video* shapes (called with ``video, start_frame, end_frame, ...``).
-The frame-list shapes used by the postprocess pipeline
-(``lucas_kanade_2`` / ``lucas_kanade_rstc_2``) live in :py:mod:`dustrack.postprocess`
+The frame-list shapes used by the LK-filter pipeline
+(``lucas_kanade_2`` / ``lucas_kanade_rstc_2``) live in :py:mod:`dustrack.lk_filter`
 -- both shapes delegate to :func:`_lk_track_frames` here so the per-pair
 LK loop has a single home.
 
@@ -18,8 +18,9 @@ BioMedical Engineering OnLine, 22(1), 52.
 https://doi-org.libproxy.mit.edu/10.1186/s12938-023-01105-y
 
 Moved here from ``datanavigator.opticalflow`` in datanavigator 1.5.0a1 /
-dustrack 1.2.0a1 -- see CHANGELOG. Full pre-relocation history preserved
-via ``git log --follow dustrack/opticalflow.py``.
+dustrack 1.2.0a1; renamed from ``dustrack.opticalflow`` to
+``dustrack.lk_opticalflow`` in dustrack 1.2.0rc1. Full pre-relocation
+history preserved via ``git log --follow dustrack/lk_opticalflow.py``.
 """
 
 from __future__ import annotations
@@ -60,10 +61,10 @@ def _gray_rgb(video, frame_num: int) -> np.ndarray:
     monochrome-encoded sources (h265 ``pix_fmt=gray``) and returns
     (H, W) gray directly, in which case the cvtColor step short-circuits.
     Color-source path uses ``COLOR_RGB2GRAY`` (BT.601 luminance);
-    unified with :py:mod:`dustrack.postprocess.gray` in the 1.2.0a2
-    perf pass -- postprocess previously used ``COLOR_BGR2GRAY`` on the
-    same RGB input, which swapped the R/B coefficients and produced a
-    different (but still grayscale) value.
+    unified with :py:func:`dustrack.lk_filter.gray` in the 1.2.0a2
+    perf pass -- the LK-filter path previously used ``COLOR_BGR2GRAY``
+    on the same RGB input, which swapped the R/B coefficients and
+    produced a different (but still grayscale) value.
     """
     arr = video[frame_num].asnumpy()
     if arr.ndim == 2:
@@ -81,7 +82,7 @@ def _lk_track_frames(
     Returned shape ``(n_frames, n_points, 2)``. Row 0 is ``init_points``;
     row k is the location at ``frame_list[k]``. Both
     :func:`lucas_kanade` (per-video) and
-    :func:`dustrack.postprocess.lucas_kanade_2` (frame-list) delegate
+    :func:`dustrack.lk_filter.lucas_kanade_2` (frame-list) delegate
     here so the LK call lives in exactly one place.
 
     NOTE: pyramid reuse across pairs (build once for ``ff``, pass into

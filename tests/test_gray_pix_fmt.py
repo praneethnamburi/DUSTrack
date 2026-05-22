@@ -20,8 +20,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dustrack.postprocess import gray
-from dustrack.opticalflow import _gray_rgb
+from dustrack.lk_filter import gray
+from dustrack.lk_opticalflow import _gray_rgb
 from dustrack.dlcinterface import enhance_ultrasound_image
 
 

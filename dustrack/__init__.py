@@ -22,7 +22,7 @@ post-processing.
     Annotation-data container with DeepLabCut HDF5 interop. Use directly
     for programmatic loads -- ``dustrack.VideoAnnotation(json_path, video).to_signals()``.
 
-:func:`~dustrack.postprocess.lk_moving_average_filter`
+:func:`~dustrack.lk_filter.lk_moving_average_filter`
     Lucas-Kanade optical flow algorithm with Reverse Sigmoid Tracking Correction
     for reducing frame-to-frame jitter in tracked points. In practice, access this via
     :meth:`dustrack.VideoAnnotation.postprocess` method.
@@ -86,14 +86,14 @@ if _importlib_util.find_spec("deeplabcut") is not None:
     _os.environ.setdefault("KMP_INIT_AT_FORK", "FALSE")
     _os.environ.setdefault("PYSIDE6_OPTION_PYTHON_ENUM", "True")
 
-# Order matters: opticalflow has no in-package deps; pointtracking pulls
-# from opticalflow; postprocess pulls VideoAnnotation from pointtracking;
-# dlcinterface pulls pointtracking + postprocess.
-from .opticalflow import lucas_kanade, lucas_kanade_rstc
+# Order matters: lk_opticalflow has no in-package deps; pointtracking pulls
+# from lk_opticalflow; lk_filter pulls VideoAnnotation from pointtracking;
+# dlcinterface pulls pointtracking + lk_filter.
+from .lk_opticalflow import lucas_kanade, lucas_kanade_rstc
 from .pointtracking import VideoAnnotation, VideoAnnotations
-from .postprocess import lk_moving_average_filter
+from .lk_filter import lk_moving_average_filter
 from .dlcinterface import DUSTrack, DLCProject, open
-from .convert import convert_to_mono
+from .batch import convert_to_mono
 from .seed import (
     extract_snapshot_for_seeding,
     get_seed_bundles_root,
@@ -103,7 +103,7 @@ from .seed import (
     set_seed_bundles_root,
 )
 
-# ``_dlc_patch`` exposes two independent runtime patches for DLC:
+# ``dlcpatch`` exposes two independent runtime patches for DLC:
 #
 #   * ``patch_dlc()`` -- multi-threaded preprocessing + force-on
 #     autocast + non_blocking H2D. NOT applied automatically. The
@@ -139,7 +139,7 @@ from .seed import (
 #
 #     Artefacts at S:/_corpus/dustrack/dlc_inference_bench_2026-05-20/
 #     (parity_*.{py,json}, decoder_patch_bench_rc14.py, README.md).
-from . import _dlc_patch as _dlc_patch  # noqa: F401
+from . import dlcpatch as dlcpatch  # noqa: F401
 
 # Attach lk_moving_average_filter as VideoAnnotation's default postprocess
 # hook. Done here (not in pointtracking.py) so pointtracking stays free of
@@ -149,3 +149,34 @@ from . import _dlc_patch as _dlc_patch  # noqa: F401
 # ``isinstance(..., dustrack.VideoAnnotation)`` when ``lk_moving_average_filter``
 # returned a parent-class instance (see feedback_isinstance_subclass_narrowing).
 VideoAnnotation.postprocess = lk_moving_average_filter
+
+# ---------------------------------------------------------------------
+# Pickle-compat aliases for pre-1.2.0rc1 module paths
+# ---------------------------------------------------------------------
+# The 1.2.0rc1 refactor renamed four submodules:
+#   opticalflow.py -> lk_opticalflow.py
+#   postprocess.py -> lk_filter.py
+#   convert.py     -> batch.py
+#   _dlc_patch.py  -> dlcpatch.py
+# Pickles produced under the old paths bake module names into their
+# headers. Register sys.modules aliases so ``pickle.load`` can still
+# resolve classes like ``dustrack.pointtracking.VideoAnnotation`` (the
+# pointtracking module name itself is kept until Phase E swaps it for
+# ``annotations``; see the alias added at that point).
+import sys as _sys
+from . import lk_opticalflow as _lk_opticalflow
+from . import lk_filter as _lk_filter
+from . import batch as _batch
+_sys.modules.setdefault("dustrack.opticalflow", _lk_opticalflow)
+_sys.modules.setdefault("dustrack.postprocess", _lk_filter)
+_sys.modules.setdefault("dustrack.convert", _batch)
+# Also bind on the package namespace so ``dustrack.opticalflow`` attribute
+# access (as opposed to ``import dustrack.opticalflow``) resolves. Python's
+# import machinery sets this attribute as part of the submodule load step,
+# but a pre-populated sys.modules entry short-circuits the load and skips
+# the attribute binding -- we set it ourselves.
+opticalflow = _lk_opticalflow
+postprocess = _lk_filter
+convert = _batch
+# Note: dustrack._dlc_patch alias deliberately omitted -- _dlc_patch
+# only contained module-level monkey-patch helpers, no picklable types.

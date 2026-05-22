@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import datanavigator as dnav
 from datanavigator import VideoReader, cpu
 
-from .postprocess import lk_moving_average_filter
+from .lk_filter import lk_moving_average_filter
 from .pointtracking import VideoAnnotation, VideoAnnotations, _DUSTrackBase
 from .seed import (
     get_seed_bundles_root,

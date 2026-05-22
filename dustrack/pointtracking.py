@@ -32,7 +32,7 @@ from matplotlib.animation import FFMpegWriter
 from datanavigator import utils
 from datanavigator.assets import AssetContainer
 from datanavigator.videos import VideoBrowser
-from dustrack.opticalflow import lucas_kanade, lucas_kanade_rstc
+from dustrack.lk_opticalflow import lucas_kanade, lucas_kanade_rstc
 
 
 class _DUSTrackBase(VideoBrowser):

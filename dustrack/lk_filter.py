@@ -14,7 +14,7 @@ Key Features:
     - Video frame buffering to minimize disk I/O
 
 Typical Usage:
-    >>> from dustrack.postprocess import lk_moving_average_filter
+    >>> from dustrack.lk_filter import lk_moving_average_filter
     >>> from dustrack import VideoAnnotation
     >>>
     >>> # Load annotations
@@ -66,7 +66,7 @@ import cv2 as cv
 import numpy as np
 from tqdm import tqdm
 
-from .opticalflow import _lk_track_frames
+from .lk_opticalflow import _lk_track_frames
 from .pointtracking import VideoAnnotation
 
 
@@ -96,7 +96,7 @@ def gray(video_frame: np.ndarray) -> np.ndarray:
     Self-consistent within ``lk_moving_average_filter`` (both
     template and search frames went through the same wrong
     conversion, so LK gradient + iteration math worked fine), but it
-    diverged from :py:mod:`dustrack.opticalflow` which always used
+    diverged from :py:mod:`dustrack.lk_opticalflow` which always used
     ``COLOR_RGB2GRAY``. Unified to RGB2GRAY in the 1.2.0a2 perf pass.
     """
     if video_frame.ndim == 2:

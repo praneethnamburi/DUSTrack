@@ -66,7 +66,7 @@ def _build_ann(video: Path, h5: Path):
 
 def _call_filter(ann, save_raw=True):
     """Wrap the call so ``save_raw`` is only passed when supported."""
-    from dustrack.postprocess import lk_moving_average_filter
+    from dustrack.lk_filter import lk_moving_average_filter
     sig = inspect.signature(lk_moving_average_filter)
     kwargs = {"window_size": WINDOW_SIZE, "use_parallel": True}
     if "save_raw" in sig.parameters:

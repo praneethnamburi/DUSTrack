@@ -9,7 +9,7 @@ Re-encoding as h265 4:0:0 monochrome:
   noise contribution to gray was ~1.4/255 mean per frame, DLC inference
   parity median = 0.19 px)
 * unlocks dnav's ``pix_fmt='gray'`` auto-detect path (~6x sequential
-  decode speedup on the LK / postprocess paths)
+  decode speedup on the LK / lk_filter paths)
 * shrinks the file ~6% at CRF 22 vs the typical capture-side CRF
 * speeds up TOC build ~20-40% (fewer + smaller packets per frame)
 

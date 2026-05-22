@@ -46,7 +46,7 @@ import numpy as np
 import dustrack
 from datanavigator import VideoReader
 from datanavigator.examples import get_example_video
-from dustrack.postprocess import (
+from dustrack.lk_filter import (
     compute_sigmoid_weights,
     gray,
     lucas_kanade_rstc_2,
