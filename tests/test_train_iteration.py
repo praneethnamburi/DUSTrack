@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dustrack import dlcinterface
+from dustrack import dlcloader
 from dustrack.dlcinterface import DLCProject
 
 
@@ -123,14 +123,14 @@ class _StubDLCProject(DLCProject):
 @pytest.fixture
 def dlc3(monkeypatch):
     """Pin the module-level ``DLC3`` flag to True for the duration of a test."""
-    monkeypatch.setattr(dlcinterface, "DLC3", True)
+    monkeypatch.setattr(dlcloader, "DLC3", True)
     return True
 
 
 @pytest.fixture
 def dlc2(monkeypatch):
     """Pin the module-level ``DLC3`` flag to False for the duration of a test."""
-    monkeypatch.setattr(dlcinterface, "DLC3", False)
+    monkeypatch.setattr(dlcloader, "DLC3", False)
     return False
 
 

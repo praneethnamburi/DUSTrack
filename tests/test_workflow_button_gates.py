@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from dustrack import dlcinterface
+from dustrack import dlcinterface, dlcloader
 from dustrack.dlcinterface import DUSTrack
 
 
@@ -27,12 +27,12 @@ def _dlc_loaded():
     dedicated tests in :class:`TestCreateDLCProjectGateDuringLoad`
     that flip the state explicitly.
     """
-    prior = dlcinterface._DLC_LOAD_STATE
-    dlcinterface._DLC_LOAD_STATE = "done"
+    prior = dlcloader._DLC_LOAD_STATE
+    dlcloader._DLC_LOAD_STATE = "done"
     try:
         yield
     finally:
-        dlcinterface._DLC_LOAD_STATE = prior
+        dlcloader._DLC_LOAD_STATE = prior
 
 
 def _make_dlc_root(folder: Path) -> Path:
@@ -212,12 +212,12 @@ class TestCreateDLCProjectGateDuringLoad:
         loader state to ``"pending"`` (the pre-load shape) so the
         gate code exercises the "still loading" branch.
         """
-        prior = dlcinterface._DLC_LOAD_STATE
-        dlcinterface._DLC_LOAD_STATE = "pending"
+        prior = dlcloader._DLC_LOAD_STATE
+        dlcloader._DLC_LOAD_STATE = "pending"
         try:
             yield
         finally:
-            dlcinterface._DLC_LOAD_STATE = prior
+            dlcloader._DLC_LOAD_STATE = prior
 
     def test_pending_disables_create_dlc_project(self, tmp_path):
         vid = tmp_path / "sample.mp4"
@@ -232,9 +232,9 @@ class TestCreateDLCProjectGateDuringLoad:
         # when the bg thread is in flight (``_DLC_LOAD_THREAD`` set,
         # ``_DLC_LOAD_STATE == "pending"``). The gate predicate
         # treats "loading" the same as "pending".
-        prior_thread = dlcinterface._DLC_LOAD_THREAD
+        prior_thread = dlcloader._DLC_LOAD_THREAD
         import threading
-        dlcinterface._DLC_LOAD_THREAD = threading.Thread(target=lambda: None)
+        dlcloader._DLC_LOAD_THREAD = threading.Thread(target=lambda: None)
         try:
             vid = tmp_path / "sample.mp4"
             vid.write_bytes(b"")
@@ -244,7 +244,7 @@ class TestCreateDLCProjectGateDuringLoad:
             assert enabled is False
             assert "Loading DeepLabCut" in tooltip
         finally:
-            dlcinterface._DLC_LOAD_THREAD = prior_thread
+            dlcloader._DLC_LOAD_THREAD = prior_thread
 
     def test_missing_disables_create_dlc_project(self, tmp_path):
         """``find_spec`` said yes, but the actual import raised
@@ -252,7 +252,7 @@ class TestCreateDLCProjectGateDuringLoad:
         greyed with a "DeepLabCut failed to load" tooltip rather
         than letting the click raise a generic ImportError.
         """
-        dlcinterface._DLC_LOAD_STATE = "missing"
+        dlcloader._DLC_LOAD_STATE = "missing"
         vid = tmp_path / "sample.mp4"
         vid.write_bytes(b"")
         stub = _Stub(fname=str(vid), active_layer_name="manual")

@@ -46,233 +46,51 @@ from ._bundle import (
     HYDRATION_READY,
     _BundleState,
 )
-
-# ---------------------------------------------------------------------
-# Lazy DeepLabCut loader
-# ---------------------------------------------------------------------
-#
-# ``import deeplabcut`` runs torch + several heavy submodules; on the
-# dlc3rc14 env it costs ~7 s of wall time. Paying that during
-# ``import dustrack`` blocks the picker and the GUI cold-open even
-# though nothing on the annotation-only path actually touches DLC
-# (Create DLC Project, Train DLC model, the Phase 2 resume path).
-#
-# ``HAS_DLC`` is settled cheaply via ``importlib.util.find_spec`` so
-# the button-gating decision in ``DUSTrack.__init__`` doesn't need the
-# real import; the actual import runs through ``_ensure_dlc_loaded``
-# (synchronous, idempotent, thread-safe) and is normally kicked off by
-# ``_ensure_dlc_loaded_async`` -- a daemon thread fired from
-# ``dustrack.open()`` so DLC loads in parallel with the picker /
-# DUSTrack-construction / user-annotation work. The module globals
-# ``deeplabcut``, ``VideoWriter``, ``ScannerError`` and ``DLC3`` stay
-# ``None`` / ``False`` until the loader populates them; every DLC-using
-# method calls ``_ensure_dlc_loaded()`` as its first line so the names
-# are guaranteed bound at use.
-#
-# Tests can short-circuit the loader by setting the module-level
-# ``_DLC_LOAD_STATE`` to ``"done"`` and pre-binding the names; see
-# ``tests/test_lazy_dlc_loader.py``.
-
-HAS_DLC: bool = importlib.util.find_spec("deeplabcut") is not None
-DLC3: bool = False
-deeplabcut = None  # populated by _ensure_dlc_loaded
-VideoWriter = None  # populated by _ensure_dlc_loaded
-ScannerError = None  # populated by _ensure_dlc_loaded
-
-_DLC_LOAD_LOCK = threading.Lock()
-_DLC_LOAD_STATE: str = "pending"  # "pending" | "loading" | "done" | "missing"
-_DLC_LOAD_THREAD: Optional[threading.Thread] = None
-_DLC_LOAD_CALLBACKS: list = []  # called on the loader thread once "done" / "missing"
-
-
-def _ensure_dlc_loaded() -> bool:
-    """Import ``deeplabcut`` (and friends) on first call; idempotent.
-
-    Returns ``True`` if DLC is available after the call, ``False`` if
-    the package isn't installed. Thread-safe: concurrent callers block
-    on a single import; the second-and-later calls return immediately.
-
-    On success, the module globals ``deeplabcut``, ``VideoWriter``,
-    ``ScannerError`` and ``DLC3`` are bound to the real values. On
-    failure (no DLC installed) the globals stay ``None`` / ``False``.
-    """
-    global deeplabcut, VideoWriter, ScannerError, DLC3, _DLC_LOAD_STATE
-    if _DLC_LOAD_STATE == "done":
-        return True
-    if _DLC_LOAD_STATE == "missing":
-        return False
-    if not HAS_DLC:
-        with _DLC_LOAD_LOCK:
-            _DLC_LOAD_STATE = "missing"
-        _fire_dlc_load_callbacks()
-        return False
-    with _DLC_LOAD_LOCK:
-        if _DLC_LOAD_STATE == "done":
-            return True
-        if _DLC_LOAD_STATE == "missing":
-            return False
-        # We hold the lock; nobody else can flip state until we either
-        # finish the import or fail.
-        try:
-            _dlc = importlib.import_module("deeplabcut")
-            _vw = importlib.import_module("deeplabcut.utils.auxfun_videos").VideoWriter
-            _se = importlib.import_module("ruamel.yaml.scanner").ScannerError
-        except ImportError:
-            _DLC_LOAD_STATE = "missing"
-            _fire_dlc_load_callbacks()
-            return False
-        deeplabcut = _dlc
-        VideoWriter = _vw
-        ScannerError = _se
-        DLC3 = bool(getattr(_dlc, "__version__", "").startswith("3."))
-        _DLC_LOAD_STATE = "done"
-    _fire_dlc_load_callbacks()
-    return True
-
-
-def _ensure_dlc_loaded_async() -> Optional[threading.Thread]:
-    """Fire-and-forget background DLC import. Idempotent.
-
-    Spawns a daemon thread that calls ``_ensure_dlc_loaded()`` on first
-    invocation; later calls (or calls after the load already finished)
-    are no-ops. Returns the loader thread (the existing one on repeat
-    calls) or ``None`` when there is no work to do (DLC missing, or the
-    load already finished synchronously).
-
-    Safe to call from any thread, including before any Qt application
-    exists. The loader thread doesn't touch Qt -- DLC's own
-    ``deeplabcut/__init__.py`` runs in light mode (``DLC loaded in
-    light mode; you cannot use any GUI``) so there's no
-    cross-thread-Qt hazard.
-    """
-    global _DLC_LOAD_THREAD
-    if _DLC_LOAD_STATE in ("done", "missing"):
-        return None
-    if not HAS_DLC:
-        # find_spec said no DLC; flip the state so subsequent sync
-        # callers short-circuit without acquiring the lock.
-        _ensure_dlc_loaded()
-        return None
-    with _DLC_LOAD_LOCK:
-        if _DLC_LOAD_STATE in ("done", "missing"):
-            return None
-        if _DLC_LOAD_THREAD is not None and _DLC_LOAD_THREAD.is_alive():
-            return _DLC_LOAD_THREAD
-        _DLC_LOAD_THREAD = threading.Thread(
-            target=_ensure_dlc_loaded,
-            name="dustrack-dlc-preload",
-            daemon=True,
-        )
-        _DLC_LOAD_THREAD.start()
-        return _DLC_LOAD_THREAD
-
-
-def _dlc_load_state() -> str:
-    """Return the current loader state.
-
-    Public-shaped (single underscore) for the workflow-button gate +
-    tests; the value is one of ``"pending"`` (no import attempted yet),
-    ``"loading"`` is reserved for an in-flight background import (set
-    when ``_ensure_dlc_loaded_async`` is running and the sync call
-    hasn't yet entered the lock), ``"done"`` (DLC is bound), or
-    ``"missing"`` (find_spec returned None, or import raised).
-
-    Today the lock-holding sync path doesn't publish a transitional
-    ``"loading"`` state separately from ``"pending"``; the bg thread
-    transitions ``pending -> done|missing`` once the import returns.
-    Callers should treat ``"loading"`` as a superset of ``"pending"``
-    (i.e. "not yet known to be ready").
-    """
-    if _DLC_LOAD_STATE == "pending" and _DLC_LOAD_THREAD is not None:
-        return "loading"
-    return _DLC_LOAD_STATE
-
-
-def register_dlc_load_callback(cb) -> None:
-    """Register a callback to fire when the lazy DLC load resolves.
-
-    Callbacks run on the loader thread (typically the background
-    daemon) once ``_DLC_LOAD_STATE`` flips to ``"done"`` or
-    ``"missing"``. If the load has already resolved by the time the
-    callback is registered, it fires immediately on the caller's
-    thread.
-
-    Used by ``DUSTrack.__init__`` to schedule a Qt-side refresh of the
-    Workflow-button gates once the bg preload completes. Callbacks
-    must be cheap and exception-safe; an exception in any one callback
-    won't prevent the others from running.
-    """
-    fire_now = False
-    with _DLC_LOAD_LOCK:
-        if _DLC_LOAD_STATE in ("done", "missing"):
-            fire_now = True
-        else:
-            _DLC_LOAD_CALLBACKS.append(cb)
-    if fire_now:
-        try:
-            cb()
-        except Exception:  # noqa: BLE001 -- defensive; callback errors must not propagate.
-            traceback.print_exc()
-
-
-def _fire_dlc_load_callbacks() -> None:
-    """Internal: drain ``_DLC_LOAD_CALLBACKS`` after the loader resolves."""
-    with _DLC_LOAD_LOCK:
-        callbacks = list(_DLC_LOAD_CALLBACKS)
-        _DLC_LOAD_CALLBACKS.clear()
-    for cb in callbacks:
-        try:
-            cb()
-        except Exception:  # noqa: BLE001 -- defensive; one bad callback can't block the rest.
-            traceback.print_exc()
-
-
-if not HAS_DLC:
-    warnings.warn(
-        'deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.',
-        stacklevel=2,
-    )
+from ._layer_names import (
+    _DENSE_LAYER_PREFIXES,
+    _DENSE_LAYER_SUBSTRINGS,
+    _dlc_bodyparts_to_layer_labels,
+    _is_dense_layer_name,
+)
+from ._qt_styling import _make_group_styler, _pin_qt_palette, _qss_for_group
+from ._image_enhance import (
+    _CLAHE_CLIP_MAX,
+    _CLAHE_CLIP_MIN,
+    _GAMMA_MAX,
+    _GAMMA_MIN,
+    _SLIDER_TICKS,
+    _apply_gamma_only,
+    _auto_enhance_params,
+    _clahe_clip_to_slider,
+    _enhance_is_passthrough,
+    _gamma_to_slider,
+    _make_enhance_widget_class,
+    _slider_to_clahe_clip,
+    _slider_to_gamma,
+    enhance_ultrasound_image,
+)
+# Lazy DLC loader -- the plumbing lives in dustrack.dlcloader after the
+# 1.2.0rc1 refactor. We import the loader module and re-export the
+# function-y names directly. The *mutating* names (``DLC3``,
+# ``deeplabcut``, ``VideoWriter``, ``ScannerError``, ``_DLC_LOAD_STATE``,
+# ``_DLC_LOAD_THREAD``) are routed through the module-level
+# ``__getattr__`` defined at the end of this file -- ``from .dlcloader
+# import DLC3`` would snapshot the value at import time and miss
+# mutations done by ``_ensure_dlc_loaded()`` on the loader's globals.
+from . import dlcloader as _dlcloader
+from .dlcloader import (
+    HAS_DLC,
+    _DLC_LOAD_CALLBACKS,
+    _DLC_LOAD_LOCK,
+    _dlc_load_state,
+    _ensure_dlc_loaded,
+    _ensure_dlc_loaded_async,
+    _fire_dlc_load_callbacks,
+    register_dlc_load_callback,
+)
 
 
 EXPERIMENTER = _config.EXPERIMENTER
-
-
-def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, brightness=0):
-    """
-    Enhance ultrasound image for better visibility.
-
-    Args:
-        image: Input image (RGB or grayscale)
-        clahe_clip: CLAHE clip limit (higher = more contrast)
-        clahe_grid: CLAHE tile grid size
-        gamma: Gamma correction (>1 = brighter midtones, <1 = darker)
-        brightness: Brightness offset (-255 to 255)
-
-    Returns:
-        Enhanced RGB image for matplotlib display.
-    """
-    # Convert to grayscale if needed
-    if len(image.shape) == 3:
-        gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-    else:
-        gray = image
-
-    # Apply CLAHE
-    clahe = cv.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
-    enhanced = clahe.apply(gray)
-
-    # Apply gamma correction
-    if gamma != 1.0:
-        inv_gamma = 1.0 / gamma
-        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
-        enhanced = cv.LUT(enhanced, table)
-
-    # Apply brightness
-    if brightness != 0:
-        enhanced = np.clip(enhanced.astype(np.int16) + brightness, 0, 255).astype(np.uint8)
-
-    # Convert back to RGB for matplotlib
-    return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
 
 
 # Layer-name patterns that indicate "dense" tracking output (data on
@@ -283,162 +101,6 @@ def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, bri
 # (e.g. a second post-processing filter that writes
 # <stem>_kalman_<param>.json) is a one-line tuple edit. See
 # :func:`_is_dense_layer_name`.
-_DENSE_LAYER_PREFIXES = ("dlc_", "dlccorr")
-_DENSE_LAYER_SUBSTRINGS = ("lkmovavg",)
-
-
-def _dlc_bodyparts_to_layer_labels(bodyparts: list[str]) -> list[str]:
-    """Convert DLC ``bodyparts`` to DUSTrack annotation-layer ``labels``.
-
-    Mirrors :meth:`VideoAnnotation._dlc_trace_to_annotation_dict`
-    (the h5-trace loader) and inverts ``DLCProject.__init__``'s
-    ``[f'point{x}' for x in annotation_names]`` synthesis at
-    project-creation time:
-
-    - If every bodypart strips cleanly to a digit after removing
-      the ``"point"`` prefix, the labels are the bare digits
-      (``["point0", "point1"]`` -> ``["0", "1"]``; ``["point1",
-      "point3"]`` -> ``["1", "3"]``).
-    - Otherwise (e.g. ``["nose", "ear"]`` from a non-DUSTrack
-      project), the labels are consecutive indices starting at 0.
-
-    Single source of truth for "given a project's bodyparts, what
-    labels should a new manual annotation layer carry?".
-    """
-    prefix = "point"
-    stripped = [bp.removeprefix(prefix) for bp in bodyparts]
-    if stripped and all(s.isdigit() for s in stripped):
-        return stripped
-    return [str(i) for i in range(len(bodyparts))]
-
-
-def _is_dense_layer_name(name: str) -> bool:
-    """True if ``name`` is a layer that should render as a line plot
-    by default (DLC inference, the ``dlccorr`` manual-corrections
-    splice, or any LK-RSTC jitter-reduced output).
-
-    The LK output of a non-DLC source (e.g. ``dlccorr``) lands at a
-    name like ``dlccorr_lkmovavg_0.500`` via
-    :meth:`VideoFileManager.canonical_layer_name`'s ``_annotations``
-    branch -- dense like a DLC trace, but it doesn't start with
-    ``dlc_``. The substring match catches it without widening the
-    prefix list. ``dlccorr`` itself is dense because it's the
-    overlay's per-frame DLC trace with the active layer's sparse
-    manual edits spliced in -- per-frame coverage is inherited from
-    the overlay.
-    """
-    return (
-        any(name.startswith(p) for p in _DENSE_LAYER_PREFIXES)
-        or any(s in name for s in _DENSE_LAYER_SUBSTRINGS)
-    )
-
-
-def _qss_for_group(spec: dict) -> str:
-    """Build the per-group QSS string from a ``_SIDEBAR_PALETTE`` entry.
-
-    Lifted to module-level so :func:`_make_group_styler` can close over
-    it without dragging the whole ``DUSTrack`` class into the styler
-    closure. Inputs are color-hex strings keyed by ``bg/fg/border/
-    hover/pressed``.
-
-    The ``:disabled`` rule paints workflow buttons whose gate
-    predicate has refused (see ``DUSTrack._refresh_workflow_button_state``).
-    Without it, the ``QPushButton`` selector above wins over Qt's
-    built-in disabled styling and the button keeps its enabled
-    look. Three cues compound for visibility across all four group
-    palettes: a uniform desaturated bg, dim italic text, and a dashed
-    border. No perf cost -- QSS is parsed once per button at add-time
-    and Qt swaps style on enable/disable without re-parsing.
-    """
-    return (
-        f"QPushButton {{ background-color: {spec['bg']}; "
-        f"color: {spec['fg']}; border: 1px solid {spec['border']}; "
-        f"padding: 4px; }} "
-        f"QPushButton:hover {{ background-color: {spec['hover']}; }} "
-        f"QPushButton:pressed {{ background-color: {spec['pressed']}; }} "
-        f"QPushButton:disabled {{ background-color: #d8d8d8; "
-        f"color: #888888; font-style: italic; "
-        f"border: 1px dashed #b0b0b0; }}"
-    )
-
-
-def _make_group_styler(spec: dict):
-    """Factory for a per-button styler closed over a palette ``spec``.
-
-    Returned closure is registered on a :class:`Buttons` container via
-    :meth:`datanavigator.assets.Buttons.register_style` and runs once
-    per button at add-time inside ``_finalize_button``. No-op on the
-    mpl fallback (``_qt_btn`` is absent there) -- pre-refactor
-    behavior matched: the per-group palette only ever landed on the
-    Qt path.
-    """
-    qss = _qss_for_group(spec)
-
-    def _styler(b) -> None:
-        qbtn = getattr(b, "_qt_btn", None)
-        if qbtn is not None:
-            qbtn.setStyleSheet(qss)
-
-    return _styler
-
-
-def _pin_qt_palette(dark: bool) -> None:
-    """Pin the ``QApplication`` palette so DUSTrack looks the same
-    regardless of Qt binding and Windows system theme.
-
-    Why: PySide6 6.5+ on Windows honors the OS color scheme by default;
-    PyQt6 does not. With both bindings now in play across portfolio
-    envs (DLC mandates PySide6 via ``deeplabcut/gui/__init__.py:14``
-    setting ``QT_API=pyside6``, while matplotlib/older envs prefer
-    PyQt6), the same DUSTrack code would otherwise paint light on one
-    machine and dark on another -- including dnav's built-in stylers,
-    which sample the live palette via
-    :func:`datanavigator.styles._is_dark_mode`. We force a Fusion-
-    styled palette keyed off the explicit ``dark_mode`` kwarg so the
-    appearance is deterministic; dnav's heuristic samples this pinned
-    palette and stays in sync.
-
-    No-op on the mpl-only path (qtpy import fails).
-    """
-    try:
-        from qtpy.QtWidgets import QApplication
-        from qtpy.QtGui import QPalette, QColor
-    except ImportError:
-        return
-    app = QApplication.instance() or QApplication([])
-    app.setStyle("Fusion")
-    pal = QPalette()
-    if dark:
-        pal.setColor(QPalette.Window,          QColor(45, 45, 45))
-        pal.setColor(QPalette.WindowText,      QColor(220, 220, 220))
-        pal.setColor(QPalette.Base,            QColor(30, 30, 30))
-        pal.setColor(QPalette.AlternateBase,   QColor(45, 45, 45))
-        pal.setColor(QPalette.Text,            QColor(220, 220, 220))
-        pal.setColor(QPalette.Button,          QColor(60, 60, 60))
-        pal.setColor(QPalette.ButtonText,      QColor(220, 220, 220))
-        pal.setColor(QPalette.ToolTipBase,     QColor(45, 45, 45))
-        pal.setColor(QPalette.ToolTipText,     QColor(220, 220, 220))
-        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
-        pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-    else:
-        # Explicit light palette. Do NOT use ``app.style().standardPalette()``
-        # -- in Qt 6.5+ Fusion's standard palette follows the OS color
-        # scheme, so on a Windows-dark-mode machine it returns dark
-        # colors and the whole point of the pin is lost.
-        pal.setColor(QPalette.Window,          QColor(240, 240, 240))
-        pal.setColor(QPalette.WindowText,      QColor(0, 0, 0))
-        pal.setColor(QPalette.Base,            QColor(255, 255, 255))
-        pal.setColor(QPalette.AlternateBase,   QColor(245, 245, 245))
-        pal.setColor(QPalette.Text,            QColor(0, 0, 0))
-        pal.setColor(QPalette.Button,          QColor(240, 240, 240))
-        pal.setColor(QPalette.ButtonText,      QColor(0, 0, 0))
-        pal.setColor(QPalette.ToolTipBase,     QColor(255, 255, 220))
-        pal.setColor(QPalette.ToolTipText,     QColor(0, 0, 0))
-        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
-        pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-    app.setPalette(pal)
-
-
 # Phase / progress detection on DLC's stdout. We don't depend on any
 # single DLC version's exact format -- if nothing matches, the overlay
 # stays in indeterminate-busy mode and the status label shows the last
@@ -960,354 +622,6 @@ def _make_confirm_overlay_class():
     return ConfirmOverlay
 
 
-# Pure-function slider-to-param maps for the EnhanceWidget. Extracted
-# at module scope so they're unit-testable without qtpy import.
-_CLAHE_CLIP_MIN = 1.0
-_CLAHE_CLIP_MAX = 4.0
-_GAMMA_MIN = 1.0
-_GAMMA_MAX = 2.0  # extended 2026-05-19 (was 1.5) for darker ultrasound footage
-_SLIDER_TICKS = 100  # integer slider range; sliders use 0..100
-
-
-def _slider_to_clahe_clip(slider_value: int) -> float:
-    """Map slider integer 0..100 to CLAHE clip limit in [1.0, 4.0]."""
-    t = max(0, min(_SLIDER_TICKS, int(slider_value))) / _SLIDER_TICKS
-    return _CLAHE_CLIP_MIN + t * (_CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN)
-
-
-def _slider_to_gamma(slider_value: int) -> float:
-    """Map slider integer 0..100 to gamma in [1.0, 1.5]."""
-    t = max(0, min(_SLIDER_TICKS, int(slider_value))) / _SLIDER_TICKS
-    return _GAMMA_MIN + t * (_GAMMA_MAX - _GAMMA_MIN)
-
-
-def _clahe_clip_to_slider(clip: float) -> int:
-    """Inverse of :func:`_slider_to_clahe_clip` -- seed slider from current param."""
-    span = _CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN
-    if span <= 0:
-        return 0
-    t = (float(clip) - _CLAHE_CLIP_MIN) / span
-    return max(0, min(_SLIDER_TICKS, round(t * _SLIDER_TICKS)))
-
-
-def _gamma_to_slider(gamma: float) -> int:
-    """Inverse of :func:`_slider_to_gamma` -- seed slider from current param."""
-    span = _GAMMA_MAX - _GAMMA_MIN
-    if span <= 0:
-        return 0
-    t = (float(gamma) - _GAMMA_MIN) / span
-    return max(0, min(_SLIDER_TICKS, round(t * _SLIDER_TICKS)))
-
-
-def _apply_gamma_only(image, gamma: float):
-    """Apply a gamma LUT to ``image`` without touching CLAHE or
-    grayscale conversion.
-
-    Per-slider bypass for the EnhanceWidget: when the user moves the
-    gamma slider off zero with the clip slider still at zero, we
-    don't want to spin up the full CLAHE pipeline (which forces an
-    RGB->gray->RGB roundtrip + a CLAHE histogram pass at clip=1.0
-    that *isn't* a true identity). This helper operates per-channel
-    on the input directly via ``cv.LUT``, so moving gamma off 1.0
-    transitions smoothly from raw -- the inverse-gamma LUT at
-    gamma=1.0+epsilon differs from the identity LUT by less than 1
-    unit in any bin, so the rendered frame is visually continuous
-    with the bypassed state.
-
-    Mirrors the gamma branch inside :func:`enhance_ultrasound_image`
-    but operates on the original (possibly RGB) array rather than
-    the grayscale intermediate.
-    """
-    import cv2 as cv
-    inv_gamma = 1.0 / float(gamma)
-    table = np.array(
-        [((i / 255.0) ** inv_gamma) * 255 for i in range(256)]
-    ).astype("uint8")
-    return cv.LUT(image, table)
-
-
-def _enhance_is_passthrough(clahe_clip: float, gamma: float) -> bool:
-    """True if the enhancement pipeline should be bypassed entirely.
-
-    Returns ``True`` when both sliders sit at their minimum (the
-    "no enhancement" position): ``clahe_clip <= 1.0`` AND
-    ``gamma <= 1.0``. At that point :func:`enhance_ultrasound_image`
-    would still run a CLAHE pass at clip=1.0 (minimal but non-zero
-    effect) and would convert RGB->gray->RGB unconditionally, so the
-    "bypass" semantic is implemented by short-circuiting at the
-    image processor level rather than by tuning the parameter
-    extremes. Replaces the pre-2026-05-19 ``_enhance_enabled``
-    toggle that the deleted "Toggle enhance" button flipped.
-    """
-    return float(clahe_clip) <= _CLAHE_CLIP_MIN and float(gamma) <= _GAMMA_MIN
-
-
-# Anchor points for the auto-enhance heuristic. Tuned 2026-05-19
-# against real ultrasound footage in four passes; each pass was the
-# user's "too aggressive" reaction to the previous one:
-#
-# - Pass 1 (LOW=40 / HIGH=180, DARK=50 / MID=130).
-# - Pass 2 (LOW=0 / HIGH=120, DARK=20 / MID=90).
-# - Pass 3 (LOW=0 / HIGH=100, DARK=20 / MID=75).
-# - Pass 4 (current, LOW=0 / HIGH=75, DARK=0 / MID=25): bundled with
-#   the gamma-max extension to 2.0. Calibrated against the S-corpus
-#   DUSTrack clip where the user-target was clip~1.6, gamma~1.3 and
-#   pass-3 was producing clip=2.17, gamma=1.5(capped). Inferred
-#   stats: dyn-range ~61, p50 ~20. With pass-4 anchors and
-#   gamma_max=2.0 those stats land at clip~1.56, gamma~1.20 --
-#   below user target but close enough that the user dials up from
-#   there. Anchors deliberately make "typical" ultrasound
-#   (p50~60, dyn~80) a near-bypass (clip~1.0, gamma=1.0); Auto
-#   only kicks in noticeably for dark + low-contrast frames.
-# Adjust here, not in callers.
-_AUTO_DYN_RANGE_LOW = 0.0     # at this dyn range, suggest clip=max
-_AUTO_DYN_RANGE_HIGH = 75.0   # at this dyn range, suggest clip=min
-_AUTO_MEDIAN_DARK = 0.0       # at this median, suggest gamma=max
-_AUTO_MEDIAN_MID = 25.0       # at this median, suggest gamma=min
-
-
-def _auto_enhance_params(image) -> tuple[float, float]:
-    """Heuristic ``(clip, gamma)`` from the current frame.
-
-    One-shot inference, called by :class:`EnhanceWidget`'s ``Auto``
-    button. Reads the grayscale histogram of ``image`` and maps
-    two robust statistics to slider-range parameters:
-
-    - **CLAHE clip** is driven by the 5th-to-95th percentile dynamic
-      range. Narrow dynamic range (a flat-looking frame) suggests
-      pushing clip high; wide dynamic range (already-contrasty
-      frame) suggests leaving clip low. Current anchors (pass 4):
-      ``dyn=0 -> clip=_CLAHE_CLIP_MAX``,
-      ``dyn=75 -> clip=_CLAHE_CLIP_MIN``.
-    - **Gamma** is driven by the 50th percentile (median). A dark
-      frame (low median) suggests pushing gamma high to lift the
-      midtones; a balanced frame suggests gamma=1.0. Current
-      anchors (pass 4):
-      ``p50=0 -> gamma=_GAMMA_MAX``,
-      ``p50=25 -> gamma=_GAMMA_MIN``.
-
-    Both outputs are clamped to their slider ranges
-    (``[_CLAHE_CLIP_MIN, _CLAHE_CLIP_MAX]`` and
-    ``[_GAMMA_MIN, _GAMMA_MAX]``) so a degenerate frame (all-zero,
-    all-white) can't drive the sliders past their ends.
-
-    Pure function -- accepts a uint8 RGB or grayscale numpy array,
-    returns ``(clip, gamma)`` floats. Lives at module scope so
-    :file:`tests/test_enhance_widget_mapping.py` can unit-test the
-    heuristic without standing up a Qt main loop.
-    """
-    import cv2 as cv  # localized import: keeps the test path importable on no-cv2 envs
-    if image.ndim == 3:
-        gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-    else:
-        gray = image
-    p5, p50, p95 = (float(x) for x in np.percentile(gray, [5, 50, 95]))
-
-    dyn_range = p95 - p5
-    t_clip = (_AUTO_DYN_RANGE_HIGH - dyn_range) / (
-        _AUTO_DYN_RANGE_HIGH - _AUTO_DYN_RANGE_LOW
-    )
-    t_clip = max(0.0, min(1.0, t_clip))
-    clip = _CLAHE_CLIP_MIN + t_clip * (_CLAHE_CLIP_MAX - _CLAHE_CLIP_MIN)
-
-    t_gamma = (_AUTO_MEDIAN_MID - p50) / (_AUTO_MEDIAN_MID - _AUTO_MEDIAN_DARK)
-    t_gamma = max(0.0, min(1.0, t_gamma))
-    gamma = _GAMMA_MIN + t_gamma * (_GAMMA_MAX - _GAMMA_MIN)
-
-    return float(clip), float(gamma)
-
-
-def _make_enhance_widget_class():
-    """Build :class:`EnhanceWidget` lazily, mirroring
-    :func:`_make_progress_overlay_class`'s qtpy-import-on-demand pattern.
-
-    Two-slider control mounted in the rc2 left-column dock below the
-    statevars widget. CLAHE clip (1.0 -> 4.0) and gamma (1.0 -> 1.5).
-    Brightness and CLAHE grid (8) stay at their constructor defaults --
-    both ride below the "useful slider range" threshold for routine
-    review. The widget itself owns no enable/disable state: both
-    sliders at their minimum (clip=1.0 AND gamma=1.0) is the bypass
-    -- :func:`_enhance_is_passthrough` short-circuits the image
-    processor and returns the raw frame untouched.
-    """
-    from qtpy.QtCore import Qt
-    from qtpy.QtWidgets import (
-        QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider,
-        QVBoxLayout, QWidget,
-    )
-
-    class EnhanceWidget(QWidget):
-        """Two-slider widget for ultrasound image enhancement.
-
-        Slider 1 -- CLAHE clip:  1.0 -> 4.0, default 2.0.
-        Slider 2 -- Gamma:       1.0 -> 1.5, default 1.2.
-
-        Sliders update ``self._owner._clahe_clip`` / ``_gamma`` directly
-        on every value change and trigger ``self._owner.update()`` so
-        the image redraws live.
-        """
-
-        def __init__(self, owner, parent=None):
-            super().__init__(parent)
-            self._owner = owner
-
-            # Slightly darker bg than the parent dock so the enhance
-            # section reads as a distinct group from the statevars
-            # widget above it. Theme-adaptive via palette.darker().
-            self.setAutoFillBackground(True)
-            pal = self.palette()
-            base = pal.color(self.backgroundRole())
-            pal.setColor(self.backgroundRole(), base.darker(110))
-            self.setPalette(pal)
-
-            self.setFocusPolicy(Qt.NoFocus)
-            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-
-            outer = QVBoxLayout(self)
-            outer.setContentsMargins(4, 4, 4, 4)
-            outer.setSpacing(4)
-
-            section_label = QLabel("Image enhance:", self)
-            outer.addWidget(section_label)
-
-            # CLAHE clip slider row.
-            self._clip_label = QLabel(
-                f"Clip: {float(owner._clahe_clip):.2f}", self,
-            )
-            outer.addWidget(self._clip_label)
-            self._clip_slider = QSlider(Qt.Horizontal, self)
-            self._clip_slider.setRange(0, _SLIDER_TICKS)
-            self._clip_slider.setValue(_clahe_clip_to_slider(owner._clahe_clip))
-            self._clip_slider.setFocusPolicy(Qt.NoFocus)
-            self._clip_slider.valueChanged.connect(self._on_clip_changed)
-            outer.addWidget(self._clip_slider)
-
-            # Gamma slider row.
-            self._gamma_label = QLabel(
-                f"Gamma: {float(owner._gamma):.2f}", self,
-            )
-            outer.addWidget(self._gamma_label)
-            self._gamma_slider = QSlider(Qt.Horizontal, self)
-            self._gamma_slider.setRange(0, _SLIDER_TICKS)
-            self._gamma_slider.setValue(_gamma_to_slider(owner._gamma))
-            self._gamma_slider.setFocusPolicy(Qt.NoFocus)
-            self._gamma_slider.valueChanged.connect(self._on_gamma_changed)
-            outer.addWidget(self._gamma_slider)
-
-            # One-shot trigger row: [None | Auto].
-            # - None: snap both sliders to leftmost (passthrough).
-            # - Auto: infer clip + gamma from the current frame's
-            #   grayscale histogram, set the sliders once, redraw
-            #   once. Subsequent frame navigations don't re-trigger
-            #   Auto -- slider values stay put until the user
-            #   (or another button click) moves them.
-            button_row = QHBoxLayout()
-            button_row.setContentsMargins(0, 0, 0, 0)
-            button_row.setSpacing(4)
-            self._none_button = QPushButton("None", self)
-            self._none_button.setFocusPolicy(Qt.NoFocus)
-            self._none_button.clicked.connect(self._on_none_clicked)
-            button_row.addWidget(self._none_button)
-            self._auto_button = QPushButton("Auto", self)
-            self._auto_button.setFocusPolicy(Qt.NoFocus)
-            self._auto_button.clicked.connect(self._on_auto_clicked)
-            button_row.addWidget(self._auto_button)
-            outer.addLayout(button_row)
-
-        def _on_clip_changed(self, value: int) -> None:
-            clip = _slider_to_clahe_clip(value)
-            self._owner._clahe_clip = clip
-            self._clip_label.setText(f"Clip: {clip:.2f}")
-            self._owner.update()
-
-        def _on_gamma_changed(self, value: int) -> None:
-            gamma = _slider_to_gamma(value)
-            self._owner._gamma = gamma
-            self._gamma_label.setText(f"Gamma: {gamma:.2f}")
-            self._owner.update()
-
-        def _apply_param_pair(self, clip: float, gamma: float) -> None:
-            """Set both sliders to (clip, gamma); one redraw at the end.
-
-            Shared tail for the ``None`` and ``Auto`` button handlers.
-            Slider signals are blocked during the dual ``setValue`` so
-            the two ``valueChanged`` callbacks don't each fire
-            ``owner.update()``; the redraw happens once. Slider
-            positions are integer-quantized, so the actually-applied
-            values are read back off the sliders to keep the labels
-            + the owner's enhancement params in sync with the slider
-            UI state of truth.
-            """
-            self._clip_slider.blockSignals(True)
-            self._gamma_slider.blockSignals(True)
-            self._clip_slider.setValue(_clahe_clip_to_slider(clip))
-            self._gamma_slider.setValue(_gamma_to_slider(gamma))
-            self._clip_slider.blockSignals(False)
-            self._gamma_slider.blockSignals(False)
-
-            actual_clip = _slider_to_clahe_clip(self._clip_slider.value())
-            actual_gamma = _slider_to_gamma(self._gamma_slider.value())
-            self._owner._clahe_clip = actual_clip
-            self._owner._gamma = actual_gamma
-            self._clip_label.setText(f"Clip: {actual_clip:.2f}")
-            self._gamma_label.setText(f"Gamma: {actual_gamma:.2f}")
-            self._owner.update()
-
-        def _on_none_clicked(self) -> None:
-            """Snap both sliders to leftmost (= passthrough).
-
-            Convenience: undoes any Auto/manual enhancement in one
-            click. The image processor's
-            :func:`_enhance_is_passthrough` short-circuit fires after
-            the redraw, so the next frame renders raw.
-            """
-            self._apply_param_pair(_CLAHE_CLIP_MIN, _GAMMA_MIN)
-
-        def _on_auto_clicked(self) -> None:
-            """One-shot auto-enhance from the current raw frame.
-
-            Reads ``owner.data[owner._current_idx]`` (the same raw
-            frame the image processor sees), runs
-            :func:`_auto_enhance_params`, and applies the result.
-            """
-            owner = self._owner
-            try:
-                raw = owner.data[owner._current_idx].asnumpy()
-            except Exception:
-                # No frame available (e.g. video reader torn down):
-                # surface nothing, leave sliders alone. Auto is best-
-                # effort UI; a failure here shouldn't crash the
-                # session.
-                return
-            clip, gamma = _auto_enhance_params(raw)
-            self._apply_param_pair(clip, gamma)
-
-        def sync_from_shell(self) -> None:
-            """Move the slider knobs to match the owner's current
-            ``_clahe_clip`` / ``_gamma`` without triggering the
-            valueChanged cascade (and without calling
-            ``owner.update()`` -- caller is responsible for that).
-
-            Used by :meth:`DUSTrack._set_enhance_state` after a
-            multi-video swap so the sliders visibly reflect the
-            arriving bundle's saved enhance settings. Differs from
-            :meth:`_apply_param_pair` in two ways: (1) it reads from
-            the owner (not from caller-supplied args), and (2) it
-            does not call ``owner.update()`` so the caller can batch
-            the redraw with the rest of the swap.
-            """
-            self._clip_slider.blockSignals(True)
-            self._gamma_slider.blockSignals(True)
-            self._clip_slider.setValue(_clahe_clip_to_slider(self._owner._clahe_clip))
-            self._gamma_slider.setValue(_gamma_to_slider(self._owner._gamma))
-            self._clip_slider.blockSignals(False)
-            self._gamma_slider.blockSignals(False)
-            self._clip_label.setText(f"Clip: {self._owner._clahe_clip:.2f}")
-            self._gamma_label.setText(f"Gamma: {self._owner._gamma:.2f}")
-
-    return EnhanceWidget
-
-
 # ---------------------------------------------------------------------------
 # Training options modal (Train DLC model click flow, 1.2.0a2)
 # ---------------------------------------------------------------------------
@@ -1373,12 +687,12 @@ def _default_training_options(dlcproject):
         "source_iteration": trained[-1] if has_trained else None,
         "source_snapshot": None,  # None == "best" (initialize_weights default)
         "external_snapshot_path": "",
-        "maxiters": 50 if DLC3 else 500000,
+        "maxiters": 50 if _dlcloader.DLC3 else 500000,
         "create_video": False,
         # Combo population helpers; not forwarded to train_iteration.
         "trained_iterations": trained,
         "snapshots_by_iteration": snapshots_by_iteration,
-        "is_dlc3": bool(DLC3),
+        "is_dlc3": bool(_dlcloader.DLC3),
     }
 
 
@@ -7784,7 +7098,7 @@ class DLCProject:
         new_project = False
         if config_path is None:
             assert len(videos) > 0
-            config_path = deeplabcut.create_new_project(name, experimenter, videos, working_directory=path, copy_videos=True)
+            config_path = _dlcloader.deeplabcut.create_new_project(name, experimenter, videos, working_directory=path, copy_videos=True)
             new_project = True
         
         self.config_path = config_path
@@ -7818,8 +7132,8 @@ class DLCProject:
         self.edit_config(video_sets=new_video_sets)
 
         try:
-            deeplabcut.auxiliaryfunctions.read_config(self.config_path)
-        except ScannerError:
+            _dlcloader.deeplabcut.auxiliaryfunctions.read_config(self.config_path)
+        except _dlcloader.ScannerError:
             print("Config file is corrupted. Fix it manually.")
             print("If there is no _ in the name, then the config file has issues "
                   "when dealing with folders on the server.")
@@ -7839,8 +7153,8 @@ class DLCProject:
                 - 'videos': Video files
         """
         project_path = Path(self.config_path).parent
-        model_folder_name = 'dlc-models-pytorch' if DLC3 else 'dlc-models'
-        evaluation_folder_name = 'evaluation-results-pytorch' if DLC3 else 'evaluation-results'
+        model_folder_name = 'dlc-models-pytorch' if _dlcloader.DLC3 else 'dlc-models'
+        evaluation_folder_name = 'evaluation-results-pytorch' if _dlcloader.DLC3 else 'evaluation-results'
         return dict(
             project       = project_path,
             models        = project_path / model_folder_name,
@@ -7858,7 +7172,7 @@ class DLCProject:
         Returns:
             dict: Parsed contents of config.yaml.
         """
-        return deeplabcut.auxiliaryfunctions.read_config(self.config_path)
+        return _dlcloader.deeplabcut.auxiliaryfunctions.read_config(self.config_path)
     
     @property
     def name(self) -> str:
@@ -7930,7 +7244,7 @@ class DLCProject:
         if config_file is None:
             config_file = self.config_path
         assert os.path.exists(config_file)
-        return deeplabcut.auxiliaryfunctions.edit_config(config_file, kwargs)
+        return _dlcloader.deeplabcut.auxiliaryfunctions.edit_config(config_file, kwargs)
 
     @property
     def video_list(self) -> list[Path]:
@@ -7997,7 +7311,7 @@ class DLCProject:
             dict: Maps iteration number to list of training iteration numbers.
                 For DLC3, identifies .pt files; for DLC2, identifies .index files.
         """
-        if DLC3:
+        if _dlcloader.DLC3:
             ext = ".pt"
         else:
             ext = ".index"
@@ -8056,7 +7370,7 @@ class DLCProject:
         """
         if isinstance(videos, (str, Path)):
             videos = [videos]
-        deeplabcut.add_new_videos(self.config_path, videos, copy_videos=True)
+        _dlcloader.deeplabcut.add_new_videos(self.config_path, videos, copy_videos=True)
         self.copy_annotations(videos)
         return self
     
@@ -8156,7 +7470,7 @@ class DLCProject:
                 )
             
             if check:
-                deeplabcut.check_labels(self.config_path) # this creates an _labeled folder, which doesn't seem necessary in this case
+                _dlcloader.deeplabcut.check_labels(self.config_path) # this creates an _labeled folder, which doesn't seem necessary in this case
         
         return self
     
@@ -8174,7 +7488,7 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.current_iteration
         assert type_ in ('train', 'test')
-        if DLC3:
+        if _dlcloader.DLC3:
             cfg_name = "pytorch_config"
         else:
             cfg_name = "pose_cfg"
@@ -8199,7 +7513,7 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.current_iteration
         
-        if DLC3:
+        if _dlcloader.DLC3:
             source_path = self.paths['models'] / f'iteration-{iteration_num}'
             snapshot_filenames = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot*.pt']
             snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
@@ -8234,7 +7548,7 @@ class DLCProject:
         if iteration_num is None:
             iteration_num = self.latest_trained_iteration
         eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
-        column_name = 'test rmse_pcutoff' if DLC3 else 'Test error(px)'
+        column_name = 'test rmse_pcutoff' if _dlcloader.DLC3 else 'Test error(px)'
         if os.path.exists(eval_file_name):
             # pick the snapshot with the lowest training error
             df_eval = pd.read_csv(eval_file_name)
@@ -8293,11 +7607,11 @@ class DLCProject:
         # find the correct pose_cfg file
         cfg_file = self.get_pose_cfg_file(dest_iteration)
         source_path = self.paths['models'] / f'iteration-{source_iteration}'
-        ext = '.pt' if DLC3 else '.index'
+        ext = '.pt' if _dlcloader.DLC3 else '.index'
         init_weights_files = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
         assert len(init_weights_files) == 1
 
-        if DLC3:
+        if _dlcloader.DLC3:
             self.edit_config(cfg_file, resume_training_from=init_weights_files[0].removesuffix('.index'))
         else:
             self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
@@ -8340,7 +7654,7 @@ class DLCProject:
 
         dest_iteration = self.all_iterations[-1]
         cfg_file = self.get_pose_cfg_file(dest_iteration)
-        if DLC3:
+        if _dlcloader.DLC3:
             self.edit_config(cfg_file, resume_training_from=external_path)
         else:
             self.edit_config(cfg_file, init_weights=external_path)
@@ -8349,7 +7663,7 @@ class DLCProject:
     def create_training_dataset(self, **kwargs):
         """Call deeplabcut.create_training_dataset."""
         net_type = kwargs.pop('net_type', 'resnet_50')
-        deeplabcut.create_training_dataset(self.config_path, net_type=net_type, **kwargs)
+        _dlcloader.deeplabcut.create_training_dataset(self.config_path, net_type=net_type, **kwargs)
         return self
 
     def train(self, **kwargs):
@@ -8374,7 +7688,7 @@ class DLCProject:
         max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
         cfg_file = self.get_pose_cfg_file()
         self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, pytorch_cfg_updates={"runner.eval_interval": 25},**kwargs)
+        _dlcloader.deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, pytorch_cfg_updates={"runner.eval_interval": 25},**kwargs)
         return self
     
     def evaluate(self, **kwargs):
@@ -8392,7 +7706,7 @@ class DLCProject:
         """
         current_snapshotindex_value = self.config['snapshotindex']
         self.edit_config(snapshotindex='all')
-        deeplabcut.evaluate_network(self.config_path, **kwargs)
+        _dlcloader.deeplabcut.evaluate_network(self.config_path, **kwargs)
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
@@ -8463,9 +7777,9 @@ class DLCProject:
             destfolder = self.paths['videos'] / f'iteration-{iteration_num}'
             )
 
-        deeplabcut.analyze_videos(**common_params, save_as_csv=save_as_csv, **kwargs)
+        _dlcloader.deeplabcut.analyze_videos(**common_params, save_as_csv=save_as_csv, **kwargs)
         if create_video:
-            deeplabcut.create_labeled_video(**common_params)
+            _dlcloader.deeplabcut.create_labeled_video(**common_params)
         
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
@@ -8505,7 +7819,7 @@ class DLCProject:
             assert isinstance(iteration_num, int)
 
         if maxiters is None:
-            if DLC3:
+            if _dlcloader.DLC3:
                 # TEMPORARY: dropped from 1000 → 50 to speed up the
                 # datanavigator/DUSTrack test-bed iteration loop
                 # (S:\_corpus\dustrack\). REVERT to 1000 before 1.1.0rc2
@@ -8539,7 +7853,7 @@ class DLCProject:
 
         if not self.current_iteration_is_trained():
             try:
-                if DLC3:
+                if _dlcloader.DLC3:
                     if isinstance(refine, str):
                         self.train(epochs=maxiters, snapshot_path=refine)
                     else:
@@ -8638,7 +7952,7 @@ class DLCProject:
         )
 
         if maxiters is None:
-            maxiters = 50 if DLC3 else 500000  # same defaults as process()
+            maxiters = 50 if _dlcloader.DLC3 else 500000  # same defaults as process()
 
         # Iteration advancement mechanics (mirror process()).
         self.extract_frames()  # capture any new manual annotations
@@ -8653,7 +7967,7 @@ class DLCProject:
                 source_iteration=source_iteration,
                 source_snapshot=source_snapshot,
             )
-        elif refine_mode == "external" and not DLC3:
+        elif refine_mode == "external" and not _dlcloader.DLC3:
             # DLC2: no runtime override -- edit pose_cfg's init_weights
             # to point at the external snapshot. DLC3 handles this
             # inline at the train call below via snapshot_path=.
@@ -8664,7 +7978,7 @@ class DLCProject:
         # Train.
         if not self.current_iteration_is_trained():
             train_kwargs = {}
-            if DLC3:
+            if _dlcloader.DLC3:
                 train_kwargs["epochs"] = maxiters
                 if refine_mode == "external":
                     train_kwargs["snapshot_path"] = external_snapshot_path
@@ -9485,7 +8799,7 @@ def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coo
         list: Paths to saved image files.
     """
     _ensure_dlc_loaded()
-    cap = VideoWriter(video_file_name)
+    cap = _dlcloader.VideoWriter(video_file_name)
     cap.set_bbox(*map(int, coords))
     indexlength = int(np.ceil(np.log10(len(cap))))
     output_path.mkdir(parents=True, exist_ok=True)
@@ -9894,3 +9208,25 @@ def rebase_to_config(config_path: str, old_path: str) -> str:
     tail = old_parts[idx + 1:]
     rebased = new_root / PathCls(*tail) if tail else new_root
     return str(rebased)
+
+
+# ---------------------------------------------------------------------
+# Late-binding proxy for the names that _ensure_dlc_loaded mutates
+# on the loader module after import. from dustrack.dlcinterface import
+# X snapshots the value at the time of the from statement, which
+# was a problem for DLC3 / deeplabcut / VideoWriter /
+# ScannerError -- those stay None / False until the lazy
+# load completes. Routing attribute access through __getattr__
+# returns the live value from the loader.
+# ---------------------------------------------------------------------
+_LAZY_NAMES = frozenset((
+    'DLC3', 'deeplabcut', 'VideoWriter', 'ScannerError',
+    '_DLC_LOAD_STATE', '_DLC_LOAD_THREAD',
+))
+
+
+def __getattr__(name):  # PEP 562 module-level __getattr__
+    if name in _LAZY_NAMES:
+        return getattr(_dlcloader, name)
+    raise AttributeError(f"module 'dustrack.dlcinterface' has no attribute {name!r}")
+

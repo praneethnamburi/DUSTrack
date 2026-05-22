@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dustrack import dlcinterface
+from dustrack import dlcloader
 from dustrack.dlcinterface import (
     _default_training_options,
     _training_options_to_train_iteration_kwargs,
@@ -34,13 +34,13 @@ def _fake_project(*, snapshots):
 
 @pytest.fixture
 def dlc3(monkeypatch):
-    monkeypatch.setattr(dlcinterface, "DLC3", True)
+    monkeypatch.setattr(dlcloader, "DLC3", True)
     return True
 
 
 @pytest.fixture
 def dlc2(monkeypatch):
-    monkeypatch.setattr(dlcinterface, "DLC3", False)
+    monkeypatch.setattr(dlcloader, "DLC3", False)
     return False
 
 

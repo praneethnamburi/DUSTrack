@@ -12,7 +12,7 @@ import math
 import numpy as np
 import pytest
 
-from dustrack.dlcinterface import (
+from dustrack._image_enhance import (
     _CLAHE_CLIP_MAX,
     _CLAHE_CLIP_MIN,
     _GAMMA_MAX,

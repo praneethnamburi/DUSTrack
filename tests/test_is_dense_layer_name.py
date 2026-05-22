@@ -8,17 +8,7 @@ including Reduce jitter on a non-DLC source). Pins the dispatch
 matrix so future smoothing recipes (or a widened prefix list) can
 extend the pattern data without regressing the existing matches.
 """
-import pytest
-
-from dustrack.dlcinterface import HAS_DLC
-
-if not HAS_DLC:
-    pytest.skip(
-        "_is_dense_layer_name lives in dlcinterface which requires deeplabcut",
-        allow_module_level=True,
-    )
-
-from dustrack.dlcinterface import _is_dense_layer_name
+from dustrack._layer_names import _is_dense_layer_name
 
 
 class TestDLCInferenceNames:

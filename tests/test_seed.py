@@ -20,7 +20,7 @@ from dustrack import (
     list_seed_bundles,
     set_seed_bundles_root,
 )
-from dustrack.dlcinterface import _dlc_bodyparts_to_layer_labels
+from dustrack._layer_names import _dlc_bodyparts_to_layer_labels
 from dustrack.seed import extract_snapshot_for_seeding as _extract_direct
 
 
