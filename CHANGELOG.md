@@ -132,12 +132,24 @@ root causes, both addressed:
    subsequent `plt.draw()` calls flush correctly through the
    event loop's natural drain.
 
-Shipped fix is a **counter-gated warm-up** in `DUSTrack.update`:
-on the first update after a counter-reset (open or swap), do one
-synchronous `canvas.draw()` to warm the canvas; subsequent
-updates rely on the base class's `plt.draw()` (deferred). Counter
-resets to 0 in `__init__` and at the tail of `swap_to`, so each
-bundle visit gets one warm-up.
+Shipped fix is a one-line `self.figure.canvas.flush_events()` in
+`DUSTrack.update` after `super().update()`. On QtAgg
+`flush_events()` is a thin wrapper over
+`QApplication.processEvents()` and forces the queued
+`canvas.draw_idle()` to run without scheduling a second full
+render the way `canvas.draw()` would.
+
+**Known multi-video limitation**: on first visit to a bundle after
+open, the trace pane can stay stale until the user flips videos
+once (`Alt+Right` then `Alt+Left`, or the sidebar nav buttons) —
+after which `draw_idle` starts firing reliably. Two cheaper
+warm-up variants (counter-gated first-update `canvas.draw()`,
+plain `flush_events()`) were tried and neither fixed the
+interactive bug; an unconditional `canvas.draw()` fixes it but
+carries a ~3× per-frame cost (76 ms / 13 fps vs 22.6 ms / 44 fps
+on the multi-video bench). Shipped as the lesser of two evils
+until the root cause of `draw_idle` starvation is diagnosed —
+top entry on the 1.2.0a3 perf-profiling agenda.
 
 Steady-state per-frame bench
 (`tests/qt_learning/28_benchmark_multi_video_update.py`, 12-bundle
@@ -148,12 +160,13 @@ probe 14):
 | | min | median | mean | p95 | fps (median) |
 |---|---|---|---|---|---|
 | 1.5.0 fast_render single-video (probe 14) | — | **36.0** | 36.0 | 37.2 | 28 |
-| 1.2.0a3 multi-video (12 bundles) | 22 | **24.3** | 24.6 | 27.7 | **41** |
+| 1.2.0a3 multi-video, flush_events (shipped) | 21.2 | **22.6** | 22.9 | 25.0 | **44** |
+| 1.2.0a3 multi-video, unconditional canvas.draw() (rejected) | 74.5 | 76.2 | 76.5 | 80.0 | 13 |
 
-Net no-op vs single-video despite the 220-line trace pane. The
-counter-gated approach hits the `_revision`-keyed trace cache on
-every non-first frame: the only per-update cost is the image
-decode + frame-marker reposition + base-class `plt.draw()`.
+Shipped variant is net no-op vs single-video despite the 220-line
+trace pane: `_revision`-keyed trace cache hits on every non-first
+frame, the only per-update cost is the image decode + frame-marker
+reposition + base-class `plt.draw()`.
 
 ### Tests
 

@@ -2446,10 +2446,6 @@ class DUSTrack(_DUSTrackBase):
         self._nav_prev_btn = None
         self._nav_next_btn = None
         self._nav_label = None
-        # Counter-gated warm-up: first update() force-paints, rest
-        # rely on deferred plt.draw(). Reset to 0 at open + every
-        # swap so each bundle visit warms the canvas once.
-        self._update_count = 0
         self._add_nav_widget()
         self._add_video_nav_key_bindings()
         self._refresh_nav_buttons()
@@ -5572,32 +5568,28 @@ class DUSTrack(_DUSTrackBase):
                 self._ax_trace_x.set_ylim(self._ax_lims['y_trace_x'])
             if self._ax_lims['y_trace_y'][0] is not None:
                 self._ax_trace_y.set_ylim(self._ax_lims['y_trace_y'])
-        # Counter-gated warm-up paint. The base class's
-        # ``plt.draw()`` (deferred via ``canvas.draw_idle()``)
-        # silently fails in interactive Qt sessions until the canvas
-        # has been "warmed up" with one synchronous ``canvas.draw()``.
-        # Earlier warm-up sites (``QTimer.singleShot`` at open,
-        # ``canvas.draw()`` at tail of ``swap_to``) by themselves
-        # weren't enough -- the symptom is "right-click / label
-        # switch / dropdown updates the data state but the trace
-        # pane stays stale until window resize / zoom tool / swap
-        # forces a paint". Forcing a sync paint on the FIRST
-        # ``update()`` after a counter-reset (open or swap) warms
-        # the canvas at the exact moment subsequent updates will
-        # start firing; from then on the deferred ``plt.draw()``
-        # works. The counter is reset to 0 in ``__init__`` and at
-        # the tail of ``swap_to`` so each bundle visit gets one
-        # warm-up. Bench at
-        # ``tests/qt_learning/28_benchmark_multi_video_update.py``
-        # showed always-force was ~17% slower than the counter
-        # variant; this pattern pays the one-render cost on first
-        # update and zero cost on every subsequent update.
-        if getattr(self, "_update_count", 0) == 0:
-            try:
-                self.figure.canvas.draw()
-            except Exception:  # noqa: BLE001
-                pass
-        self._update_count = getattr(self, "_update_count", 0) + 1
+        # Force the queued ``canvas.draw_idle()`` from
+        # ``super().update()`` to actually paint *now*. On QtAgg
+        # ``flush_events()`` is a thin wrapper over
+        # ``QApplication.processEvents()`` and drains the queued
+        # draw without scheduling a second full render the way
+        # ``canvas.draw()`` would. Bench: ~22.6 ms / 44 fps median
+        # on the 12-bundle pia02 session (probe 28).
+        #
+        # KNOWN MULTI-VIDEO LIMITATION: in interactive multi-video
+        # sessions the trace pane can still stay stale on the first
+        # visit to a bundle after open -- the user has to flip
+        # videos once (Alt+Right then Alt+Left, or click the nav
+        # buttons) for `draw_idle` to start firing reliably. An
+        # unconditional ``canvas.draw()`` here would fix this but
+        # carries a ~3x per-frame cost (probe 28: 76 ms / 13 fps).
+        # Documented as the lesser of two evils until the root
+        # cause of ``draw_idle`` starvation is diagnosed -- top
+        # entry on the 1.2.0a3 perf-profiling agenda.
+        try:
+            self.figure.canvas.flush_events()
+        except Exception:  # noqa: BLE001
+            pass
         return ret
 
     # ------------------------------------------------------------------
@@ -6311,20 +6303,18 @@ class DUSTrack(_DUSTrackBase):
         self._set_image_view_state(target.image_view_state)
         self._set_enhance_state(target.enhance_state)
 
-        # 6. Repaint. Reset the update-count to 0 BEFORE calling
-        # ``self.update()`` so the counter-gated warm-up paint in
-        # ``DUSTrack.update`` fires for this swap. ``swap_to`` is
-        # itself a state change comparable to open: every bundle's
-        # first-visit paint and every swap-back's first paint need
-        # to warm the canvas before subsequent deferred
-        # ``plt.draw()`` calls work.
+        # 6. Repaint. ``DUSTrack.update`` calls
+        # ``canvas.flush_events()`` after the base update so the
+        # deferred paint actually runs. Note the multi-video
+        # interactive-render limitation documented in
+        # ``DUSTrack.update``: the user may need to flip videos
+        # once after open for ``draw_idle`` to start firing.
         self._active_index = index
         self._refresh_nav_buttons()
         try:
             self._refresh_workflow_button_state()
         except Exception:  # noqa: BLE001
             pass
-        self._update_count = 0
         self.update()
         return True
 
