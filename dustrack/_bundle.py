@@ -72,6 +72,16 @@ class _BundleState:
     fname: Path
     video_index: int  # 0-based position inside ``DUSTrack._bundles``
 
+    # Project context (1.2.0a3 seed-modal cut). ``None`` = Phase 1
+    # (bare video, no DLC project); a ``DLCProject`` = Phase 2. Stored
+    # per-bundle so a tracker can hold a mix of Phase 1 + Phase 2
+    # bundles (seed-modal flow: seed is Phase 1, picked may be either;
+    # future ``add_video`` callers can mix freely). Rebound onto the
+    # shell's ``_dlcproject`` in :meth:`DUSTrack._attach_bundle` on
+    # every swap, so Workflow-button gates and project-aware code
+    # paths see the active bundle's project.
+    project: Any = None  # dustrack.dlcinterface.DLCProject | None
+
     # Heavy state, populated during hydration.
     reader: Any = None  # datanavigator.VideoReader
     annotations: Any = None  # dustrack.pointtracking.VideoAnnotations

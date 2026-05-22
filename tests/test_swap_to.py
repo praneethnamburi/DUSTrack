@@ -744,3 +744,69 @@ class TestStatevarRoundTrip:
             layer_names=["new1", "new2"],
         )
         assert sv["annotation_layer"].current_state == "new1"
+
+
+# ---------------------------------------------------------------------
+# Enhance-state first-visit defaults (1.2.0a3 follow-up 2026-05-22)
+#
+# Regression: pre-fix _set_enhance_state(None) returned early, so a
+# first-visit swap to a bundle with no saved enhance_state inherited
+# the leaving bundle's slider positions. The fix snapshots construction
+# defaults into _initial_enhance_state in __init__ and restores those
+# on first-visit. Returning visits still use the saved state.
+# ---------------------------------------------------------------------
+
+
+class TestEnhanceStateFirstVisitDefaults:
+    def _make_shell_with_initial(self, initial):
+        """Build a minimal shell stub that has ``_initial_enhance_state``
+        + the un-bound ``_set_enhance_state`` method bound to it."""
+        from dustrack.dlcinterface import DUSTrack as D
+        shell = SimpleNamespace(
+            _clahe_clip=99.0,  # something a default restore must overwrite
+            _gamma=99.0,
+            _brightness=99.0,
+            _enhance_widget=None,
+            _initial_enhance_state=initial,
+        )
+        shell._set_enhance_state = D._set_enhance_state.__get__(shell)
+        return shell
+
+    def test_first_visit_resets_to_construction_defaults(self):
+        initial = {"clahe_clip": 1.0, "gamma": 1.0, "brightness": 0.0}
+        shell = self._make_shell_with_initial(initial)
+        # Simulate the leaving bundle leaving its slider positions on
+        # the shell (1.5 / 2.0 / 5) before swap.
+        shell._clahe_clip = 2.5
+        shell._gamma = 1.5
+        shell._brightness = 5.0
+        # First-visit: state=None -> defaults restored.
+        shell._set_enhance_state(None)
+        assert shell._clahe_clip == 1.0
+        assert shell._gamma == 1.0
+        assert shell._brightness == 0.0
+
+    def test_returning_visit_uses_saved_state_not_defaults(self):
+        initial = {"clahe_clip": 1.0, "gamma": 1.0, "brightness": 0.0}
+        shell = self._make_shell_with_initial(initial)
+        saved = {"clahe_clip": 3.0, "gamma": 1.4, "brightness": 12.0}
+        shell._set_enhance_state(saved)
+        assert shell._clahe_clip == 3.0
+        assert shell._gamma == pytest.approx(1.4)
+        assert shell._brightness == 12.0
+
+    def test_missing_initial_snapshot_is_safe_noop(self):
+        from dustrack.dlcinterface import DUSTrack as D
+        # Subclass calling out of order / construction snapshot missing.
+        shell = SimpleNamespace(
+            _clahe_clip=2.5,
+            _gamma=1.5,
+            _brightness=5.0,
+            _enhance_widget=None,
+        )
+        shell._set_enhance_state = D._set_enhance_state.__get__(shell)
+        # No _initial_enhance_state attr -> safe fallback: hold values.
+        shell._set_enhance_state(None)
+        assert shell._clahe_clip == 2.5
+        assert shell._gamma == 1.5
+        assert shell._brightness == 5.0

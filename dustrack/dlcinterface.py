@@ -2004,6 +2004,420 @@ def _make_seed_bundle_picker_class():
     return SeedBundlePickerDialog
 
 
+# ---------------------------------------------------------------------
+# 1.2.0a3: no-arg dustrack.open() welcome modal
+# ---------------------------------------------------------------------
+
+def _render_recent_session_label(session) -> str:
+    """One-line label for a recent-sessions entry in the picker.
+
+    Rendering rules (matches the spec captured during the 2026-05-22
+    design conversation):
+
+    - 1-element file -> the full path.
+    - 1-element directory -> the full path + trailing slash
+      (legacy ``recent_folders`` migration only; new code never
+      writes a single-directory session).
+    - N-element (N >= 2) -> ``<first>.<ext> + N-1 more`` plus the
+      common parent folder when all entries share one.
+
+    Extracted as a free function so the rendering can be tested
+    without spinning up Qt.
+    """
+    first = Path(session[0])
+    n = len(session)
+    if n == 1:
+        if first.is_dir():
+            return f"{first}/"
+        return str(first)
+    # N-element session. Try to find a shared parent for context.
+    paths = [Path(p) for p in session]
+    try:
+        common = os.path.commonpath([str(p) for p in paths])
+        common_dir = Path(common)
+        if common_dir.is_dir():
+            return f"{first.name} + {n - 1} more  ({common_dir})"
+    except (ValueError, OSError):
+        pass
+    return f"{first.name} + {n - 1} more"
+
+
+def _make_open_video_overlay_class():
+    """Lazy factory for the 1.2.0a3 no-arg :func:`dustrack.open`
+    welcome modal.
+
+    Mirrors :func:`_make_confirm_overlay_class`'s qtpy-import-on-demand
+    pattern so importing ``dustrack`` stays Qt-free when only the
+    library API is used. Returns a class that, when instantiated and
+    ``exec_()``-ed, blocks on a synchronous Qt event loop and
+    surfaces either:
+
+    - ``list[Path]`` -- the user picked one or more videos (via
+      Browse... or a recent-sessions row).
+    - ``None`` -- the user dismissed the modal via the main window's
+      close button (the spec deliberately omits a Quit button; the
+      window X covers that path).
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+        QPushButton, QVBoxLayout,
+    )
+
+    _PRIMARY_QSS = (
+        "QPushButton { background-color: #3a86ff; color: white; "
+        "  border: 1px solid #2a76ef; padding: 8px 32px; "
+        "  font-size: 12pt; font-weight: bold; }"
+        "QPushButton:hover { background-color: #4a96ff; }"
+        "QPushButton:pressed { background-color: #2a76ef; }"
+        "QPushButton:disabled { background-color: #2a2a2a; "
+        "  color: #777; border: 1px solid #333; }"
+    )
+
+    _SECONDARY_QSS = (
+        "QPushButton { background-color: #2a2a2a; color: white; "
+        "  border: 1px solid #444; padding: 8px 24px; font-size: 11pt; }"
+        "QPushButton:hover { background-color: #3a3a3a; }"
+        "QPushButton:pressed { background-color: #1a1a1a; }"
+    )
+
+    _HELP_NO_SELECTION = (
+        "Pick a video file or a DLC config.yaml. "
+        "Or click a recent session below."
+    )
+    _HELP_HAS_SELECTION = (
+        "Click Load (or double-click the selected session) to open it."
+    )
+
+    class OpenVideoOverlay(QObject):
+        """Welcome modal mounted on a freshly-constructed seed-mode
+        DUSTrack window.
+
+        Surface:
+
+        - Title + subtitle ("Welcome to DUSTrack" / "Pick a video to
+          get started").
+        - Helpful message that flips with state -- "Pick a video or
+          DLC config.yaml..." when nothing is selected, "Click Load
+          to open..." when a recent row is selected.
+        - One contextual primary button whose label flips:
+            * No history selection -> "Open" -- pops the file dialog
+              (filtered for videos + `config.yaml`); the dialog's own
+              Open click commits immediately (no second click).
+            * Recent row selected -> "Load" -- commits the selected
+              row.
+        - Recent-sessions list (max 20, most-recent first; hidden when
+          empty). Single-click toggles a row's selection; clicking the
+          same row again deselects. Double-click / Enter commits
+          immediately.
+
+        Same backdrop + parented-QFrame + event-filter + exec_-loop
+        scaffolding as :class:`ConfirmOverlay`.
+        """
+
+        def __init__(self, main_window, *, recent_sessions):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._result = None  # type: list | None
+            self._loop = QEventLoop()
+            self._recent_sessions = list(recent_sessions or [])
+            # Currently-selected recent index, or None if no recent
+            # row is highlighted. Drives the action button's label
+            # flip (Open <-> Load) and the help-line flip.
+            self._selected_index = None  # type: int | None
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_open_video_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_open_video_overlay { background-color: rgba(0, 0, 0, 200); }"
+                "QLabel { color: white; }"
+                "#dustrack_open_video_title { color: white; "
+                "  font-size: 24pt; font-weight: bold; }"
+                "#dustrack_open_video_subtitle { color: #cccccc; "
+                "  font-size: 11pt; }"
+                "#dustrack_open_video_recent_label { color: #cccccc; "
+                "  font-size: 10pt; font-weight: bold; }"
+                "#dustrack_open_video_help_label { color: #cccccc; "
+                "  font-size: 10pt; }"
+                "QListWidget { background-color: #1f1f1f; color: white; "
+                "  font-size: 10pt; border: 1px solid #444; padding: 4px; }"
+                "QListWidget::item { padding: 4px 8px; }"
+                "QListWidget::item:hover { background-color: #2a2a2a; }"
+                "QListWidget::item:selected { background-color: #3a86ff; "
+                "  color: white; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            layout = QVBoxLayout(self._frame)
+            layout.setAlignment(Qt.AlignCenter)
+            layout.addStretch(1)
+
+            title_lbl = QLabel("Welcome to DUSTrack")
+            title_lbl.setObjectName("dustrack_open_video_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title_lbl)
+
+            subtitle = QLabel("Pick a video to get started")
+            subtitle.setObjectName("dustrack_open_video_subtitle")
+            subtitle.setAlignment(Qt.AlignCenter)
+            layout.addWidget(subtitle)
+
+            layout.addSpacing(20)
+
+            # Contextual helper line above the action button.
+            self._help_lbl = QLabel(_HELP_NO_SELECTION)
+            self._help_lbl.setObjectName("dustrack_open_video_help_label")
+            self._help_lbl.setAlignment(Qt.AlignCenter)
+            self._help_lbl.setWordWrap(True)
+            self._help_lbl.setMaximumWidth(720)
+            layout.addWidget(self._help_lbl, alignment=Qt.AlignCenter)
+
+            layout.addSpacing(10)
+
+            # Single contextual action button: label flips with state.
+            btn_row = QHBoxLayout()
+            btn_row.setAlignment(Qt.AlignCenter)
+            self._action_btn = QPushButton("Open")
+            self._action_btn.setMinimumWidth(220)
+            self._action_btn.setStyleSheet(_PRIMARY_QSS)
+            self._action_btn.setDefault(True)
+            self._action_btn.clicked.connect(self._on_action_clicked)
+            btn_row.addWidget(self._action_btn)
+            layout.addLayout(btn_row)
+
+            # Recent-sessions list. Hidden entirely when empty so a
+            # fresh-install launch shows just the title + button.
+            self._recent_widget = None
+            if self._recent_sessions:
+                layout.addSpacing(24)
+                recent_lbl = QLabel("Recent sessions")
+                recent_lbl.setObjectName("dustrack_open_video_recent_label")
+                recent_lbl.setAlignment(Qt.AlignCenter)
+                layout.addWidget(recent_lbl)
+
+                self._recent_widget = QListWidget()
+                self._recent_widget.setFixedWidth(640)
+                self._recent_widget.setMaximumHeight(280)
+                for session in self._recent_sessions:
+                    item = QListWidgetItem(_render_recent_session_label(session))
+                    item.setData(Qt.UserRole, [str(p) for p in session])
+                    self._recent_widget.addItem(item)
+                # Single-click TOGGLES selection (click same row twice
+                # to deselect); double-click / Enter COMMITS the row
+                # in one gesture (muscle-memory shortcut). Selection
+                # drives the action button's label flip.
+                self._recent_widget.itemClicked.connect(self._on_recent_clicked)
+                self._recent_widget.itemDoubleClicked.connect(
+                    self._on_recent_activated,
+                )
+                self._recent_widget.itemActivated.connect(
+                    self._on_recent_activated,
+                )
+
+                centered = QHBoxLayout()
+                centered.addStretch(1)
+                centered.addWidget(self._recent_widget)
+                centered.addStretch(1)
+                layout.addLayout(centered)
+
+            layout.addStretch(1)
+
+            main_window.installEventFilter(self)
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            # Focus the action button so Enter triggers the dominant
+            # action (Open / Load depending on state).
+            self._action_btn.setFocus()
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw:
+                t = event.type()
+                if t == QEvent.Resize:
+                    self._reposition()
+                elif t == QEvent.Close:
+                    # Window X during the modal -> abort with None.
+                    # We don't ``event.ignore()`` here; the close
+                    # event proceeds to the original closeEvent (the
+                    # save-on-close guard short-circuits because the
+                    # seed session has nothing to save and the
+                    # history write short-circuits on
+                    # _is_seed_session).
+                    self._result = None
+                    self._dismiss_no_filter_unhook()
+                    if self._loop.isRunning():
+                        self._loop.quit()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _refresh_action_state(self):
+            """Update the action button's label + help text to reflect
+            ``_selected_index``. Called after every recent-row toggle.
+            """
+            if self._selected_index is None:
+                self._action_btn.setText("Open")
+                self._help_lbl.setText(_HELP_NO_SELECTION)
+            else:
+                self._action_btn.setText("Load")
+                self._help_lbl.setText(_HELP_HAS_SELECTION)
+
+        def _select_recent_row(self, index):
+            """Mark a recent row as the current selection (and
+            highlight it in the list widget). ``None`` clears the
+            selection."""
+            self._selected_index = index
+            widget = self._recent_widget
+            if widget is None:
+                self._refresh_action_state()
+                return
+            if index is None:
+                widget.clearSelection()
+            else:
+                widget.setCurrentRow(index)
+            self._refresh_action_state()
+
+        def _commit_recent(self, index):
+            """Commit the recent row at ``index`` and exit the modal
+            loop. Used by both the action button's Load mode and the
+            double-click / Enter shortcut.
+            """
+            if index is None or not (0 <= index < len(self._recent_sessions)):
+                return
+            session = self._recent_sessions[index]
+            self._result = [Path(p) for p in session]
+            self._dismiss()
+            self._loop.quit()
+
+        def _commit_picked(self, picked):
+            """Commit a fresh file-dialog pick and exit the modal
+            loop. The dialog's own Open click is the commit gesture;
+            no second button click required."""
+            if not picked:
+                return
+            self._result = [Path(p) for p in picked]
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_action_clicked(self):
+            """The single action button: Open (no selection) or Load
+            (recent row selected). Dispatch on state."""
+            if self._selected_index is not None:
+                self._commit_recent(self._selected_index)
+                return
+            picked = _prompt_for_videos(parent=self._frame)
+            if picked is None:
+                # QFileDialog cancel -> stay in the modal so the user
+                # can try again or pick from the recent list.
+                return
+            self._commit_picked(picked)
+
+        def _on_recent_clicked(self, item):
+            """Single-click on a recent row: toggle selection. Clicking
+            an unselected row selects it; clicking the same selected
+            row deselects."""
+            widget = self._recent_widget
+            if widget is None:
+                return
+            row = widget.row(item)
+            if row < 0:
+                return
+            if self._selected_index == row:
+                self._select_recent_row(None)
+            else:
+                self._select_recent_row(row)
+
+        def _on_recent_activated(self, item):
+            """Double-click / Enter on a recent row -- commits
+            immediately (muscle-memory shortcut for power users).
+
+            Reads the path list straight from the item's
+            ``Qt.UserRole`` data so the commit doesn't depend on the
+            widget's row-index lookup (which can return -1 under
+            event-queue contention).
+            """
+            data = item.data(Qt.UserRole)
+            if not data:
+                return
+            self._result = [Path(p) for p in data]
+            self._dismiss()
+            self._loop.quit()
+
+        def _dismiss_no_filter_unhook(self):
+            """Variant of :meth:`_dismiss` skipping the event-filter
+            unhook -- used from the eventFilter itself, where
+            removeEventFilter mid-dispatch is undefined behavior.
+            """
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:  # noqa: BLE001
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            """Block until the user picks (returns ``list[Path]``) or
+            dismisses via the main-window close (returns ``None``)."""
+            self._loop.exec_()
+            return self._result
+
+    return OpenVideoOverlay
+
+
+# Packaged synthetic seed video used by the no-arg
+# :func:`dustrack.open` welcome modal. 8 frames of 64x64 mid-gray
+# h264 (~1.7 KB); co-shipped ``.mp4.dnav-toc`` skips the first-launch
+# TOC build. Regeneratable via ``tests/_assets/build_seed_video.py``.
+_SEED_VIDEO_PATH = Path(__file__).resolve().parent / "_data" / "seed_video.mp4"
+
+
+def _open_seed_session(**dustrack_kwargs):
+    """Construct a DUSTrack instance against the packaged seed video.
+
+    Used by :func:`dustrack.open` when called with no path -- the
+    seed-tracker hosts the welcome modal, then gets its active bundle
+    swapped for the user's pick via
+    :meth:`DUSTrack.replace_active_with` (and the seed bundle dropped).
+
+    Marks the tracker with ``_is_seed_session = True`` so the close-
+    guard skips the save-on-close prompt and the history writer
+    skips writing the seed asset to ``recent_sessions``.
+
+    Raises:
+        FileNotFoundError: Seed video asset missing from the install
+            (build failure / corrupted wheel).
+        Exception: Anything raised by the underlying DUSTrack
+            construction -- caller treats as "seed-modal path
+            unavailable" and falls back to the legacy direct picker.
+    """
+    if not _SEED_VIDEO_PATH.is_file():
+        raise FileNotFoundError(
+            f"seed video asset missing: {_SEED_VIDEO_PATH}"
+        )
+    # Phase 1 layer naming: ``_seed`` keeps the seed annotations
+    # distinct from any real session's ``iteration-0`` layer (in
+    # particular, the seed's ``buffer`` layer won't collide with a
+    # future ``add_video`` of the same video).
+    tracker = DUSTrack(str(_SEED_VIDEO_PATH), "_seed", **dustrack_kwargs)
+    tracker._is_seed_session = True
+    # ``_init_bundles`` is normally called from
+    # :func:`_attach_bundles_or_fallback` post-construction. Run it
+    # here so the seed tracker has its single bundle wired up before
+    # the modal opens (``replace_active_with`` expects an active
+    # bundle to swap from).
+    init = getattr(tracker, "_init_bundles", None)
+    if init is not None:
+        init(project=None, video_paths=[_SEED_VIDEO_PATH])
+    return tracker
+
+
 # PyTables (the HDF5 backend pandas.read_hdf uses for DLC ``.h5``
 # trace files) is NOT thread-safe; concurrent reads from background
 # threads hit "Table object has no attribute 'colpathnames'" and
@@ -2263,6 +2677,16 @@ class DUSTrack(_DUSTrackBase):
         self._gamma = gamma
         self._brightness = brightness
         self._dark_mode = dark_mode
+        # Construction-time enhance defaults snapshot. Used by
+        # :meth:`_set_enhance_state` to reset the sliders on a
+        # first-visit swap to a bundle that has no saved
+        # ``enhance_state`` yet, rather than carrying the leaving
+        # bundle's slider positions into the arriving bundle.
+        self._initial_enhance_state = {
+            "clahe_clip": float(clahe_clip),
+            "gamma": float(gamma),
+            "brightness": float(brightness),
+        }
 
         # Create image processor function with per-slider bypass to
         # smooth the transition at the left end of each slider:
@@ -2442,6 +2866,13 @@ class DUSTrack(_DUSTrackBase):
         self._bundles: list[_BundleState] = []
         self._active_index: int = 0
         self._video_queue: list = []  # back-compat: tail of bundle fnames
+        # 1.2.0a3 seed-modal flag. Set to True by
+        # :func:`_open_seed_session` when the tracker is constructed
+        # as the modal host; the close-guard + history writer read
+        # this to short-circuit save-prompts / recent-sessions writes
+        # for the synthetic seed asset. Normal construction paths
+        # leave it False.
+        self._is_seed_session: bool = False
         self._nav_widget = None
         self._nav_prev_btn = None
         self._nav_next_btn = None
@@ -4247,6 +4678,15 @@ class DUSTrack(_DUSTrackBase):
         dustrack_self = self
 
         def closeEvent(event):
+            # Seed-session short-circuit (1.2.0a3): the seed-modal
+            # launch path mounts the modal on a synthetic seed video
+            # and tears it down on dismiss / cancel. There are no
+            # user edits worth prompting about, and the seed asset
+            # path must not land in ``recent_sessions``. Skip every
+            # tail step that would survey state or write history.
+            if getattr(dustrack_self, "_is_seed_session", False):
+                original_close_event(event)
+                return
             try:
                 # Multi-bundle (1.2.0a3): sweep every ready bundle's
                 # unsaved diffs, not just the active one. The
@@ -4282,42 +4722,39 @@ class DUSTrack(_DUSTrackBase):
         qt_window._dustrack_close_guard_installed = True
 
     def _record_session_in_history(self) -> None:
-        """Write the current session's video (and, for multi-video
-        sessions, the common parent folder) to the cross-session
-        recent-history store.
+        """Write the current session's full bundle list to the unified
+        ``recent_sessions`` store.
 
-        Called from the close-guard. Single-video sessions add only
-        the active video path to ``recent_videos``. Multi-video
-        sessions (``self._bundles`` has more than one entry, as set by
-        :meth:`_init_bundles`) additionally add the common parent
-        folder of every bundle's fname to ``recent_folders`` -- so the
-        future "Open recent" modal can offer a folder-of-videos entry
-        alongside individual files.
+        Called from the close-guard. Single-video sessions write a
+        1-element entry; multi-video sessions write the full bundle
+        list in queue order (bundle 0 first, then the tail). The
+        active video is always the first element so a click-to-reopen
+        from the picker lands on the same video the user was on.
+
+        Skipped for seed sessions (the modal-host launch path sets
+        ``_is_seed_session = True`` on the temporary seed-tracker;
+        recording its synthetic asset path would pollute the recent
+        list with an entry that's never useful to reopen).
 
         Robust to missing attributes (``fname`` is the only required
         signal); the close-guard caller already wraps in try/except.
         """
+        if getattr(self, "_is_seed_session", False):
+            return
         fname = getattr(self, "fname", None)
         if not fname:
             return
+        bundles = getattr(self, "_bundles", None) or []
+        if bundles:
+            paths = [b.fname for b in bundles]
+        else:
+            paths = [fname]
         try:
-            _config.record_recent_video(fname)
+            _config.record_recent_session(paths)
         except Exception:
             # Best-effort -- if the JSON store is unwritable, drop
             # the entry but don't fail the close.
             pass
-        bundles = getattr(self, "_bundles", None) or []
-        if len(bundles) > 1:
-            all_paths = [b.fname for b in bundles]
-            try:
-                common = Path(os.path.commonpath([str(p) for p in all_paths]))
-                if common.is_dir():
-                    _config.record_recent_folder(common)
-            except (ValueError, OSError):
-                # Mixed drives on Windows raise ValueError from
-                # ``commonpath``. Drop the folder entry quietly; the
-                # individual videos are still in ``recent_videos``.
-                pass
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``
@@ -5674,6 +6111,7 @@ class DUSTrack(_DUSTrackBase):
         active_bundle = _BundleState(
             fname=Path(video_paths[0]),
             video_index=0,
+            project=project,
             reader=self.data,
             annotations=self.annotations,
             current_idx=self._current_idx,
@@ -5685,10 +6123,12 @@ class DUSTrack(_DUSTrackBase):
         active_bundle.selections = self._capture_statevar_selections()
         self._bundles = [active_bundle]
 
-        # Pending bundles for the tail.
+        # Pending bundles for the tail. All share the same project as
+        # bundle 0 (1.2.0a3 multi-video contract: same-project only).
         for i, vp in enumerate(video_paths[1:], start=1):
             self._bundles.append(_BundleState(
                 fname=Path(vp), video_index=i,
+                project=project,
                 hydration_state=HYDRATION_PENDING,
             ))
 
@@ -5815,40 +6255,6 @@ class DUSTrack(_DUSTrackBase):
             _time.sleep(deadline_per_tick)
         return bundle.is_ready
 
-    def _hydrate_bundle_sync(self, bundle: _BundleState, project) -> None:
-        """Populate a pending bundle's heavy state synchronously.
-
-        Convenience wrapper that runs the off-thread data half +
-        Qt-thread artist half back-to-back on the calling thread. The
-        background worker (:class:`_BgHydrationWorker`) calls the two
-        halves separately so the data work stays off the GUI thread
-        while only the artist setup (which must touch Qt) runs on
-        the Qt thread.
-
-        Used by single-video / single-bundle entry paths and by the
-        worker's failure-path tests; the multi-video happy path goes
-        through the worker.
-        """
-        try:
-            payload = self._hydrate_bundle_data_only(bundle, project)
-        except Exception as exc:  # noqa: BLE001
-            bundle.hydration_state = HYDRATION_FAILED
-            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
-            sys.__stderr__.write(
-                f"[dustrack] bundle {bundle.video_index} "
-                f"({bundle.fname}) hydration failed:\n{traceback.format_exc()}\n"
-            )
-            return
-        try:
-            self._finalise_bundle_artists(bundle, payload, project)
-        except Exception as exc:  # noqa: BLE001
-            bundle.hydration_state = HYDRATION_FAILED
-            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
-            sys.__stderr__.write(
-                f"[dustrack] bundle {bundle.video_index} "
-                f"({bundle.fname}) artist setup failed:\n{traceback.format_exc()}\n"
-            )
-
     def _hydrate_bundle_data_only(
         self, bundle: _BundleState, project,
     ) -> dict:
@@ -5946,6 +6352,89 @@ class DUSTrack(_DUSTrackBase):
             "reader": reader,
             "container": container,
             "in_project_path": in_project_path,
+        }
+
+    def _hydrate_phase1_bundle_data(
+        self, bundle: _BundleState, *, layer_name: str = "iteration-0",
+    ) -> dict:
+        """Off-thread half of Phase 1 (bare-video, no DLC project)
+        bundle hydration. Returns a payload the Qt-thread half
+        (:meth:`_finalise_bundle_artists`) consumes.
+
+        Mirrors :meth:`_hydrate_bundle_data_only`'s contract, except
+        the layer set is the canonical Phase 1 pair (``layer_name``
+        + ``buffer``) with paths derived from the bundle's video
+        stem -- no ``VideoFileManager`` / project lookup. Used by
+        :meth:`add_video` when appending a bare-video bundle to a
+        live tracker (notably the seed-modal flow).
+
+        Touches: filesystem (VideoReader open, JSON reads if the
+        layer .json sits next to the video), VideoAnnotation
+        construction with EMPTY axis lists so the artist setup
+        downstream is a no-op. Does NOT touch Qt or matplotlib --
+        safe to call from a daemon thread.
+
+        State machine: PENDING -> HYDRATING (set on entry). Caller
+        flips to READY / FAILED based on the rest of the pipeline.
+        """
+        bundle.hydration_state = HYDRATION_HYDRATING
+
+        vname = str(bundle.fname)
+        # Phase 1 layer-fname derivation mirrors
+        # ``_DUSTrackBase._get_fname_annotations``: alongside the
+        # video, ``<stem>_annotations_<layer>.json``.
+        def _ann_path(name: str) -> str:
+            stem = bundle.fname.stem
+            suffix_part = f"_{name}" if name else ""
+            return str(bundle.fname.parent / f"{stem}_annotations{suffix_part}.json")
+
+        ann_name_to_fname = {
+            layer_name: _ann_path(layer_name),
+            "buffer": _ann_path("buffer"),
+        }
+
+        with builtins_open(vname, "rb") as f:
+            reader = VideoReader(f)
+
+        # Empty ax lists -- ``_finalise_bundle_artists`` wires real
+        # ax lists in the Qt-thread half. Same _HDF5_LOCK pattern as
+        # the Phase 2 path for symmetry; Phase 1 .json reads aren't
+        # HDF5-backed but the lock is cheap when uncontended and
+        # keeps the data-half contract consistent across phases.
+        container = VideoAnnotations(parent=self)
+        with _HDF5_LOCK:
+            for name, fname in ann_name_to_fname.items():
+                ann = container.add(
+                    name=name,
+                    fname=fname,
+                    vname=vname,
+                    video=reader,
+                    ax_list_scatter=[],
+                    ax_list_trace_x=[],
+                    ax_list_trace_y=[],
+                    palette_name="Set2",
+                    n_labels=1,
+                )
+                ann.__class__ = VideoAnnotation
+
+        # Union of declared labels across layers, mirroring
+        # ``_DUSTrackBase.add_annotation_layers``.
+        all_labels = sorted(
+            {label for ann in container._list for label in ann.labels}
+        )
+        if not all_labels:
+            all_labels = ["0"]
+        for ann in container._list:
+            for label in all_labels:
+                if label not in ann.labels:
+                    ann.add_label(label)
+            ann.sort_labels()
+            ann.re_setup_display()
+
+        return {
+            "reader": reader,
+            "container": container,
+            "in_project_path": bundle.fname,
         }
 
     def _finalise_bundle_artists(
@@ -6355,6 +6844,349 @@ class DUSTrack(_DUSTrackBase):
         """
         return self.swap_to(self._active_index + 1)
 
+    # ------------------------------------------------------------------
+    # Bundle list management (add / remove / replace-active)
+    # ------------------------------------------------------------------
+
+    def add_video(
+        self, path_or_paths, *, layer_name=None, set_active=False,
+        **dustrack_kwargs,
+    ) -> list[int]:
+        """Append one or more videos to this tracker's bundle list.
+
+        Validates and hydrates the picked path(s), appends the new
+        bundle(s) to :attr:`_bundles`, optionally swaps to the first
+        new bundle. Mirrors :func:`dustrack.open`'s validation: a
+        scalar path resolves to Phase 1 (bare video) or Phase 2
+        (video in a DLC project) by scanning for a ``config.yaml``
+        next to the file; a list of paths must all belong to the
+        same DLC project (Phase 2 multi only).
+
+        Args:
+            path_or_paths: A single video path (``str`` /
+                :class:`Path`), or a list/tuple of such paths.
+            layer_name: Annotation layer name for the new bundle.
+                Phase 1 default: ``'iteration-0'``. Phase 2: ignored
+                (the project's ``iteration-{N+1}`` convention wins).
+            set_active: If True, swap to the first new bundle after
+                hydration. Used by :meth:`replace_active_with`; the
+                public default is False so callers can add bundles
+                in the background without disturbing the user's
+                current view.
+            **dustrack_kwargs: Reserved for future per-bundle
+                construction options. Today only the
+                :func:`dustrack.open` kwarg set is forwarded, but
+                bundles built post-construction inherit the shell's
+                kwargs (``fast_render``, ``dark_mode``, etc.) so
+                this list is effectively empty.
+
+        Returns:
+            list[int]: Indices of the newly-appended bundles in
+            :attr:`_bundles`, in queue order.
+
+        Raises:
+            FileNotFoundError: A path doesn't exist.
+            ValueError: Empty sequence, multi-video list with
+                mixed / missing DLC projects, etc. -- same shape
+                as :func:`dustrack.open`'s validation errors.
+            ImportError: Phase 2 entry on a system without
+                ``deeplabcut`` installed.
+        """
+        # Normalise to (project, [paths]) -- same logic as
+        # :func:`dustrack.open` post-validation but split out so
+        # the existing top-level dispatch and add_video share it.
+        project, video_paths = self._validate_bundle_paths(path_or_paths)
+
+        # Hydrate the first new bundle synchronously so a swap-to
+        # immediately after add_video is a no-wait. The tail (for
+        # multi-video adds) goes PENDING and the bg worker takes
+        # over -- same shape as ``_init_bundles``.
+        base_index = len(self._bundles)
+        new_bundles: list[_BundleState] = []
+        first = _BundleState(
+            fname=Path(video_paths[0]),
+            video_index=base_index,
+            project=project,
+            hydration_state=HYDRATION_PENDING,
+        )
+        self._hydrate_bundle_sync(first)
+        if first.hydration_state == HYDRATION_FAILED:
+            raise RuntimeError(
+                f"add_video: hydration failed for {first.fname}: "
+                f"{first.hydration_error}"
+            )
+        new_bundles.append(first)
+        for i, vp in enumerate(video_paths[1:], start=1):
+            new_bundles.append(_BundleState(
+                fname=Path(vp), video_index=base_index + i,
+                project=project,
+                hydration_state=HYDRATION_PENDING,
+            ))
+        self._bundles.extend(new_bundles)
+        # Sync the legacy back-compat ``_video_queue`` attribute (set
+        # by :func:`dustrack.open` since 1.2.0a2) so observers see the
+        # extended queue.
+        self._video_queue = [b.fname for b in self._bundles[1:]]
+        # Kick off the bg worker for any PENDING tail bundles. Same
+        # contract as :meth:`_init_bundles`: same-project across the
+        # batch, daemon thread, Qt poller drains finalisations.
+        pending_tail = [b for b in new_bundles[1:] if b.hydration_state == HYDRATION_PENDING]
+        if pending_tail and project is not None:
+            worker = _BgHydrationWorker(self, project, pending_tail)
+            worker.start()
+            # Track most-recent worker for diagnostics; tests can poke it.
+            self._hydration_worker = worker
+        self._refresh_nav_buttons()
+        new_indices = [b.video_index for b in new_bundles]
+        if set_active:
+            self.swap_to(new_indices[0])
+        return new_indices
+
+    def remove_video(self, index: int) -> bool:
+        """Drop a bundle from the tracker's bundle list.
+
+        If ``index == self._active_index``, swaps to another bundle
+        first (prefers ``index + 1``, falls back to ``index - 1``).
+        Refuses to empty the bundle list -- a tracker without any
+        bundles is undefined; callers wanting "reset to empty" should
+        close the window instead.
+
+        Args:
+            index: 0-based bundle index in :attr:`_bundles`.
+
+        Returns:
+            bool: ``True`` on success, ``False`` if the index is
+            out of bounds or the removal was refused (would empty
+            the list).
+
+        Notes:
+            Renumbering: every surviving bundle's ``video_index`` is
+            re-assigned to its post-removal position, so external
+            consumers holding indices need to refresh.
+        """
+        if not (0 <= index < len(self._bundles)):
+            return False
+        if len(self._bundles) <= 1:
+            return False
+        if index == self._active_index:
+            # Swap-first: prefer next; fall back to previous when at
+            # the tail. The fallback index uses the pre-removal layout,
+            # so a swap to ``index - 1`` lands on the bundle that will
+            # end up at ``index - 1`` post-removal.
+            if index + 1 < len(self._bundles):
+                target = index + 1
+            else:
+                target = index - 1
+            if not self.swap_to(target):
+                return False
+        # After the swap, ``self._active_index`` no longer equals
+        # ``index`` (or never did). Park the leaving bundle's artists.
+        leaving = self._bundles[index]
+        self._park_bundle_artists(leaving)
+        # Drop the bundle. If the removed bundle was below the active
+        # index, the active index shifts down by one.
+        del self._bundles[index]
+        if index < self._active_index:
+            self._active_index -= 1
+        # Renumber surviving bundles so ``video_index`` matches the
+        # new list position. Consumers that walk the bundle list
+        # (nav widget, bg worker batches) read ``video_index``.
+        for new_idx, bundle in enumerate(self._bundles):
+            bundle.video_index = new_idx
+        # Refresh observable attributes.
+        self._video_queue = [b.fname for b in self._bundles[1:]]
+        self._refresh_nav_buttons()
+        return True
+
+    def replace_active_with(
+        self, path_or_paths, *, layer_name=None, **dustrack_kwargs,
+    ) -> list[int]:
+        """Swap the active bundle for one (or more) newly-picked
+        video(s); drop the previously-active bundle.
+
+        The 1.2.0a3 seed-modal flow uses this to transition from the
+        synthetic seed video to whatever the user picked: it adds
+        the picked bundle(s), swaps to the first new bundle, then
+        removes the seed bundle. Generalizes to "I want a different
+        video / set of videos as my active session, keeping every
+        other bundle in place" -- the parked tail bundles survive
+        the replace.
+
+        Args:
+            path_or_paths: Same shape as :meth:`add_video`.
+            layer_name: Forwarded to :meth:`add_video`.
+            **dustrack_kwargs: Forwarded to :meth:`add_video`.
+
+        Returns:
+            list[int]: Final indices of the new bundles after the
+            old active bundle is removed.
+
+        Raises:
+            FileNotFoundError, ValueError, ImportError: Forwarded
+                from :meth:`add_video`'s validation.
+            RuntimeError: Hydration of the active picked bundle
+                failed; the tracker is left unchanged (the failed
+                bundle is rolled back).
+        """
+        old_active_bundle = self._bundles[self._active_index]
+        try:
+            new_indices = self.add_video(
+                path_or_paths,
+                layer_name=layer_name,
+                set_active=True,
+                **dustrack_kwargs,
+            )
+        except Exception:
+            # Roll back any failed-bundle artifacts the hydration
+            # left in place. add_video raises before mutating
+            # _bundles on hydration failure, so this is a safety net
+            # for the validation-error path.
+            self._video_queue = [b.fname for b in self._bundles[1:]]
+            self._refresh_nav_buttons()
+            raise
+        # Find old_active_bundle's *current* index post-add (it may
+        # have shifted if swap_to renumbered something, though today
+        # it doesn't). Identity match by object identity, not __eq__,
+        # so dataclass field equality doesn't confuse the lookup.
+        old_idx = next(
+            (i for i, b in enumerate(self._bundles) if b is old_active_bundle),
+            None,
+        )
+        if old_idx is None:
+            # Defensive: shouldn't happen since add_video appends.
+            return new_indices
+        n_new = len(new_indices)
+        # Remove the now-non-active old bundle. remove_video renumbers
+        # everything below the removed position; after removal the new
+        # bundles sit at the tail of self._bundles.
+        self.remove_video(old_idx)
+        total = len(self._bundles)
+        return list(range(total - n_new, total))
+
+    def _validate_bundle_paths(self, path_or_paths) -> tuple:
+        """Resolve ``path_or_paths`` into ``(project_or_None, [Path...])``.
+
+        Mirrors the validation logic at the top of :func:`dustrack.open`
+        but extracted so :meth:`add_video` can reuse it without
+        re-running the full dispatch. The contract:
+
+        - Single path -> Phase 1 (project=None) if no ``config.yaml``
+          is found beside it, else Phase 2 (project resolved).
+        - List of paths -> Phase 2 multi (must all belong to one
+          shared DLC project). Bare-video entries raise.
+        - Project folder -> Phase 2 multi (queue every video in the
+          project).
+        - ``config.yaml`` -> Phase 2 single on the first project
+          video.
+        """
+        if isinstance(path_or_paths, (list, tuple)):
+            if len(path_or_paths) == 0:
+                raise ValueError("add_video: empty path sequence")
+            paths = [Path(p) for p in path_or_paths]
+            for p in paths:
+                if not p.exists():
+                    raise FileNotFoundError(
+                        f"add_video: path does not exist: {p}"
+                    )
+            if len(paths) == 1:
+                return self._validate_bundle_paths(paths[0])
+            return _resolve_multi_video_from_list(paths)
+
+        p = Path(path_or_paths)
+        if not p.exists():
+            raise FileNotFoundError(
+                f"add_video: path does not exist: {p}"
+            )
+        if _is_dlc_config_yaml(p):
+            # Mirror dustrack.open's config.yaml dispatch (1.2.0a3
+            # follow-up): queue every video in the project, in
+            # config['video_sets'] order. DLCProject.__init__ runs
+            # rebase_to_config so a renamed project folder self-
+            # heals before we enumerate.
+            if not HAS_DLC:
+                raise ImportError(
+                    f"add_video: {p} is a DLC config.yaml but "
+                    "deeplabcut is not installed."
+                )
+            project = DLCProject(str(p))
+            video_paths = [Path(v) for v in project.video_list]
+            if not video_paths:
+                raise ValueError(
+                    f"add_video: DLC project at {p.parent} has no videos."
+                )
+            return project, video_paths
+        if p.is_dir():
+            if not _is_dlc_project_root(p):
+                raise ValueError(
+                    f"add_video: {p!s} is a directory but doesn't look "
+                    "like a DLC project."
+                )
+            if not HAS_DLC:
+                raise ImportError(
+                    f"add_video: detected a DLC project at {p}, but "
+                    "deeplabcut is not installed."
+                )
+            project = DLCProject(str(p / "config.yaml"))
+            video_paths = [Path(v) for v in project.video_list]
+            if not video_paths:
+                raise ValueError(
+                    f"add_video: DLC project at {p} has no videos."
+                )
+            return project, video_paths
+
+        # File. Phase 1 vs Phase 2 split by config.yaml discovery.
+        config_path = _find_dlc_config(p)
+        if config_path is None:
+            return None, [p]
+        if not HAS_DLC:
+            raise ImportError(
+                f"add_video: detected a DLC project at {config_path.parent}, "
+                "but deeplabcut is not installed."
+            )
+        return DLCProject(str(config_path)), [p]
+
+    def _hydrate_bundle_sync(self, bundle: _BundleState, project=None) -> None:
+        """Populate ``bundle``'s heavy state synchronously, dispatching
+        on ``bundle.project`` (Phase 1 vs Phase 2).
+
+        Pre-1.2.0a3: the ``project`` arg was required and only Phase 2
+        was supported. The new signature is backwards-compatible
+        (``project`` defaults to None, falling back to
+        ``bundle.project``); callers that already pass a project keep
+        working, and new callers can rely on the bundle's own project
+        field.
+
+        Used by single-video / single-bundle entry paths and by the
+        worker's failure-path tests; the multi-video happy path goes
+        through the worker.
+        """
+        # Per-bundle project takes precedence over the legacy arg
+        # so cross-Phase batches stay coherent. ``project`` is kept
+        # for back-compat with the pre-1.2.0a3 call-site.
+        eff_project = bundle.project if bundle.project is not None else project
+        try:
+            if eff_project is None:
+                payload = self._hydrate_phase1_bundle_data(bundle)
+            else:
+                payload = self._hydrate_bundle_data_only(bundle, eff_project)
+        except Exception as exc:  # noqa: BLE001
+            bundle.hydration_state = HYDRATION_FAILED
+            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
+            sys.__stderr__.write(
+                f"[dustrack] bundle {bundle.video_index} "
+                f"({bundle.fname}) hydration failed:\n{traceback.format_exc()}\n"
+            )
+            return
+        try:
+            self._finalise_bundle_artists(bundle, payload, eff_project)
+        except Exception as exc:  # noqa: BLE001
+            bundle.hydration_state = HYDRATION_FAILED
+            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
+            sys.__stderr__.write(
+                f"[dustrack] bundle {bundle.video_index} "
+                f"({bundle.fname}) artist setup failed:\n{traceback.format_exc()}\n"
+            )
+
     def _snapshot_active_bundle(self) -> None:
         """Write the shell's current per-video UI state back to the
         active bundle. Called at the top of every swap so the next
@@ -6390,14 +7222,26 @@ class DUSTrack(_DUSTrackBase):
         }
 
     def _set_enhance_state(self, state) -> None:
-        """Restore a previously-snapshotted enhance state. ``None``
-        means "first visit" -- leave the shell's current values
-        alone so the new bundle inherits the active session defaults.
+        """Restore a previously-snapshotted enhance state, or reset to
+        construction-time defaults on a first-visit (``state is None``).
+
+        Pre-fix this method returned early on first-visit, which meant
+        the new bundle inherited the leaving bundle's slider positions
+        (e.g. set gamma=1.5 on V1, swap to V2 first-visit, V2's
+        sliders showed 1.5 instead of the construction default).
+        Restoring to ``_initial_enhance_state`` on first-visit gives
+        each bundle a clean baseline; user changes still persist via
+        the per-bundle snapshot taken on swap-out.
+
         Pushes new slider positions into the EnhanceWidget if it's
         mounted (Tier 2 / Qt path) so the visible slider knobs match
         the restored values.
         """
         if state is None:
+            state = getattr(self, "_initial_enhance_state", None)
+        if state is None:
+            # Pre-construction fallback (subclass calling out of order
+            # / missing init snapshot). Hold the line.
             return
         self._clahe_clip = float(state["clahe_clip"])
         self._gamma = float(state["gamma"])
@@ -6453,13 +7297,26 @@ class DUSTrack(_DUSTrackBase):
         Does not touch artists -- :meth:`_park_bundle_artists` and
         :meth:`_show_bundle_artists` handle visibility; this method
         just swaps the data pointers (fname, VideoReader, annotations
-        container) and the lightweight UI snapshot (frame, axis
-        limits, frames of interest). Statevar / image-pane restore
-        happens after this in :meth:`swap_to`.
+        container, DLC project) and the lightweight UI snapshot
+        (frame, axis limits, frames of interest). Statevar /
+        image-pane restore happens after this in :meth:`swap_to`.
+
+        Cross-Phase contract (1.2.0a3 seed-modal cut): bundles can
+        carry different ``project`` values (``None`` for Phase 1
+        bare-video bundles, a ``DLCProject`` for Phase 2). The
+        rebind below pushes the arriving bundle's project onto the
+        shell so any Workflow-button gating or other project-aware
+        code reads the right value on the next paint. Statevar
+        rotation refresh (``annotation_layer`` / ``annotation_overlay``
+        dropdowns) is handled by
+        :meth:`_restore_statevar_selections` later in
+        :meth:`swap_to`; this method only handles the data-pointer
+        rebind.
         """
         self.fname = str(bundle.fname)
         self.data = bundle.reader
         self.annotations = bundle.annotations
+        self._dlcproject = bundle.project
         self._current_idx = bundle.current_idx
         # Force a fresh dict so the shell's later mutations don't
         # alias the bundle snapshot.
@@ -7962,6 +8819,17 @@ class DLCProject:
         os.system(f'explorer.exe "{str(Path(self.config_path).parent)}"')
 
 
+def _is_dlc_config_yaml(path) -> bool:
+    """True iff ``path`` is a DLC ``config.yaml`` file (case-insensitive
+    on the basename; the file's parent must exist but we don't structurally
+    validate it as a full project here -- DLCProject construction will
+    surface a clearer error if the config is malformed)."""
+    p = Path(path)
+    if not p.is_file():
+        return False
+    return p.name.lower() == "config.yaml"
+
+
 def _is_dlc_project_root(folder) -> bool:
     """Cheap structural check for a DLC project folder.
 
@@ -8058,23 +8926,34 @@ _VIDEO_PICKER_EXTENSIONS = ("mp4", "avi", "mov", "mkv", "mts", "m4v", "wmv", "we
 
 
 def _prompt_for_videos(parent=None):
-    """Pop a Qt file-picker for one-or-more video files.
+    """Pop a Qt file-picker for one-or-more video files (or a DLC
+    ``config.yaml``).
 
     Bootstraps a ``QApplication`` if one isn't already running (same
     pattern as :func:`_pin_qt_palette`), so this works as the very first
     Qt call in a fresh process. The picker opens at the last folder
     a video was picked from this machine (via
     :func:`dustrack._config.get_last_video_picker_dir`), or at the OS
-    default on a fresh install. Returns:
+    default on a fresh install.
+
+    Three filter rows:
+
+    - **Videos + DLC config** (default) -- the union; lets the user
+      pick a `config.yaml` *or* one or more video files from the same
+      dialog. Multi-select preserves click order (matters for the
+      multi-video list-form dispatch where the user wants a specific
+      order different from `config['video_sets']`).
+    - **Videos only** -- restricts to recognised video extensions.
+    - **All files** -- escape hatch.
+
+    Returns:
 
     - ``list[Path]`` -- user picked one or more files (order preserved
-      as the user clicked them).
+      as the user clicked them). Folder-picker support is not exposed
+      via this helper today; folders enter the modal via the recent-
+      sessions list.
     - ``None`` -- user cancelled, OR qtpy isn't importable in the env
       (mpl-only install path); caller falls back to a no-op.
-
-    Files-only by design for the first cut. Folder-picker support
-    (pick a directory, recurse for videos) bundles with the multi-
-    video swap-state work in the 1.2.0 roadmap.
     """
     try:
         from qtpy.QtWidgets import QApplication, QFileDialog
@@ -8082,11 +8961,16 @@ def _prompt_for_videos(parent=None):
         return None
     _ = QApplication.instance() or QApplication([])
     exts = " ".join(f"*.{e}" for e in _VIDEO_PICKER_EXTENSIONS)
-    file_filter = f"Videos ({exts});;All files (*.*)"
+    file_filter = (
+        f"Videos and DLC config ({exts} config.yaml);;"
+        f"Videos ({exts});;"
+        "DLC config (config.yaml);;"
+        "All files (*.*)"
+    )
     start_dir = _config.get_last_video_picker_dir()
     paths, _selected_filter = QFileDialog.getOpenFileNames(
         parent,
-        "Open video(s) for DUSTrack",
+        "Open video(s) or DLC config for DUSTrack",
         str(start_dir) if start_dir is not None else "",
         file_filter,
     )
@@ -8113,23 +8997,30 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
         requires a DLC project (see Phase 2 multi).
 
     **Phase 2 single -- one video inside a DLC project.**
-        Accepts a video inside a project's ``videos/`` folder or a
-        ``config.yaml``. Resolves the :class:`DLCProject` and dispatches
-        to :meth:`DLCProject.annotate` so a fresh DUSTrack opens with
-        all existing annotation layers, DLC trace overlays, and a new
-        iteration layer wired up.
+        Accepts a video inside a project's ``videos/`` folder.
+        Resolves the :class:`DLCProject` and dispatches to
+        :meth:`DLCProject.annotate` so a fresh DUSTrack opens with
+        all existing annotation layers, DLC trace overlays, and a
+        new iteration layer wired up.
 
     **Phase 2 multi -- the whole project (or a subset).** (1.2.0a3)
-        Two entry shapes:
+        Three entry shapes:
 
         - **Project folder**: ``dustrack.open('S:/path/to/project/')``
           queues every video in ``project.config['video_sets']`` (in
           project order). Behavior change vs <=1.2.0a2 (which opened
           only the first video).
+        - **DLC config.yaml**: ``dustrack.open('.../config.yaml')``
+          queues every video in ``project.config['video_sets']``,
+          same as the folder form. Behavior change vs <=1.2.0a3-pre
+          (which opened video 0 only). ``DLCProject.__init__`` runs
+          :func:`rebase_to_config` on each video_sets key, so stale
+          paths after a project-folder rename self-heal here.
         - **List of videos**: ``dustrack.open([v0, v1, ...])`` queues
           exactly those videos, in the given order. Every entry must
           resolve to the same DLC project; mismatches and bare-video
-          entries raise.
+          entries raise. The list-form is the way to override the
+          YAML-stored order (e.g. Ctrl+click in the file dialog).
 
         The active session opens on the first queued video; the rest
         are background-hydrated and reachable via the sidebar's arrow
@@ -8207,18 +9098,64 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             tracker = dustrack.open('video.mp4', 'manual', dark_mode=True)
     """
     if path is None:
-        # No-arg form: pop the picker BEFORE firing the bg DLC load.
-        # DLC's ``__init__`` prints ``Loading DLC X.X.X...`` as one of
-        # its first lines (fires ~10 ms into the bg thread) -- if we
-        # spawned the loader thread before this point, that print
-        # races the picker's Qt init (first ``QApplication([])`` +
-        # ``QFileDialog.getOpenFileNames`` is several hundred ms on
-        # Windows) and the user sees "Loading DLC..." in the terminal
-        # before the dialog appears. Deferring the fire-async until
-        # after the picker keeps the picker pop snappy + clean; DLC
-        # still loads concurrently with DUSTrack construction + user
-        # annotation, which is the actual overlap window that hides
-        # the ~7 s import cost behind work the user is doing anyway.
+        # No-arg form (1.2.0a3 seed-modal flow): construct DUSTrack
+        # against a packaged synthetic seed video, mount the welcome
+        # modal on top, and -- on a successful pick -- swap the
+        # active bundle in-place via ``replace_active_with``. The
+        # seed bundle is dropped during the replace; the returned
+        # tracker is identity-equivalent to a tracker built directly
+        # from the picked path. Defensive fallback: if the seed
+        # video fails to load (corrupt asset, codec mismatch) or no
+        # Qt window is available (headless / mpl-only), fall through
+        # to the pre-1.2.0a3 direct-picker flow.
+        seed_tracker = None
+        try:
+            seed_tracker = _open_seed_session(**dustrack_kwargs)
+        except Exception:  # noqa: BLE001
+            seed_tracker = None
+        if seed_tracker is not None and seed_tracker._find_qt_window() is not None:
+            # Mount the welcome overlay. exec_() blocks until the user
+            # picks or closes the window. We fire the DLC preload here
+            # (post-seed-construction, pre-modal-exec) so the ~7 s
+            # DLC import overlaps with the user's time-in-modal.
+            _ensure_dlc_loaded_async()
+            qt_window = seed_tracker._find_qt_window()
+            OpenVideoOverlay = _make_open_video_overlay_class()
+            recent = _config.get_recent_sessions()
+            picked = OpenVideoOverlay(
+                qt_window, recent_sessions=recent,
+            ).exec_()
+            if picked is None:
+                # Window X / dismiss -> close the seed tracker and
+                # exit cleanly. The close-guard short-circuits the
+                # save-prompt + history-write on
+                # ``_is_seed_session = True``.
+                try:
+                    plt.close(seed_tracker.figure)
+                except Exception:  # noqa: BLE001
+                    pass
+                return None
+            # User picked. Swap the seed for the picked path(s)
+            # in-place; the seed bundle is removed during the swap.
+            seed_tracker._is_seed_session = False
+            try:
+                seed_tracker.replace_active_with(
+                    picked, layer_name=layer_name,
+                )
+            except Exception:
+                # If hydration of the picked path failed, the
+                # tracker is left holding only the seed bundle. The
+                # cleanest exit is to surface the exception; the
+                # CLI's traceback rendering handles it.
+                seed_tracker._is_seed_session = True
+                raise
+            return seed_tracker
+        # Fallback: seed construction failed OR no Qt window.
+        if seed_tracker is not None:
+            try:
+                plt.close(seed_tracker.figure)
+            except Exception:  # noqa: BLE001
+                pass
         picked = _prompt_for_videos()
         if picked is None:
             return None
@@ -8261,14 +9198,37 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
                 f"dustrack.open: path does not exist: {single_path}"
             )
 
-    if single_path is not None and single_path.is_dir():
+    if single_path is not None and _is_dlc_config_yaml(single_path):
+        # 1.2.0a3 follow-up (2026-05-22): picking a ``config.yaml``
+        # now dispatches to multi-video, queueing every video in
+        # ``config['video_sets']`` in the YAML's stored order. Pre-
+        # fix this opened video 0 only -- that was a holdover from
+        # the pre-multi-video era. ``DLCProject.__init__`` runs
+        # :func:`rebase_to_config` on every video_sets key BEFORE we
+        # enumerate via ``project.video_list``, so a renamed
+        # project folder self-heals: stale path prefixes get
+        # rewritten to match the current ``config_path`` parent and
+        # persisted back to disk. No backwards-compat shim.
+        if not HAS_DLC:
+            raise ImportError(
+                f"dustrack.open: {single_path} is a DLC config.yaml but "
+                "deeplabcut is not installed. Install deeplabcut to resume "
+                "the project, or point at a video outside the project to use "
+                "DUSTrack standalone."
+            )
+        project = DLCProject(str(single_path))
+        video_paths = [Path(v) for v in project.video_list]
+        if len(video_paths) == 0:
+            raise ValueError(
+                f"dustrack.open: DLC project at {single_path.parent} has no "
+                "videos in its config['video_sets']. Add a video first or "
+                "point at a specific file."
+            )
+        multi = (project, video_paths)
+        single_path = None  # multi-video supersedes single dispatch
+    elif single_path is not None and single_path.is_dir():
         # Directory single-form: a DLC project root means "queue every
-        # video in the project" (1.2.0a3 multi-video). The historical
-        # single-video-only behavior for this form is preserved for
-        # the explicit ``config.yaml`` and inside-project video paths;
-        # only the project-folder shape gained the new semantics so
-        # users who scripted around the latter get a clear behavior
-        # change at the entry point.
+        # video in the project" (1.2.0a3 multi-video).
         if not _is_dlc_project_root(single_path):
             raise ValueError(
                 f"dustrack.open: {single_path!s} is a directory but doesn't "
@@ -8419,6 +9379,13 @@ def _resolve_multi_video_from_list(path_list: list) -> tuple:
                 f"dustrack.open: multi-video entry {p!s} is not a file. "
                 "Multi-video sessions accept videos inside one DLC project; "
                 "pass a project folder to open every video in the project."
+            )
+        if _is_dlc_config_yaml(p):
+            raise ValueError(
+                f"dustrack.open: multi-video entry {p!s} is a DLC "
+                "config.yaml. To open every video in a project, pass the "
+                "config.yaml (or the project folder) by itself -- not "
+                "as a list entry alongside videos."
             )
         cp = _find_dlc_config(p)
         if cp is None:

@@ -224,3 +224,110 @@ class TestListFormValidation:
         import dustrack
         with pytest.raises(ValueError, match="empty path sequence"):
             dustrack.open([])
+
+
+# ---------------------------------------------------------------------
+# config.yaml dispatch (1.2.0a3 follow-up 2026-05-22)
+#
+# Behavior change vs the pre-fix dispatch: picking a config.yaml now
+# queues every video in the project (multi-video), in
+# config['video_sets'] order. Pre-fix this opened video 0 only.
+# DLCProject.__init__ runs rebase_to_config so a renamed project
+# folder self-heals before enumerate -- covered structurally here
+# by relying on the stub's video_list (real rebase tested via the
+# DLCProject __init__ path, out of scope for this dispatch test).
+# ---------------------------------------------------------------------
+
+
+class TestConfigYamlDispatch:
+    def test_config_yaml_scalar_queues_every_video(
+        self, tmp_path, fake_dlcproject, capture_init_bundles,
+    ):
+        import dustrack
+        root, video_paths = _make_project(tmp_path)
+        cfg = root / "config.yaml"
+
+        tracker = dustrack.open(cfg)
+        assert tracker is not None
+        call = capture_init_bundles[0]
+        stub_project = call["project"]
+        # Every video in the project is queued, in stub.video_list
+        # order (i.e. what the project itself reports).
+        assert [str(p) for p in call["video_paths"]] == stub_project.video_list
+
+    def test_config_yaml_single_element_list_dispatches_same(
+        self, tmp_path, fake_dlcproject, capture_init_bundles,
+    ):
+        """``open([config.yaml])`` (1-element list-form) dispatches
+        identically to scalar ``open(config.yaml)`` -- multi-video.
+        This is the path the seed-modal's ``replace_active_with``
+        takes when the user picks a config.yaml."""
+        import dustrack
+        root, video_paths = _make_project(tmp_path)
+        cfg = root / "config.yaml"
+
+        tracker = dustrack.open([cfg])
+        assert tracker is not None
+        call = capture_init_bundles[0]
+        stub_project = call["project"]
+        assert [str(p) for p in call["video_paths"]] == stub_project.video_list
+
+    def test_config_yaml_no_videos_raises(
+        self, tmp_path, fake_dlcproject,
+    ):
+        import dustrack
+        root, _ = _make_project(tmp_path, videos=[])
+        cfg = root / "config.yaml"
+        with pytest.raises(ValueError, match="has no videos"):
+            dustrack.open(cfg)
+
+    def test_config_yaml_in_multi_video_list_rejected(
+        self, tmp_path, fake_dlcproject,
+    ):
+        """Multi-element list-form cannot mix config.yaml with
+        videos -- the dispatch is ambiguous, so we raise with a
+        clear pointer to the supported shape."""
+        import dustrack
+        root, paths = _make_project(tmp_path)
+        cfg = root / "config.yaml"
+        with pytest.raises(ValueError, match="is a DLC config.yaml"):
+            dustrack.open([paths[0], cfg])
+
+
+# ---------------------------------------------------------------------
+# _validate_bundle_paths config.yaml branch
+# ---------------------------------------------------------------------
+
+
+class TestValidateBundlePathsConfigYaml:
+    def test_validator_returns_multi_video_for_config_yaml(
+        self, tmp_path, fake_dlcproject,
+    ):
+        """``DUSTrack._validate_bundle_paths`` mirrors the
+        ``dustrack.open`` dispatch -- a config.yaml input returns a
+        ``(project, video_paths)`` tuple ready for multi-video init.
+        """
+        from dustrack.dlcinterface import DUSTrack
+        root, video_paths = _make_project(tmp_path)
+        cfg = root / "config.yaml"
+        # Bypass __init__ -- we only need the unbound method's logic.
+        stub_self = type("_S", (), {})()
+        project, paths = DUSTrack._validate_bundle_paths(stub_self, cfg)
+        assert project is not None
+        assert [str(p) for p in paths] == project.video_list
+
+    def test_validator_recurses_through_single_element_list(
+        self, tmp_path, fake_dlcproject,
+    ):
+        from dustrack.dlcinterface import DUSTrack
+        root, video_paths = _make_project(tmp_path)
+        cfg = root / "config.yaml"
+        # The list-form branch recurses via ``self._validate_bundle_paths(...)``
+        # for 1-element lists, so we bind the method onto the stub.
+        stub_self = type("_S", (), {})()
+        stub_self._validate_bundle_paths = (
+            DUSTrack._validate_bundle_paths.__get__(stub_self)
+        )
+        project, paths = stub_self._validate_bundle_paths([cfg])
+        assert project is not None
+        assert [str(p) for p in paths] == project.video_list

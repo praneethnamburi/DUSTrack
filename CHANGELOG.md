@@ -212,6 +212,168 @@ Full DUSTrack suite: 509 passed, 1 skipped.
 Plan archive at `pn-portfolio/plans/20260521_dustrack_1.2.0a3_multi_video_swap.md`
 (continued through 2026-05-22).
 
+---
+
+**Seed-window + welcome modal (2026-05-22)**. `dustrack.open()` with
+no path (the no-arg CLI form `dustrack`) now constructs a tiny
+seed-mode `DUSTrack` against a packaged synthetic video and mounts a
+welcome modal on top, instead of popping the legacy `QFileDialog`
+directly. The user picks via a "Choose video..." button (forwards to
+the same `QFileDialog`) or a clickable "Recent sessions" list fed
+from the unified `recent_sessions` history. On pick, the active
+bundle swaps in-place via the new `DUSTrack.replace_active_with`;
+no window teardown, no figure rebuild.
+
+The transition is powered by three new public methods that
+generalize the 1.2.0a3 multi-video machinery:
+
+- **`DUSTrack.add_video(path_or_paths, *, layer_name=None, set_active=False, **kwargs)`** —
+  validates, hydrates, and appends one or more new bundles to a live
+  tracker. Phase 1 (bare-video) and Phase 2 (single video in a DLC
+  project, or multi-video in one project) all routed through the
+  same surface. Multi-video adds queue the tail as `PENDING` and
+  spawn a `_BgHydrationWorker` (same daemon machinery the
+  multi-video launch uses). Returns the new bundles' indices.
+- **`DUSTrack.remove_video(index)`** — drops a bundle from the list.
+  If the index is the active bundle, swaps to a sibling first
+  (next-in-line, falls back to prev at the tail). Refuses to empty
+  the list. Surviving bundles are renumbered so `video_index`
+  matches the new list position.
+- **`DUSTrack.replace_active_with(path_or_paths, **kwargs)`** —
+  composition of `add_video(..., set_active=True)` + `remove_video`
+  of the old active bundle. Used by the seed-modal flow but
+  reusable for any "switch what's in the active slot" UX (planned
+  future affordances: an "Open recent" submenu inside an active
+  session, an "Add video" sidebar button).
+
+Bundle-state extension: `_BundleState.project` field added (Phase
+1 bundles store `None`; Phase 2 store the shared `DLCProject`). The
+swap contract grows by one rebind step — `DUSTrack._attach_bundle`
+now pushes the arriving bundle's project onto `self._dlcproject` so
+Workflow-button gating reads the right value across phase
+transitions.
+
+Cross-session history rework: the pre-1.2.0a3 split
+(`recent_videos: list[str]` + `recent_folders: list[str]` JSON keys)
+collapses into a unified `recent_sessions: list[list[str]]` shape
+where each entry is the full bundle list of one session (1-element
+for single-video, N-element for multi-video, the unified active
+path leading). One-time migration on first read folds the legacy
+keys into the new list and drops them from disk. Back-compat
+accessors (`record_recent_video` / `get_recent_videos` /
+`record_recent_folder` / `get_recent_folders`) project the unified
+list down for legacy callers. Cap dropped 25 → 20 to keep the
+modal's recent list short enough to scan at a glance.
+
+Close-guard short-circuits on `_is_seed_session = True`: the seed
+tracker never prompts to save on close and never writes its
+synthetic asset path to `recent_sessions`, even if the user
+accidentally interacts with the seed image before dismissing.
+Defensive fallback: if the packaged seed video fails to load
+(corrupt asset, codec mismatch, headless / no Qt window),
+`dustrack.open()` falls through to the legacy direct-picker flow
+unchanged.
+
+Asset: `dustrack/_data/seed_video.mp4` (8 frames, 64x64 mid-gray
+h264, 1.7 KB) + co-shipped `seed_video.mp4.dnav-toc` sidecar so the
+first-launch open skips dnav's TOC scan. Both ship via the existing
+flit package-data auto-include. Regeneratable via
+`tests/_assets/build_seed_video.py`.
+
+Tests: 1.2.0a3 baseline 436 → 555 (+119 this cut: 33 history
+migration + 16 seed-modal dispatch + 12 seed-asset + overlay
+rendering + 22 bundle-API). Manual Qt smoke confirmed
+`_open_seed_session` + `replace_active_with(picked)` against a copy
+of the seed asset.
+
+**Seed-window follow-ups (2026-05-22 same-day)**. Three fixes from
+first-use feedback on the welcome modal:
+
+- **Explicit Load button.** The modal's single-click commit (Choose
+  video... + recent-row click → instant load) was too easy to fire
+  by accident. The Browse button and the recent-row single-click
+  now *stage* a selection; a new primary Load button (disabled
+  until something is staged) is the commit point. A "Selected: ..."
+  preview line shows the staged pick. Double-click / Enter on a
+  recent row is preserved as a stage+commit shortcut for users who
+  remember the one-click path.
+- **Polluted-history prune.** The packaged seed asset path
+  (`dustrack/_data/seed_video.mp4`) is now dropped from
+  `recent_sessions` on read (one-time disk prune persisted on next
+  write). Pre-fix this leaked into history under some test /
+  fallback paths and surfaced as a clickable "session" that
+  re-opened the synthetic 64x64 seed video on selection. Defense-
+  in-depth: the writer (`record_recent_session`) also rejects the
+  seed path, so a future caller wiring its own save path can't
+  re-introduce the pollution.
+- **Post-swap zoom (datanavigator fix).**
+  `_QtImagePane.set_image()` now detects image-dimension changes
+  and rebuilds the scene rect + re-fits the view. Pre-fix the pane
+  fixed its scene rect on the first frame and never updated it,
+  so the seed-modal swap from the 64x64 synthetic video to the
+  user's pick left the new frame rendered in the old (64x64) scene
+  rect — the loaded video looked extremely zoomed in and `r`
+  (reset view) didn't help because `reset_view` re-fit to the
+  stale rect. Same-dimension calls (every normal per-frame update)
+  stay no-op; cross-dimension calls reset the transform, clear the
+  `user_adjusted` flag, and refit. Fix lives in dnav 1.5.0a1
+  (still unreleased).
+
+Tests: +21 this follow-up (16 modal staging/commit + 5 prune). End-
+to-end suite at 571 passed, 1 skipped.
+
+**Seed-window follow-up #2 (2026-05-22 same-day)**. Five fixes from
+the next round of first-use feedback:
+
+- **Picker scope expanded to DLC `config.yaml`.** The file dialog
+  now accepts `*.mp4 *.avi ... config.yaml` in its default filter row
+  (also offers a videos-only and a config-only row). Picking a
+  `config.yaml` lands in the new dispatch below.
+- **`dustrack.open('.../config.yaml')` now opens multi-video.** Pre-
+  fix the config.yaml-scalar form opened only video 0; that was a
+  holdover from the pre-multi-video era. New behavior queues every
+  video in `config['video_sets']` in YAML-stored order, mirroring the
+  project-folder form. `DLCProject.__init__` runs `rebase_to_config`
+  on each video_sets key BEFORE we enumerate via `project.video_list`,
+  so a project folder that was renamed since the YAML was written
+  self-heals on first open. No backwards-compat shim -- callers
+  scripting `open(config.yaml)` for single-video should switch to
+  the in-project video path. Multi-element lists that mix
+  `config.yaml` with videos now raise with a clear pointer to the
+  supported shapes. `DUSTrack._validate_bundle_paths` mirrors the
+  dispatch so `replace_active_with([config.yaml])` from the seed
+  modal does the same multi-video init.
+- **Modal: contextual single-button + history toggle.** The
+  Load-after-Choose flow was redundant on the file-dialog path
+  (the dialog's own Open click already commits intent). Replaced
+  with one button whose label flips: `Open` when no history row is
+  selected (clicking pops the file dialog and the dialog's return
+  commits straight to load); `Load` when a recent row is selected
+  (clicking commits the selected row). Recent-row single-click
+  toggles selection -- clicking the same row again deselects.
+  Double-click / Enter still commits a row in one gesture. The
+  helpful message above the button state-flips too (`Pick a video
+  or DLC config.yaml` ↔ `Click Load (or double-click) to open it`).
+- **Enhance-state first-visit defaults.** Pre-fix
+  `_set_enhance_state(None)` returned early on a swap to a bundle
+  with no saved enhance state, which meant the arriving bundle
+  inherited the leaving bundle's slider positions (set gamma=1.5 on
+  V1, swap to V2 first-visit, V2's sliders showed 1.5 instead of
+  the construction default). Fix snapshots construction-time
+  CLAHE/gamma/brightness into `_initial_enhance_state` once in
+  `__init__`; `_set_enhance_state(None)` now resets to that
+  snapshot. Returning visits still use the per-bundle saved state.
+- **Modal Qt.UserRole-data shortcut.** Double-click / Enter on a
+  recent row now reads the path list straight from the item's
+  `Qt.UserRole` data instead of doing a `widget.row(item)` -> index
+  -> `_recent_sessions[index]` round-trip. The round-trip raced
+  with the Qt event queue under parallel pytest-xdist workers and
+  occasionally returned `-1`, dropping the commit.
+
+Tests: +21 this follow-up (10 modal contextual/toggle + 6 config.yaml
+dispatch + 3 enhance-defaults + 2 misc). Full suite: 580 passed, 1
+skipped.
+
 ## [1.2.0a2] - unreleased
 
 Cold-open optimisation: two independent wins folded together — the
