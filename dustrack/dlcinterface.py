@@ -2378,6 +2378,63 @@ def _make_open_video_overlay_class():
 _SEED_VIDEO_PATH = Path(__file__).resolve().parent / "_data" / "seed_video.mp4"
 
 
+def _show_first_paint_notice(tracker) -> None:
+    """One-shot modal asking the user to dismiss the dialog (or alt-tab
+    away and back, or click any sidebar dropdown) to force a paint of
+    the trace canvas.
+
+    Works around the multi-video ``draw_idle`` delivery failure
+    documented in ``feedback_mpl_canvas_warmup``: in multi-video Qt
+    sessions the matplotlib trace canvas's deferred paint events
+    aren't reliably delivered, so the trace pane can stay stale on
+    first load until some external Qt event (window resize, modal
+    dismiss, dropdown popup close, alt-tab) drains the paint queue.
+    Clicking OK on this modal IS that external event -- the dismiss
+    itself delivers a paintEvent and the trace refreshes.
+
+    No-op on single-video sessions (no bug there) and when no Qt
+    window is available (mpl-fallback / headless).
+    """
+    if os.environ.get("DUSTRACK_SUPPRESS_FIRST_PAINT_NOTICE"):
+        return
+    bundles = getattr(tracker, "_bundles", None)
+    if not bundles or len(bundles) < 2:
+        return
+    qt_window = None
+    try:
+        qt_window = tracker._find_qt_window()
+    except Exception:  # noqa: BLE001
+        return
+    if qt_window is None:
+        return
+    try:
+        ConfirmOverlay = _make_confirm_overlay_class()
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        ConfirmOverlay(
+            qt_window,
+            title="Click OK to finish loading",
+            message=(
+                "Click OK to start your multi-video session"
+                # "Multi-video sessions need one Qt event to deliver the "
+                # "first repaint of the trace canvas (technical detail: "
+                # "mpl's deferred-draw chain is unreliable across multiple "
+                # "matplotlib canvases on the same window).\n\n"
+                # "Click OK -- the dismiss itself triggers the repaint. "
+                # "Alternative gestures that also work: alt-tab away and "
+                # "back, or click any sidebar dropdown.\n\n"
+                # "One-time per session."
+            ),
+            buttons=[("OK", "primary")],
+            default="OK",
+            severity="info",
+        ).exec_()
+    except Exception:  # noqa: BLE001
+        # Defensive: a failed notice should not block the session.
+        pass
+
+
 def _open_seed_session(**dustrack_kwargs):
     """Construct a DUSTrack instance against the packaged seed video.
 
@@ -6039,10 +6096,10 @@ class DUSTrack(_DUSTrackBase):
         # whether (a) ``draw_idle`` is being scheduled but never
         # delivered, or (b) ``set_data`` is not setting stale=True
         # after the first paint cycle.
-        try:
-            self.figure.canvas.update()
-        except Exception:  # noqa: BLE001
-            pass
+        # try:
+        #     self.figure.canvas.update()
+        # except Exception:  # noqa: BLE001
+        #     pass
         try:
             self.figure.canvas.flush_events()
         except Exception:  # noqa: BLE001
@@ -9149,6 +9206,7 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
                 # CLI's traceback rendering handles it.
                 seed_tracker._is_seed_session = True
                 raise
+            _show_first_paint_notice(seed_tracker)
             return seed_tracker
         # Fallback: seed construction failed OR no Qt window.
         if seed_tracker is not None:
@@ -9273,6 +9331,7 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             **dustrack_kwargs,
         )
         _attach_bundles_or_fallback(tracker, project, video_paths)
+        _show_first_paint_notice(tracker)
         return tracker
 
     # Single-video dispatch (Phase 1 bare video, or Phase 2 explicit
