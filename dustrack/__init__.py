@@ -91,7 +91,7 @@ if _importlib_util.find_spec("deeplabcut") is not None:
 # dlcinterface pulls pointtracking + lk_filter; gui pulls dlcinterface;
 # open pulls gui + dlcinterface.
 from .lk_opticalflow import lucas_kanade, lucas_kanade_rstc
-from .pointtracking import VideoAnnotation, VideoAnnotations
+from .annotations import VideoAnnotation, VideoAnnotations
 from .lk_filter import lk_moving_average_filter
 from .dlcinterface import DLCProject
 from .gui import DUSTrack
@@ -164,8 +164,10 @@ VideoAnnotation.postprocess = lk_moving_average_filter
 # Pickles produced under the old paths bake module names into their
 # headers. Register sys.modules aliases so ``pickle.load`` can still
 # resolve classes like ``dustrack.pointtracking.VideoAnnotation`` (the
-# pointtracking module name itself is kept until Phase E swaps it for
-# ``annotations``; see the alias added at that point).
+# pointtracking module name was kept in Phase E because _DUSTrackBase
+# still lives there; pointtracking.py re-exports VideoAnnotation /
+# VideoAnnotations / _TrackedFrameDict from dustrack.annotations so
+# the pickle path resolves naturally with no sys.modules trickery).
 import sys as _sys
 from . import lk_opticalflow as _lk_opticalflow
 from . import lk_filter as _lk_filter

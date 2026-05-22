@@ -36,7 +36,7 @@ from . import dlcloader as _dlcloader
 from ._layer_names import _is_dense_layer_name
 from .dlcloader import HAS_DLC, _ensure_dlc_loaded
 from .lk_filter import lk_moving_average_filter  # noqa: F401 -- kept for back-compat with callers of VideoFileManager who hot-import siblings
-from .pointtracking import VideoAnnotation
+from .annotations import VideoAnnotation
 
 
 def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coords: list):

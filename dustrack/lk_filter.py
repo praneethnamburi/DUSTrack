@@ -67,7 +67,7 @@ import numpy as np
 from tqdm import tqdm
 
 from .lk_opticalflow import _lk_track_frames
-from .pointtracking import VideoAnnotation
+from .annotations import VideoAnnotation
 
 
 def gray(video_frame: np.ndarray) -> np.ndarray:

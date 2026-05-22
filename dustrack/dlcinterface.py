@@ -30,7 +30,8 @@ import datanavigator as dnav
 from datanavigator import VideoReader, cpu
 
 from .lk_filter import lk_moving_average_filter
-from .pointtracking import VideoAnnotation, VideoAnnotations, _DUSTrackBase
+from .annotations import VideoAnnotation, VideoAnnotations
+from .pointtracking import _DUSTrackBase
 from .seed import (
     get_seed_bundles_root,
     import_seed_bundle_into_project,

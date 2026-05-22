@@ -538,7 +538,7 @@ def test_video_annotation_to_traces(ann_object):
 
 
 @patch(
-    "dustrack.pointtracking.pysampled", create=True
+    "dustrack.annotations.pysampled", create=True
 )  # Mock pysampled if not installed or for isolation
 def test_video_annotation_to_signal(mock_pysampled, ann_object, ann_object_no_video):
     mock_data = MagicMock()
@@ -752,7 +752,7 @@ def test_video_annotation_keep_overlapping_frames_no_overlap_aborts():
     assert ann.frames == [0, 5]
 
 
-@patch("dustrack.pointtracking.pysampled", create=True)  # Mock pysampled
+@patch("dustrack.annotations.pysampled", create=True)  # Mock pysampled
 def test_video_annotation_get_area(mock_pysampled, ann_object, ann_object_no_video):
     mock_data = MagicMock()
     mock_pysampled.Data.return_value = mock_data
