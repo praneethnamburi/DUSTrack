@@ -181,9 +181,9 @@ class TestCommit:
     ):
         v = tmp_path / "picked.mp4"
         v.write_bytes(b"")
-        from dustrack import dlcinterface
+        from dustrack import _overlays
         monkeypatch.setattr(
-            dlcinterface, "_prompt_for_videos",
+            _overlays, "_prompt_for_videos",
             lambda parent=None: [v],
         )
         ov = overlay_cls(main_window, recent_sessions=[])
@@ -197,9 +197,9 @@ class TestCommit:
     def test_open_mode_cancel_stays_in_modal(
         self, main_window, overlay_cls, monkeypatch,
     ):
-        from dustrack import dlcinterface
+        from dustrack import _overlays
         monkeypatch.setattr(
-            dlcinterface, "_prompt_for_videos",
+            _overlays, "_prompt_for_videos",
             lambda parent=None: None,
         )
         ov = overlay_cls(main_window, recent_sessions=[])
