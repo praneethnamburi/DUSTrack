@@ -5569,24 +5569,43 @@ class DUSTrack(_DUSTrackBase):
                 self._ax_trace_x.set_ylim(self._ax_lims['y_trace_x'])
             if self._ax_lims['y_trace_y'][0] is not None:
                 self._ax_trace_y.set_ylim(self._ax_lims['y_trace_y'])
-        # Force the queued ``canvas.draw_idle()`` from
-        # ``super().update()`` to actually paint *now*. On QtAgg
-        # ``flush_events()`` is a thin wrapper over
-        # ``QApplication.processEvents()`` and drains the queued
-        # draw without scheduling a second full render the way
-        # ``canvas.draw()`` would. Bench: ~22.6 ms / 44 fps median
-        # on the 12-bundle pia02 session (probe 28).
+        # Two-step paint trigger for multi-video reliability:
         #
-        # KNOWN MULTI-VIDEO LIMITATION: in interactive multi-video
-        # sessions the trace pane can still stay stale on the first
-        # visit to a bundle after open -- the user has to flip
-        # videos once (Alt+Right then Alt+Left, or click the nav
-        # buttons) for `draw_idle` to start firing reliably. An
-        # unconditional ``canvas.draw()`` here would fix this but
-        # carries a ~3x per-frame cost (probe 28: 76 ms / 13 fps).
-        # Documented as the lesser of two evils until the root
-        # cause of ``draw_idle`` starvation is diagnosed -- top
-        # entry on the 1.2.0a3 perf-profiling agenda.
+        # (1) ``QWidget.update()`` on the canvas posts a Qt-level
+        #     paintEvent. Cheap (coalesced if one is already pending)
+        #     and bypasses mpl's ``draw_idle`` chain, which is the
+        #     diagnosed failure mode in multi-video sessions: every
+        #     mechanism that empirically repairs the stale trace pane
+        #     (dropdown popup closing, modal Cancel, alt-tab, opening
+        #     the keyboard-shortcuts QDialog, window resize, the zoom
+        #     tool's ``copy_from_bbox``) does so by causing the Qt
+        #     event dispatcher to deliver a paintEvent to the canvas
+        #     widget. ``draw_idle()``'s ``QTimer.singleShot(0,
+        #     _draw_idle)`` evidently isn't being delivered after
+        #     multi-video init even though ``figure.stale`` is True
+        #     and ``_draw_pending`` looks correct.
+        # (2) ``flush_events()`` (wraps ``QApplication.processEvents``)
+        #     then drains the posted paintEvent synchronously so the
+        #     repaint lands before this ``update()`` returns. Without
+        #     the drain the paintEvent waits for the next idle, which
+        #     in interactive multi-video can be too late (next user
+        #     keystroke arrives first and the trace stays stale until
+        #     the next external paint trigger).
+        #
+        # Bench: paintEvent + processEvents should be comparable to
+        # the prior ``flush_events()``-only path (~22.6 ms / 44 fps on
+        # probe 28). Falls back silently on the mpl-fallback (non-Qt)
+        # path. If this combo still leaves the multi-video trace
+        # stale, the next diagnostic step is to log
+        # ``figure.stale`` + ``canvas._draw_pending`` at the entry
+        # to ``update()`` and around each repair trigger to pinpoint
+        # whether (a) ``draw_idle`` is being scheduled but never
+        # delivered, or (b) ``set_data`` is not setting stale=True
+        # after the first paint cycle.
+        try:
+            self.figure.canvas.update()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.figure.canvas.flush_events()
         except Exception:  # noqa: BLE001

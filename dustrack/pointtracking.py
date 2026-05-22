@@ -658,9 +658,11 @@ class _DUSTrackBase(VideoBrowser):
             return
         if inaxes is self._ax_trace_x or inaxes is self._ax_trace_y:
             self._reset_traces_to_full_video(event=event)
+            self.update()
             return
         self._image_pane.reset_view()
         self._reset_traces_to_full_video(event=event)
+        self.update()
 
     def _reset_view_to_data_extent(self, event: Any | None = None) -> None:
         """Cursor-aware ``alt+r`` dispatch (Tier 2 only); union autoscale.
@@ -684,9 +686,11 @@ class _DUSTrackBase(VideoBrowser):
                 event=event,
                 axes=[self._ax_trace_x, self._ax_trace_y],
             )
+            self.update()
             return
         self._image_pane.reset_view()
         self.reset_axes(axis="both", event=event)
+        self.update()
 
     def _reset_traces_to_full_video(self, event: Any | None = None) -> None:
         """Trace pair: x = ``(0, ann.n_frames)``, y fit to active label.
