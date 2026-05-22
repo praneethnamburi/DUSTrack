@@ -168,6 +168,27 @@ trace pane: `_revision`-keyed trace cache hits on every non-first
 frame, the only per-update cost is the image decode + frame-marker
 reposition + base-class `plt.draw()`.
 
+### Sidebar nav row gains a video-name dropdown (2026-05-22 follow-up)
+
+The central `1 / N` label in the `◀ … ▶` nav row at the top of the
+sidebar is now a `QComboBox` listing every bundle as
+`"i. <stem>"` (1-based) so the user can both *see which video they
+are working on* and *jump directly to any other video in the
+session*. Per-item tooltip carries the full path; the combo's own
+hover tooltip shows the path of the currently-displayed video.
+Hydration progress that used to render as the
+`(X ready)` suffix now appears as per-item markers
+(`…` pending/hydrating, `✗` failed, blank = ready) so the same
+information stays visible without a separate label.
+
+The ◀ / ▶ buttons and `Alt+Left` / `Alt+Right` key bindings work
+unchanged; programmatic syncs (`setCurrentIndex`) are wrapped in
+`blockSignals` and the dropdown listens on `activated[int]` (user
+interaction only) so a sequential nav doesn't re-enter `swap_to`.
+`_sync_nav_combo` rebuilds the items list only when the bundle
+fnames change (signature-keyed); bg-hydration progress ticks take
+the cheap in-place per-item update path.
+
 ### Tests
 
 53 new tests across `tests/test_bundle.py`,
@@ -178,11 +199,15 @@ reposition + base-class `plt.draw()`.
 raise per the strict-single-project contract),
 `tests/test_save_on_close.py` (stubs updated to the multi-bundle
 sweep API), `tests/test_user_config_recent.py` (stubs use
-`_bundles` instead of the legacy `_video_queue`). End-to-end smoke
-in `tests/qt_learning/26_smoke_multi_video.py` (programmatic),
+`_bundles` instead of the legacy `_video_queue`). The 2026-05-22
+dropdown follow-up rewrote the four `TestRefreshNavButtons` tests
+in `test_swap_to.py` against an in-process `_StubCombo` (replaces
+the prior `_StubLabel`) and added one no-rebuild-on-progress-tick
+case (5 cases total). End-to-end smoke in
+`tests/qt_learning/26_smoke_multi_video.py` (programmatic),
 `27_visual_smoke.py` (screenshot harness), and
 `28_benchmark_multi_video_update.py` (per-update paint cost).
-Full DUSTrack suite: 507 passed, 1 skipped.
+Full DUSTrack suite: 509 passed, 1 skipped.
 
 Plan archive at `pn-portfolio/plans/20260521_dustrack_1.2.0a3_multi_video_swap.md`
 (continued through 2026-05-22).

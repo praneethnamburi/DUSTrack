@@ -2445,7 +2445,8 @@ class DUSTrack(_DUSTrackBase):
         self._nav_widget = None
         self._nav_prev_btn = None
         self._nav_next_btn = None
-        self._nav_label = None
+        self._nav_combo = None
+        self._nav_combo_signature = None
         self._add_nav_widget()
         self._add_video_nav_key_bindings()
         self._refresh_nav_buttons()
@@ -6488,13 +6489,21 @@ class DUSTrack(_DUSTrackBase):
     # ------------------------------------------------------------------
 
     def _add_nav_widget(self) -> None:
-        """Mount the ``◀ k/N ▶`` nav row at the TOP of the rc2 left
-        column dock.
+        """Mount the ``◀ <video dropdown> ▶`` nav row at the TOP of the
+        rc2 left column dock.
+
+        The central widget is a :class:`QComboBox` listing every
+        bundle's video as ``"i. <stem>"`` (1-based); the user can
+        either click ◀ / ▶ (Alt+Left / Alt+Right) for sequential
+        navigation or select directly from the dropdown to jump to
+        an arbitrary video. Per-item tooltips carry the full path so
+        the user can confirm which file a stem refers to on hover.
 
         Always rendered -- when ``N == 1`` (single-video session) the
-        arrows are disabled but the row stays visible so the affordance
-        is discoverable when a multi-video session is opened later.
-        No-op on the mpl-fallback path.
+        arrows are disabled and the dropdown shows a single entry, but
+        the row stays visible so the affordance is discoverable when a
+        multi-video session is opened later. No-op on the mpl-fallback
+        path.
         """
         qt_window = self._find_qt_window()
         if qt_window is None:
@@ -6505,7 +6514,7 @@ class DUSTrack(_DUSTrackBase):
         from qtpy.QtCore import Qt
         from qtpy.QtGui import QColor
         from qtpy.QtWidgets import (
-            QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QWidget,
+            QComboBox, QFrame, QHBoxLayout, QSizePolicy, QToolButton, QWidget,
         )
 
         row = QWidget(col.host)
@@ -6519,9 +6528,15 @@ class DUSTrack(_DUSTrackBase):
         prev_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         prev_btn.clicked.connect(lambda _checked=False: self.swap_prev())
 
-        label = QLabel("1 / 1", row)
-        label.setAlignment(Qt.AlignCenter)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo = QComboBox(row)
+        combo.setFocusPolicy(Qt.NoFocus)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # ``activated[int]`` fires only on user interaction (click /
+        # keyboard selection) -- not on programmatic
+        # ``setCurrentIndex``, which the post-swap sync uses. That's
+        # the right signal here: a sync-after-swap would otherwise
+        # recurse into ``swap_to``.
+        combo.activated.connect(self._on_nav_combo_activated)
 
         next_btn = QToolButton(row)
         next_btn.setText("▶")  # ▶
@@ -6530,7 +6545,7 @@ class DUSTrack(_DUSTrackBase):
         next_btn.clicked.connect(lambda _checked=False: self.swap_next())
 
         layout.addWidget(prev_btn)
-        layout.addWidget(label, stretch=1)
+        layout.addWidget(combo, stretch=1)
         layout.addWidget(next_btn)
 
         # Pale-blue palette echoing the Workflow group bg so the nav
@@ -6553,7 +6568,20 @@ class DUSTrack(_DUSTrackBase):
         self._nav_widget = row
         self._nav_prev_btn = prev_btn
         self._nav_next_btn = next_btn
-        self._nav_label = label
+        self._nav_combo = combo
+
+    def _on_nav_combo_activated(self, index: int) -> None:
+        """User-triggered dropdown selection -> swap to that bundle.
+
+        On a rejected swap (out-of-bounds, hydration-failed) we
+        re-sync the combo back to the still-active index so the
+        visible selection matches reality.
+        """
+        if index == self._active_index:
+            return
+        ok = self.swap_to(index)
+        if not ok:
+            self._refresh_nav_buttons()
 
     def _add_video_nav_key_bindings(self) -> None:
         """Register ``Alt+Left`` / ``Alt+Right`` for previous / next
@@ -6573,27 +6601,92 @@ class DUSTrack(_DUSTrackBase):
             pass
 
     def _refresh_nav_buttons(self) -> None:
-        """Sync the nav row's enable states + position label to
+        """Sync the nav row's dropdown + enable states to
         ``self._bundles`` + ``self._active_index``. Idempotent;
-        cheap; safe to call from any state-change site.
+        cheap; safe to call from any state-change site (swap, bundle
+        init, bg-hydration progress tick).
         """
         if self._nav_widget is None:
             return
         n = max(len(self._bundles), 1)
         i = self._active_index
-        if self._nav_label is not None:
-            ready = sum(1 for b in self._bundles if b.is_ready)
-            if n > 1 and ready < n:
-                # Slice 2 surfaces background-hydration progress in
-                # the label; pre-Slice-2 every bundle is ready
-                # synchronously so the suffix never renders.
-                self._nav_label.setText(f"{i + 1} / {n}  ({ready} ready)")
-            else:
-                self._nav_label.setText(f"{i + 1} / {n}")
+        combo = getattr(self, "_nav_combo", None)
+        if combo is not None:
+            self._sync_nav_combo(combo, n=n, active=i)
         if self._nav_prev_btn is not None:
             self._nav_prev_btn.setEnabled(i > 0)
         if self._nav_next_btn is not None:
             self._nav_next_btn.setEnabled(i < n - 1)
+
+    @staticmethod
+    def _format_nav_combo_item(bundle, idx: int) -> str:
+        """Format one dropdown row as ``"i. <stem>"`` with a trailing
+        marker for non-ready bundles. Exposed on the class (not as a
+        free function) so the corresponding swap_to tests can target
+        it directly without importing more module-level surface area.
+        """
+        stem = Path(bundle.fname).stem
+        label = f"{idx + 1}. {stem}"
+        state = bundle.hydration_state
+        if state == HYDRATION_HYDRATING or state == HYDRATION_PENDING:
+            return f"{label}  …"
+        if state == HYDRATION_FAILED:
+            return f"{label}  ✗"
+        return label
+
+    def _sync_nav_combo(self, combo, *, n: int, active: int) -> None:
+        """Bring the dropdown's items + selection + tooltips in line
+        with the current bundle list.
+
+        Programmatic mutations are wrapped in ``blockSignals`` so the
+        ``activated`` connection (user-only) is never re-entered from
+        this path. When the bundle identity list is unchanged, only
+        per-item suffixes + tooltips + the active selection are
+        touched -- a hot path during bg-hydration progress ticks.
+        """
+        try:
+            from qtpy.QtCore import Qt
+            tooltip_role = Qt.ToolTipRole
+        except Exception:  # noqa: BLE001 -- no qtpy in this env
+            tooltip_role = 3  # Qt::ToolTipRole
+
+        bundles = self._bundles
+        # Snapshot the fname list so a count-only check below is
+        # robust to in-place mutations of self._bundles.
+        fnames = [str(b.fname) for b in bundles]
+        signature = tuple(fnames)
+        prior_signature = getattr(self, "_nav_combo_signature", None)
+
+        combo.blockSignals(True)
+        try:
+            if signature != prior_signature:
+                combo.clear()
+                for j, b in enumerate(bundles):
+                    combo.addItem(self._format_nav_combo_item(b, j))
+                    combo.setItemData(j, fnames[j], tooltip_role)
+                if not bundles:
+                    # Placeholder for the (rare) zero-bundle stub
+                    # state so the widget isn't empty.
+                    combo.addItem("(no videos)")
+                self._nav_combo_signature = signature
+            else:
+                # Same bundles, possibly different hydration states.
+                for j, b in enumerate(bundles):
+                    text = self._format_nav_combo_item(b, j)
+                    if combo.itemText(j) != text:
+                        combo.setItemText(j, text)
+                    combo.setItemData(j, fnames[j], tooltip_role)
+            if bundles:
+                clamped = max(0, min(active, len(bundles) - 1))
+                if combo.currentIndex() != clamped:
+                    combo.setCurrentIndex(clamped)
+                # Combo's own hover tooltip: full path of the
+                # currently-displayed video.
+                combo.setToolTip(fnames[clamped])
+            else:
+                combo.setToolTip("")
+        finally:
+            combo.blockSignals(False)
 
 
 # Bind ``builtins.open`` under a private alias inside this module so

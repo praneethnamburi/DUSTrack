@@ -204,6 +204,13 @@ _BOUND_DUSTRACK_METHODS = (
     "_capture_statevar_selections", "_restore_statevar_selections",
     "_get_image_view_state", "_set_image_view_state",
     "_refresh_nav_buttons", "_notify_bundle_failure",
+    "_sync_nav_combo",
+)
+# Staticmethods on DUSTrack -- attach to the stub as bare functions
+# (no ``__get__(shell)`` binding, which would inject ``shell`` as the
+# first positional arg).
+_STATIC_DUSTRACK_METHODS = (
+    "_format_nav_combo_item",
 )
 
 
@@ -230,7 +237,8 @@ def _make_stub_shell(bundles, active_index=0, statevars=None):
         _nav_widget=None,
         _nav_prev_btn=None,
         _nav_next_btn=None,
-        _nav_label=None,
+        _nav_combo=None,
+        _nav_combo_signature=None,
         statevariables=statevars or _StubStateVars([]),
         _ALL_TRACKED_STATEVARS=D._ALL_TRACKED_STATEVARS,
         _BROADCAST_STATEVARS=D._BROADCAST_STATEVARS,
@@ -246,6 +254,8 @@ def _make_stub_shell(bundles, active_index=0, statevars=None):
     # with AttributeError on the SimpleNamespace.
     for name in _BOUND_DUSTRACK_METHODS:
         setattr(shell, name, getattr(D, name).__get__(shell))
+    for name in _STATIC_DUSTRACK_METHODS:
+        setattr(shell, name, getattr(D, name))
     # Trace view-state snapshot/restore methods (1.2.0a3 follow-up:
     # per-bundle trace axes pan/zoom preservation).
     for name in ("_get_trace_view_state", "_set_trace_view_state"):
@@ -477,48 +487,108 @@ class TestSwapToBehavior:
 # ---------------------------------------------------------------------
 
 
+class _StubCombo:
+    """In-memory QComboBox stand-in -- mirrors just enough of the
+    QComboBox API for :meth:`DUSTrack._sync_nav_combo` to drive it.
+    """
+
+    def __init__(self):
+        self.items = []  # list of [text, tooltip]
+        self._current = 0
+        self.tooltip = ""
+        self._blocked = False
+
+    def blockSignals(self, flag):
+        prev = self._blocked
+        self._blocked = bool(flag)
+        return prev
+
+    def clear(self):
+        self.items = []
+        self._current = 0
+
+    def addItem(self, text):
+        self.items.append([text, None])
+
+    def count(self):
+        return len(self.items)
+
+    def itemText(self, idx):
+        return self.items[idx][0]
+
+    def setItemText(self, idx, text):
+        self.items[idx][0] = text
+
+    def setItemData(self, idx, value, role):  # role ignored in the stub
+        self.items[idx][1] = value
+
+    def itemData(self, idx, role=None):
+        return self.items[idx][1]
+
+    def currentIndex(self):
+        return self._current
+
+    def setCurrentIndex(self, idx):
+        self._current = idx
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+
 class TestRefreshNavButtons:
-    def test_nav_label_format_single_video(self):
+    def test_nav_combo_format_single_video(self):
         from dustrack.dlcinterface import DUSTrack as D
 
         b0 = _make_bundle("/v0.mp4", 0, [_make_annotation("a")])
         shell = _make_stub_shell([b0])
-        label = SimpleNamespace(text=None)
-        label.setText = lambda t: setattr(label, "text", t)
-        prev_btn = SimpleNamespace(enabled=None)
-        prev_btn.setEnabled = lambda v: setattr(prev_btn, "enabled", v)
-        next_btn = SimpleNamespace(enabled=None)
-        next_btn.setEnabled = lambda v: setattr(next_btn, "enabled", v)
-        shell._nav_widget = object()  # non-None so the method proceeds
-        shell._nav_label = label
+        combo = _StubCombo()
+        prev_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(prev_btn, "enabled", v))
+        next_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(next_btn, "enabled", v))
+        shell._nav_widget = object()
+        shell._nav_combo = combo
+        shell._nav_combo_signature = None
         shell._nav_prev_btn = prev_btn
         shell._nav_next_btn = next_btn
 
         D._refresh_nav_buttons(shell)
-        assert label.text == "1 / 1"
+        assert combo.count() == 1
+        assert combo.itemText(0) == "1. v0"
+        assert combo.itemData(0) == str(Path("/v0.mp4"))
+        assert combo.tooltip == str(Path("/v0.mp4"))
+        assert combo.currentIndex() == 0
         assert prev_btn.enabled is False
         assert next_btn.enabled is False
 
-    def test_nav_label_format_multi_video_all_ready(self):
+    def test_nav_combo_format_multi_video_all_ready(self):
         from dustrack.dlcinterface import DUSTrack as D
 
-        bundles = [_make_bundle(f"/v{i}.mp4", i, [_make_annotation(f"a{i}")])
+        bundles = [_make_bundle(f"/dir/v{i}.mp4", i, [_make_annotation(f"a{i}")])
                    for i in range(5)]
         shell = _make_stub_shell(bundles, active_index=2)
-        label = SimpleNamespace(text=None, setText=lambda t: setattr(label, "text", t))
-        prev_btn = SimpleNamespace(enabled=None, setEnabled=lambda v: setattr(prev_btn, "enabled", v))
-        next_btn = SimpleNamespace(enabled=None, setEnabled=lambda v: setattr(next_btn, "enabled", v))
+        combo = _StubCombo()
+        prev_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(prev_btn, "enabled", v))
+        next_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(next_btn, "enabled", v))
         shell._nav_widget = object()
-        shell._nav_label = label
+        shell._nav_combo = combo
+        shell._nav_combo_signature = None
         shell._nav_prev_btn = prev_btn
         shell._nav_next_btn = next_btn
 
         D._refresh_nav_buttons(shell)
-        assert label.text == "3 / 5"
+        assert combo.count() == 5
+        for i in range(5):
+            assert combo.itemText(i) == f"{i + 1}. v{i}"
+            assert combo.itemData(i) == str(Path(f"/dir/v{i}.mp4"))
+        assert combo.currentIndex() == 2
+        assert combo.tooltip == str(Path("/dir/v2.mp4"))
         assert prev_btn.enabled is True
         assert next_btn.enabled is True
 
-    def test_nav_label_format_partial_hydration_shows_ready_count(self):
+    def test_nav_combo_format_partial_hydration_marks_pending(self):
         from dustrack.dlcinterface import DUSTrack as D
 
         ready_bundle = _make_bundle("/v0.mp4", 0, [_make_annotation("a")])
@@ -526,16 +596,75 @@ class TestRefreshNavButtons:
                                hydration_state=HYDRATION_PENDING)
         bundles = [ready_bundle, pending]
         shell = _make_stub_shell(bundles)
-        label = SimpleNamespace(text=None, setText=lambda t: setattr(label, "text", t))
-        prev_btn = SimpleNamespace(enabled=None, setEnabled=lambda v: setattr(prev_btn, "enabled", v))
-        next_btn = SimpleNamespace(enabled=None, setEnabled=lambda v: setattr(next_btn, "enabled", v))
+        combo = _StubCombo()
+        prev_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(prev_btn, "enabled", v))
+        next_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(next_btn, "enabled", v))
         shell._nav_widget = object()
-        shell._nav_label = label
+        shell._nav_combo = combo
+        shell._nav_combo_signature = None
         shell._nav_prev_btn = prev_btn
         shell._nav_next_btn = next_btn
 
         D._refresh_nav_buttons(shell)
-        assert label.text == "1 / 2  (1 ready)"
+        assert combo.itemText(0) == "1. v0"
+        assert combo.itemText(1) == "2. v1  …"
+
+    def test_nav_combo_marks_failed_bundle(self):
+        from dustrack.dlcinterface import DUSTrack as D
+
+        ready_bundle = _make_bundle("/v0.mp4", 0, [_make_annotation("a")])
+        failed = _BundleState(fname=Path("/v1.mp4"), video_index=1,
+                              hydration_state=HYDRATION_FAILED,
+                              hydration_error="boom")
+        shell = _make_stub_shell([ready_bundle, failed])
+        combo = _StubCombo()
+        prev_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(prev_btn, "enabled", v))
+        next_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(next_btn, "enabled", v))
+        shell._nav_widget = object()
+        shell._nav_combo = combo
+        shell._nav_combo_signature = None
+        shell._nav_prev_btn = prev_btn
+        shell._nav_next_btn = next_btn
+
+        D._refresh_nav_buttons(shell)
+        assert combo.itemText(1) == "2. v1  ✗"
+
+    def test_nav_combo_resync_after_hydration_progress_does_not_rebuild(self):
+        """When a pending bundle flips to ready, the per-item suffix
+        updates but the items list isn't cleared and rebuilt -- the
+        signature-based fast path is taken."""
+        from dustrack.dlcinterface import DUSTrack as D
+
+        ready_bundle = _make_bundle("/v0.mp4", 0, [_make_annotation("a")])
+        pending = _BundleState(fname=Path("/v1.mp4"), video_index=1,
+                               hydration_state=HYDRATION_PENDING)
+        shell = _make_stub_shell([ready_bundle, pending])
+        combo = _StubCombo()
+        prev_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(prev_btn, "enabled", v))
+        next_btn = SimpleNamespace(enabled=None,
+                                   setEnabled=lambda v: setattr(next_btn, "enabled", v))
+        shell._nav_widget = object()
+        shell._nav_combo = combo
+        shell._nav_combo_signature = None
+        shell._nav_prev_btn = prev_btn
+        shell._nav_next_btn = next_btn
+
+        D._refresh_nav_buttons(shell)
+        # The id of the inner item list mirrors the QComboBox model;
+        # the fast path mutates entries in place, the slow path
+        # rebuilds.
+        first_pass_items = combo.items
+        # Bundle 1 now reports ready -- flip it without changing the
+        # fnames list.
+        pending.hydration_state = HYDRATION_READY
+        D._refresh_nav_buttons(shell)
+        assert combo.items is first_pass_items  # same list object
+        assert combo.itemText(1) == "2. v1"
 
     def test_no_nav_widget_is_silent_noop(self):
         from dustrack.dlcinterface import DUSTrack as D
