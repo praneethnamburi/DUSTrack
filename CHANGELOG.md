@@ -1,6 +1,179 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.2.0a3] - unreleased
+
+In-session multi-video navigation (Roadmap *Next 1.2.0* item 3). A
+single DUSTrack `QMainWindow` now hosts a queue of bundles, one per
+video, with a `◀ k/N ▶` nav row at the top of the sidebar and
+`Alt+Left` / `Alt+Right` key bindings. The active session swaps in
+place — no figure teardown, no window rebuild. Per-video state
+(active layer, overlay, current frame, active label, label range,
+frozen axes, trace pane pan/zoom, image-pane zoom + pan, CLAHE +
+gamma + brightness, unsaved edits, frames-of-interest) persists
+across swaps: swap-back returns to the exact visual state the user
+left. The one statevar that broadcasts across bundles is
+`number_keys` (select/place mode — UI-mode, video-agnostic).
+
+Strict-single-DLC-project contract for this cut: every video in a
+multi-video session must belong to the same DLC project. Two entry
+shapes:
+
+- **`dustrack.open(project_folder)`** queues every video in
+  `project.config['video_sets']` (project order). Behavior change
+  from <=1.2.0a2 which opened only the first video.
+- **`dustrack.open([v0, v1, ...])`** queues exactly those videos
+  in the given order; every entry must resolve to the same project.
+
+Bare-video lists, mixed-project lists, and `config.yaml` paths all
+raise `ValueError` with an actionable message. Phase 1 (no DLC
+project) multi-video, mixed-mode queues, and ad-hoc
+`add_videos`-on-the-fly are out of scope for 1.2.0a3.
+
+The active bundle (video 0) opens synchronously so the user can
+start working immediately; bundles 1..N are hydrated by a daemon
+background worker in parallel. Worker pipeline: off-thread data
+half (VideoReader open, `<video>_annotations*.json` discovery, DLC
+`.h5` reads, VideoAnnotation construction with empty axis lists)
+→ thread-safe finalisation queue → Qt-thread poller (`QTimer` on
+the QMainWindow, 50 ms) drains the queue and runs the artist-setup
+half (per-layer `add_marker_group` on the image pane, trace-axis
+binding, immediate `ann.hide(draw=False)` to park). PyTables is
+not thread-safe so all HDF5 reads serialise behind a module-level
+`_HDF5_LOCK`. End-to-end smoke (12-video pia02 s006 project on the
+M: drive): construction 7 s, all-bundles-hydrated 15 s, swap-back
+to a previously-visited bundle 14 ms.
+
+Swap mechanics (`DUSTrack.swap_to(index)`):
+
+1. **Snapshot active bundle**: current frame, `_ax_lims` (freeze
+   state), image-pane viewport (Tier 2 reads QGraphicsView's
+   transform + scrollbars via the new dnav `_QtImagePane.get_view_state`
+   surface; Tier 1 falls back to `_ax_image.get_xlim/ylim`),
+   frames-of-interest, all 5 statevar selections.
+2. **Park leaving bundle**: `ann.hide(draw=False)` on every
+   annotation in the leaving container — artists stay attached
+   to the shell's axes but `set_visible(False)`'d, so swap-back
+   re-shows them instantly (Model D artist parking; no data
+   re-read).
+3. **Rebind shell**: `self.fname`, `self.data` (VideoReader),
+   `self.annotations`, `_current_idx`, `_ax_lims`,
+   `frames_of_interest` all point at the arriving bundle.
+4. **Show arriving artists**: `ann.show(draw=False)` on every
+   annotation.
+5. **Restore statevars silently**: rewrites each statevar's
+   `states` list to the new bundle's rotation, sets selection
+   via direct `_current_state_idx = ...` to bypass the
+   `_notify_change` callback chain (otherwise on_change cascades
+   would fire mid-restore against partially-rebuilt state).
+   `statevariables._text.update()` syncs the Qt sidebar widgets.
+6. **Restore image-pane viewport** via the dispatch above.
+7. **Single repaint** via `self.update()` + `plt.draw()`.
+
+Only `number_keys` (select/place mode) auto-broadcasts across
+every bundle's `selections` dict when the user mutates it via UI
+/ keybinding. `annotation_label` and `label_range` are
+per-bundle: each video remembers its active label independently,
+so "label 1 on video A" doesn't bleed into "video B" on swap-out.
+`annotation_layer` / `annotation_overlay` are per-bundle for
+data-shape reasons. The silent-bypass restore avoids triggering
+the broadcast hook during a swap-in (which would otherwise
+clobber every bundle's just-restored value with the active
+bundle's).
+
+Save-on-close sweeps every ready bundle, not just the active one
+(`_scan_unsaved_layers_all_bundles`). The modal renders unsaved
+diffs grouped by video. Cancel still keeps the window open.
+
+Train DLC's post-success `_refresh_dlc_layers` propagates the new
+`dlc_*` layers to every ready non-active bundle (the underlying h5
+files were written for every video in the project, so swapping to
+bundle k+3 immediately shows the fresh inference instead of needing
+a session restart). Pending bundles will discover the new files
+naturally when the worker reaches them.
+
+### New API
+
+- `DUSTrack.swap_to(index: int) -> bool`,
+  `DUSTrack.swap_prev()`, `DUSTrack.swap_next()`.
+- `dustrack.open(project_folder)` — multi-video dispatch.
+- New `dustrack._bundle._BundleState` dataclass (internal).
+- New `dustrack.dlcinterface._BgHydrationWorker` (internal).
+
+### New dnav surface (folded into the open 1.5.0a1 changelog)
+
+- `datanavigator._qt._QtImagePane.get_view_state()` /
+  `.set_view_state(state)` — opaque-blob round-trip of the
+  QGraphicsView transform + scrollbar positions, for per-bundle
+  image-pane viewport persistence. Dnav floor stays at the existing
+  `>=1.5.0a1` (the additive methods don't require a version bump).
+
+### Rendering / paint behavior (2026-05-22 follow-up)
+
+Earlier 1.2.0a3 cuts saw `plt.draw()` (deferred via
+`canvas.draw_idle()`) silently failing in interactive Qt sessions
+— after a click or swap, the data state updated correctly but the
+trace pane stayed stale until the user resized the window /
+clicked the zoom tool / picked something from a dropdown. Two
+root causes, both addressed:
+
+1. **Bg-hydration worker QTimer polled forever** (50 ms interval,
+   even with an empty queue once all bundles were hydrated). It
+   competed with paint events on the Qt event loop. Worker now
+   auto-stops its timer in `drain_finalisation_queue` once every
+   bundle is terminal.
+2. **The canvas needed a synchronous warm-up before
+   `canvas.draw_idle()` would fire reliably.** Two warm-up sites:
+   `QTimer.singleShot(0, canvas.draw)` at the end of
+   `_init_bundles` (first paint after open — `singleShot(0)` so
+   the warm-up fires *after* `plt.show(block=True)` starts the
+   event loop, not before) and a synchronous `canvas.draw()` at
+   the tail of `swap_to` (first paint after a swap). Once warm,
+   subsequent `plt.draw()` calls flush correctly through the
+   event loop's natural drain.
+
+Shipped fix is a **counter-gated warm-up** in `DUSTrack.update`:
+on the first update after a counter-reset (open or swap), do one
+synchronous `canvas.draw()` to warm the canvas; subsequent
+updates rely on the base class's `plt.draw()` (deferred). Counter
+resets to 0 in `__init__` and at the tail of `swap_to`, so each
+bundle visit gets one warm-up.
+
+Steady-state per-frame bench
+(`tests/qt_learning/28_benchmark_multi_video_update.py`, 12-bundle
+pia02 s006 session, 220 Line2D on `_ax_trace_x`, continuous frame
+walk with 15-frame warmup dropped — methodology mirrors probe 09 /
+probe 14):
+
+| | min | median | mean | p95 | fps (median) |
+|---|---|---|---|---|---|
+| 1.5.0 fast_render single-video (probe 14) | — | **36.0** | 36.0 | 37.2 | 28 |
+| 1.2.0a3 multi-video (12 bundles) | 22 | **24.3** | 24.6 | 27.7 | **41** |
+
+Net no-op vs single-video despite the 220-line trace pane. The
+counter-gated approach hits the `_revision`-keyed trace cache on
+every non-first frame: the only per-update cost is the image
+decode + frame-marker reposition + base-class `plt.draw()`.
+
+### Tests
+
+53 new tests across `tests/test_bundle.py`,
+`tests/test_swap_to.py`, `tests/test_open_multi_video.py`,
+`tests/test_bg_hydration_worker.py`,
+`tests/test_broadcast_statevars.py`, plus updates to
+`tests/test_open_zero_arg.py` (bare-video multi-video lists now
+raise per the strict-single-project contract),
+`tests/test_save_on_close.py` (stubs updated to the multi-bundle
+sweep API), `tests/test_user_config_recent.py` (stubs use
+`_bundles` instead of the legacy `_video_queue`). End-to-end smoke
+in `tests/qt_learning/26_smoke_multi_video.py` (programmatic),
+`27_visual_smoke.py` (screenshot harness), and
+`28_benchmark_multi_video_update.py` (per-update paint cost).
+Full DUSTrack suite: 507 passed, 1 skipped.
+
+Plan archive at `pn-portfolio/plans/20260521_dustrack_1.2.0a3_multi_video_swap.md`
+(continued through 2026-05-22).
+
 ## [1.2.0a2] - unreleased
 
 Cold-open optimisation: two independent wins folded together — the

@@ -139,9 +139,14 @@ class TestOpenNoArg:
         # Single-pick path -- queue is empty.
         assert tracker._video_queue == []
 
-    def test_picker_multi_pick_queues_rest(
+    def test_picker_multi_pick_bare_videos_rejected(
         self, monkeypatch, tmp_path, fake_dustrack
     ):
+        """1.2.0a3 contract: multi-video sessions require every entry
+        to belong to a single DLC project. Bare videos in tmp_path
+        have no DLC project around them, so a multi-pick of bare
+        videos must raise.
+        """
         v0 = tmp_path / "a.mp4"
         v1 = tmp_path / "b.mp4"
         v2 = tmp_path / "c.mp4"
@@ -152,13 +157,10 @@ class TestOpenNoArg:
             lambda parent=None: [v0, v1, v2],
         )
 
-        tracker = dustrack.open()
-
-        # First entry drove construction.
-        assert fake_dustrack.calls[0]["args"][0] == str(v0)
-        # Rest queued in click order.
-        assert tracker._video_queue == [v1, v2]
-        assert all(isinstance(p, Path) for p in tracker._video_queue)
+        with pytest.raises(ValueError, match="not inside a DLC project"):
+            dustrack.open()
+        # No construction should have happened.
+        assert fake_dustrack.calls == []
 
 
 # ---------------------------------------------------------------------
@@ -182,40 +184,48 @@ class TestOpenListForm:
         assert tracker_scalar._video_queue == []
         assert tracker_list._video_queue == []
 
-    def test_multi_element_list_queues_tail(self, tmp_path, fake_dustrack):
+    def test_multi_element_list_bare_videos_rejected(
+        self, tmp_path, fake_dustrack
+    ):
+        """1.2.0a3: bare-video multi-video lists raise (must share a
+        single DLC project). See ``test_open_multi_video.py`` for the
+        positive Phase 2 path."""
         v0 = tmp_path / "a.mp4"
         v1 = tmp_path / "b.mp4"
         v2 = tmp_path / "c.mp4"
         for v in (v0, v1, v2):
             v.write_bytes(b"")
 
-        tracker = dustrack.open([v0, v1, v2])
+        with pytest.raises(ValueError, match="not inside a DLC project"):
+            dustrack.open([v0, v1, v2])
+        assert fake_dustrack.calls == []
 
-        assert fake_dustrack.calls[0]["args"][0] == str(v0)
-        assert tracker._video_queue == [v1, v2]
-
-    def test_mixed_str_and_path_entries(self, tmp_path, fake_dustrack):
+    def test_mixed_str_and_path_entries_rejected_for_bare(
+        self, tmp_path, fake_dustrack
+    ):
+        """Mixed str/Path entries don't bypass the single-project
+        validation."""
         v0 = tmp_path / "a.mp4"
         v1 = tmp_path / "b.mp4"
         for v in (v0, v1):
             v.write_bytes(b"")
 
-        tracker = dustrack.open([str(v0), v1])
+        with pytest.raises(ValueError, match="not inside a DLC project"):
+            dustrack.open([str(v0), v1])
+        assert fake_dustrack.calls == []
 
-        assert fake_dustrack.calls[0]["args"][0] == str(v0)
-        assert tracker._video_queue == [v1]
-        assert isinstance(tracker._video_queue[0], Path)
-
-    def test_tuple_form_works(self, tmp_path, fake_dustrack):
+    def test_tuple_form_bare_videos_rejected(
+        self, tmp_path, fake_dustrack
+    ):
+        """Tuple shape (vs. list) gets the same validation."""
         v0 = tmp_path / "a.mp4"
         v1 = tmp_path / "b.mp4"
         for v in (v0, v1):
             v.write_bytes(b"")
 
-        tracker = dustrack.open((v0, v1))
-
-        assert fake_dustrack.calls[0]["args"][0] == str(v0)
-        assert tracker._video_queue == [v1]
+        with pytest.raises(ValueError, match="not inside a DLC project"):
+            dustrack.open((v0, v1))
+        assert fake_dustrack.calls == []
 
     def test_empty_sequence_raises(self):
         with pytest.raises(ValueError, match="empty path sequence"):

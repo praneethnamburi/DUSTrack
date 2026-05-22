@@ -676,3 +676,16 @@ patch if the workflow ever runs into the headroom.
 | min | median | mean | p95 | p99 | max | fps (median) |
 |---|---|---|---|---|---|---|
 | 38.68 | 40.30 | 40.45 | 41.82 | 45.77 | 46.47 | 24.8 |
+
+### DUSTrack multi-video UI -- 1.2.0a3 multi-video (12-bundle pia02 s006) -- 2026-05-22 00:36:30
+
+- datanavigator: `1.5.0@13906a1-dirty` source `C:\dev\datanavigator\datanavigator\__init__.py`
+- dustrack: `1.2.0a3@5d8601d-dirty` source `C:\dev\DUSTrack\dustrack\__init__.py`
+- backend: QtAgg, qt_api=pyside6
+- project: M:\DLC_MODELS\participant_models_general\s006\RFA\interosseous_pn24-x-2025-10-24 (12 bundles)
+- trace axes: 220 Line2D on `_ax_trace_x`
+- N=185 (15 warmup discarded), continuous frame walk
+
+| min | median | mean | p95 | p99 | max | fps (median) |
+|---|---|---|---|---|---|---|
+| 20.74 | 22.56 | 22.90 | 25.88 | 27.25 | 27.26 | 44.3 |

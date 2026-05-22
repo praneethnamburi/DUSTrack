@@ -229,9 +229,16 @@ class TestCloseEventDispatch:
         win = StubWindow()
         dustrack = SimpleNamespace(
             _find_qt_window=lambda: win,
-            _scan_unsaved_layers=lambda: {"pn": {"added": [("0", 1)]}},
+            # 1.2.0a3: close-guard now calls the multi-bundle sweep.
+            # Stub it to mimic a single-bundle session by returning
+            # the single-bundle dict shape directly.
+            _scan_unsaved_layers_all_bundles=lambda: {
+                0: {"fname": "ignored.mp4",
+                    "layers": {"pn": {"added": [("0", 1)]}}},
+            },
             _prompt_save_on_close=lambda *a, **k: "cancel",
             _save_unsaved_layers=lambda *a, **k: pytest.fail("must not save on cancel"),
+            _record_session_in_history=lambda: None,
         )
         D._install_close_guard(dustrack)
 
@@ -253,17 +260,22 @@ class TestCloseEventDispatch:
                 original_called.append(event)
 
         win = StubWindow()
+        unsaved_payload = {
+            0: {"fname": "ignored.mp4",
+                "layers": {"pn": {"added": [("0", 1)]}}},
+        }
         dustrack = SimpleNamespace(
             _find_qt_window=lambda: win,
-            _scan_unsaved_layers=lambda: {"pn": {"added": [("0", 1)]}},
+            _scan_unsaved_layers_all_bundles=lambda: unsaved_payload,
             _prompt_save_on_close=lambda *a, **k: "save",
             _save_unsaved_layers=lambda u: saved.append(u),
+            _record_session_in_history=lambda: None,
         )
         D._install_close_guard(dustrack)
 
         evt = SimpleNamespace(ignore=lambda: pytest.fail("save path must close"))
         win.closeEvent(evt)
-        assert saved == [{"pn": {"added": [("0", 1)]}}]
+        assert saved == [unsaved_payload]
         assert original_called == [evt]
 
     def test_discard_skips_save_but_closes(self):
@@ -280,11 +292,15 @@ class TestCloseEventDispatch:
         win = StubWindow()
         dustrack = SimpleNamespace(
             _find_qt_window=lambda: win,
-            _scan_unsaved_layers=lambda: {"pn": {"added": [("0", 1)]}},
+            _scan_unsaved_layers_all_bundles=lambda: {
+                0: {"fname": "ignored.mp4",
+                    "layers": {"pn": {"added": [("0", 1)]}}},
+            },
             _prompt_save_on_close=lambda *a, **k: "discard",
             _save_unsaved_layers=lambda *a, **k: pytest.fail(
                 "discard must not save"
             ),
+            _record_session_in_history=lambda: None,
         )
         D._install_close_guard(dustrack)
 
@@ -308,9 +324,10 @@ class TestCloseEventDispatch:
         win = StubWindow()
         dustrack = SimpleNamespace(
             _find_qt_window=lambda: win,
-            _scan_unsaved_layers=lambda: {},
+            _scan_unsaved_layers_all_bundles=lambda: {},
             _prompt_save_on_close=lambda *a, **k: "cancel",
             _save_unsaved_layers=lambda *a, **k: None,
+            _record_session_in_history=lambda: None,
         )
         D._install_close_guard(dustrack)
         first_handler = win.closeEvent

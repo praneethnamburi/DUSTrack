@@ -287,15 +287,28 @@ class TestPickerStartDir:
 # ---------------------------------------------------------------------
 
 
+class _StubBundle:
+    """Tiny stand-in for ``_BundleState`` — only ``fname`` is read by
+    ``_record_session_in_history``."""
+
+    def __init__(self, fname):
+        from pathlib import Path
+        self.fname = Path(fname)
+
+
 class _StubDustrack:
     """Minimal duck-type for ``_record_session_in_history``: only
-    ``fname`` and ``_video_queue`` are read."""
+    ``fname`` and ``_bundles`` are read (1.2.0a3 multi-video
+    contract; pre-1.2.0a3 ``_video_queue`` is no longer consulted)."""
 
-    def __init__(self, fname, queue=None):
+    def __init__(self, fname, bundle_paths=None):
         self.fname = fname
-        self._video_queue = queue or []
+        if bundle_paths is None:
+            self._bundles = []  # legacy single-video pre-init path
+        else:
+            self._bundles = [_StubBundle(p) for p in bundle_paths]
 
-    # The real method lives on ``_DUSTrackBase``; rebind here so we
+    # The real method lives on ``DUSTrack``; rebind here so we
     # can call it without constructing a full DUSTrack.
     _record_session_in_history = None  # filled in below
 
@@ -333,7 +346,10 @@ class TestRecordSessionInHistory:
         v2 = d / "c.mp4"
         for v in (v0, v1, v2):
             v.write_bytes(b"")
-        stub = _StubDustrack(fname=str(v0), queue=[v1, v2])
+        # 1.2.0a3: multi-video sessions populate ``_bundles`` rather
+        # than ``_video_queue``. The recent-history path walks the
+        # bundle list for the common-parent computation.
+        stub = _StubDustrack(fname=str(v0), bundle_paths=[v0, v1, v2])
         stub._record_session_in_history()
 
         # Only the active video lands in recent_videos -- the queue
@@ -365,7 +381,10 @@ class TestRecordSessionInHistory:
             raise ValueError("paths don't share a drive")
         monkeypatch.setattr(os.path, "commonpath", _raise)
 
-        stub = _StubDustrack(fname=str(v), queue=[Path("D:/elsewhere/b.mp4")])
+        stub = _StubDustrack(
+            fname=str(v),
+            bundle_paths=[v, Path("D:/elsewhere/b.mp4")],
+        )
         stub._record_session_in_history()
 
         assert _config.get_recent_videos() == [v.resolve()]
