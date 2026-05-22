@@ -218,8 +218,9 @@ class TestOpenDispatchErrors:
             return _FakeTracker()
 
         # Patch the symbol the open() function actually resolves --
-        # ``dustrack.dlcinterface.DUSTrack``.
-        monkeypatch.setattr("dustrack.dlcinterface.DUSTrack", _fake_dustrack)
+        # post-1.2.0rc1, ``open()`` lives in dustrack.open and references
+        # ``DUSTrack`` imported from dustrack.gui.
+        monkeypatch.setattr("dustrack._open.DUSTrack", _fake_dustrack)
 
         result = dustrack.open(vid)
         assert result is not None

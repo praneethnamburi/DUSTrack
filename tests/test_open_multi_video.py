@@ -78,6 +78,12 @@ def fake_dlcproject(monkeypatch):
             tracker._init_bundles_calls = []
             return tracker
 
+    # Patch at every resolution point. Post-1.2.0rc1, DLCProject is
+    # imported at module-load from dustrack.dlcinterface into both
+    # dustrack._open and dustrack.gui as a snapshot binding -- patching
+    # dlcinterface alone doesn't affect their locals.
+    monkeypatch.setattr("dustrack._open.DLCProject", _StubProject)
+    monkeypatch.setattr("dustrack.gui.DLCProject", _StubProject)
     monkeypatch.setattr("dustrack.dlcinterface.DLCProject", _StubProject)
     _StubProject._calls = calls
     return _StubProject
@@ -100,7 +106,7 @@ def capture_init_bundles(monkeypatch):
         tracker._video_queue = [Path(v) for v in video_paths[1:]]
 
     monkeypatch.setattr(
-        "dustrack.dlcinterface._attach_bundles_or_fallback", _capture,
+        "dustrack._open._attach_bundles_or_fallback", _capture,
     )
     return calls
 

@@ -48,9 +48,13 @@ class _CapturingConstructor:
 
 @pytest.fixture
 def fake_dustrack(monkeypatch):
-    """Patch ``dustrack.dlcinterface.DUSTrack`` with a capturing stub."""
+    """Patch ``dustrack._open.DUSTrack`` with a capturing stub.
+
+    Post-1.2.0rc1, ``open()`` lives in dustrack.open and references
+    ``DUSTrack`` imported from dustrack.gui.
+    """
     stub = _CapturingConstructor()
-    monkeypatch.setattr("dustrack.dlcinterface.DUSTrack", stub)
+    monkeypatch.setattr("dustrack._open.DUSTrack", stub)
     return stub
 
 

@@ -88,11 +88,14 @@ if _importlib_util.find_spec("deeplabcut") is not None:
 
 # Order matters: lk_opticalflow has no in-package deps; pointtracking pulls
 # from lk_opticalflow; lk_filter pulls VideoAnnotation from pointtracking;
-# dlcinterface pulls pointtracking + lk_filter.
+# dlcinterface pulls pointtracking + lk_filter; gui pulls dlcinterface;
+# open pulls gui + dlcinterface.
 from .lk_opticalflow import lucas_kanade, lucas_kanade_rstc
 from .pointtracking import VideoAnnotation, VideoAnnotations
 from .lk_filter import lk_moving_average_filter
-from .dlcinterface import DUSTrack, DLCProject, open
+from .dlcinterface import DLCProject
+from .gui import DUSTrack
+from ._open import open
 from .batch import convert_to_mono
 from .seed import (
     extract_snapshot_for_seeding,

@@ -167,8 +167,8 @@ class TestSeedSessionMarker:
                 self.project = project
                 self.video_paths = video_paths
 
-        monkeypatch.setattr("dustrack.dlcinterface.DUSTrack", _StubTracker)
-        from dustrack.dlcinterface import _open_seed_session
+        monkeypatch.setattr("dustrack._open.DUSTrack", _StubTracker)
+        from dustrack._open import _open_seed_session
         tracker = _open_seed_session()
         # Constructed against the packaged seed asset with the "_seed"
         # layer name (Phase 1, no project).
