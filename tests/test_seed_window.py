@@ -184,8 +184,8 @@ class TestSeedSessionMarker:
 
     def test_open_seed_session_raises_if_asset_missing(self, monkeypatch):
         # Pretend the asset isn't installed.
-        from dustrack import dlcinterface
+        from dustrack import _open
         bogus = _SEED_VIDEO_PATH.parent / "nope.mp4"
-        monkeypatch.setattr(dlcinterface, "_SEED_VIDEO_PATH", bogus)
+        monkeypatch.setattr(_open, "_SEED_VIDEO_PATH", bogus)
         with pytest.raises(FileNotFoundError, match="seed video asset missing"):
-            dlcinterface._open_seed_session()
+            _open._open_seed_session()
