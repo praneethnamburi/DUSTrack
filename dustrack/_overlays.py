@@ -12,6 +12,7 @@ recent-sessions list.
 
 Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,8 +20,6 @@ import queue
 import re
 import sys
 from pathlib import Path
-from queue import Queue
-from typing import Optional
 
 from . import _config
 from . import dlcloader as _dlcloader
@@ -31,13 +30,28 @@ from . import dlcloader as _dlcloader
 # stays in indeterminate-busy mode and the status label shows the last
 # recognised phase. Patterns ordered most-specific first.
 _TRAINING_PHASES = [
-    (re.compile(r"extract_frames|extracting frame", re.IGNORECASE), "Extracting frames"),
-    (re.compile(r"create_training_dataset|creating training", re.IGNORECASE), "Creating training dataset"),
-    (re.compile(r"initialize.*weights|loading.*snapshot", re.IGNORECASE), "Initializing weights"),
-    (re.compile(r"started training|train_network|begin training", re.IGNORECASE), "Training network"),
+    (
+        re.compile(r"extract_frames|extracting frame", re.IGNORECASE),
+        "Extracting frames",
+    ),
+    (
+        re.compile(r"create_training_dataset|creating training", re.IGNORECASE),
+        "Creating training dataset",
+    ),
+    (
+        re.compile(r"initialize.*weights|loading.*snapshot", re.IGNORECASE),
+        "Initializing weights",
+    ),
+    (
+        re.compile(r"started training|train_network|begin training", re.IGNORECASE),
+        "Training network",
+    ),
     (re.compile(r"evaluate_network|evaluating", re.IGNORECASE), "Evaluating snapshots"),
     (re.compile(r"analyze_videos|analyzing video", re.IGNORECASE), "Analyzing videos"),
-    (re.compile(r"create_labeled_video|labeled video", re.IGNORECASE), "Creating labeled video"),
+    (
+        re.compile(r"create_labeled_video|labeled video", re.IGNORECASE),
+        "Creating labeled video",
+    ),
 ]
 # LK-RSTC jitter reduction emits tqdm bars whose desc= strings are the
 # only stable signal for which half of the loop we're in (submit vs.
@@ -49,7 +63,10 @@ _JITTER_PHASES = [
     # Processing phases. Old labels kept as fallbacks so a stale
     # installation that still runs the two-phase code path renders
     # cleanly under the Qt overlay.
-    (re.compile(r"Processing tracking jobs", re.IGNORECASE), "Processing tracking jobs"),
+    (
+        re.compile(r"Processing tracking jobs", re.IGNORECASE),
+        "Processing tracking jobs",
+    ),
     (re.compile(r"Submitting jobs", re.IGNORECASE), "Submitting tracking jobs"),
     (re.compile(r"Processing results", re.IGNORECASE), "Processing tracking results"),
     (re.compile(r"Processing sequentially", re.IGNORECASE), "Processing sequentially"),
@@ -58,10 +75,16 @@ _JITTER_PHASES = [
 # config; useful as phase labels even when the operation completes in
 # under a second.
 _CREATE_PROJECT_PHASES = [
-    (re.compile(r"Created.*\bproject\b|new project", re.IGNORECASE), "Project skeleton created"),
+    (
+        re.compile(r"Created.*\bproject\b|new project", re.IGNORECASE),
+        "Project skeleton created",
+    ),
     (re.compile(r"adding.*video|copying.*video", re.IGNORECASE), "Copying video"),
     (re.compile(r"config.*yaml|writing.*config", re.IGNORECASE), "Writing config"),
-    (re.compile(r"labeled-data|extract", re.IGNORECASE), "Preparing labeled-data folders"),
+    (
+        re.compile(r"labeled-data|extract", re.IGNORECASE),
+        "Preparing labeled-data folders",
+    ),
 ]
 _SEED_PROJECT_PHASES = _CREATE_PROJECT_PHASES + [
     (re.compile(r"installing seed bundle", re.IGNORECASE), "Installing seed bundle"),
@@ -238,8 +261,7 @@ def _make_progress_overlay_class():
             layout.addWidget(self._log, alignment=Qt.AlignCenter)
 
             self._hint = QLabel(
-                hint
-                or "Output is also streamed to the launching terminal."
+                hint or "Output is also streamed to the launching terminal."
             )
             self._hint.setAlignment(Qt.AlignCenter)
             self._hint.setStyleSheet("color: #aaaaaa; font-size: 9pt;")
@@ -320,9 +342,7 @@ def _make_progress_overlay_class():
                     self._progress.setRange(0, 1)
                     self._progress.setValue(0)
                     self._progress.setFormat("Failed")
-            self._hint.setText(
-                "Review the output above, then click Done to continue."
-            )
+            self._hint.setText("Review the output above, then click Done to continue.")
             self._done_button.show()
             self._done_button.setFocus()
 
@@ -334,9 +354,7 @@ def _make_progress_overlay_class():
                 try:
                     cb()
                 except Exception as exc:  # noqa: BLE001
-                    sys.__stderr__.write(
-                        f"Post-overlay callback raised: {exc}\n"
-                    )
+                    sys.__stderr__.write(f"Post-overlay callback raised: {exc}\n")
 
         def dismiss(self):
             try:
@@ -491,7 +509,9 @@ def _make_confirm_overlay_class():
                 # palette stays scoped; QSS on a QPushButton replaces
                 # native gradient (see memory feedback_qt_qss_vs_palette).
                 btn.setStyleSheet(_ROLE_QSS.get(role, _ROLE_QSS["neutral"]))
-                btn.clicked.connect(lambda _checked=False, lbl=label: self._on_clicked(lbl))
+                btn.clicked.connect(
+                    lambda _checked=False, lbl=label: self._on_clicked(lbl)
+                )
                 button_row.addWidget(btn)
                 self._buttons.append(btn)
                 if default is not None and label == default:
@@ -600,12 +620,8 @@ def _default_training_options(dlcproject):
     Returns:
         dict: Initial state for the Training options modal.
     """
-    trained = sorted(
-        i for i, snaps in dlcproject.all_snapshots.items() if snaps
-    )
-    snapshots_by_iteration = {
-        i: list(dlcproject.all_snapshots[i]) for i in trained
-    }
+    trained = sorted(i for i, snaps in dlcproject.all_snapshots.items() if snaps)
+    snapshots_by_iteration = {i: list(dlcproject.all_snapshots[i]) for i in trained}
     has_trained = bool(trained)
     return {
         "refine_mode": "in_project" if has_trained else "scratch",
@@ -677,9 +693,20 @@ def _make_training_options_class():
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
-        QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
-        QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
-        QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+        QButtonGroup,
+        QCheckBox,
+        QComboBox,
+        QFileDialog,
+        QFrame,
+        QGraphicsOpacityEffect,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QPushButton,
+        QRadioButton,
+        QSpinBox,
+        QVBoxLayout,
+        QWidget,
     )
 
     # Reuse ConfirmOverlay's role QSS so Train/Cancel match the visual
@@ -797,12 +824,8 @@ def _make_training_options_class():
             # --- Refine mode radios ---
             self._refine_group = QButtonGroup(self)
             self._scratch_radio = QRadioButton("Start from scratch")
-            self._in_project_radio = QRadioButton(
-                "Refine from in-project iteration"
-            )
-            self._external_radio = QRadioButton(
-                "Refine from external snapshot"
-            )
+            self._in_project_radio = QRadioButton("Refine from in-project iteration")
+            self._external_radio = QRadioButton("Refine from external snapshot")
             for i, rb in enumerate(
                 (self._scratch_radio, self._in_project_radio, self._external_radio)
             ):
@@ -843,7 +866,8 @@ def _make_training_options_class():
             duration_row = QHBoxLayout()
             duration_row.addWidget(
                 QLabel(
-                    "Training epochs:" if initial_state.get("is_dlc3", True)
+                    "Training epochs:"
+                    if initial_state.get("is_dlc3", True)
                     else "Training iterations:"
                 )
             )
@@ -855,12 +879,8 @@ def _make_training_options_class():
             content_layout.addLayout(duration_row)
 
             # --- Create labeled video toggle ---
-            self._create_video_chk = QCheckBox(
-                "Create labeled video on completion"
-            )
-            self._create_video_chk.setChecked(
-                bool(initial_state["create_video"])
-            )
+            self._create_video_chk = QCheckBox("Create labeled video on completion")
+            self._create_video_chk.setChecked(bool(initial_state["create_video"]))
             content_layout.addWidget(self._create_video_chk)
 
             # --- Train / Cancel buttons ---
@@ -989,16 +1009,13 @@ def _make_training_options_class():
                 **self._state,
                 "refine_mode": mode,
                 "source_iteration": (
-                    self._iter_combo.currentData() if mode == "in_project"
-                    else None
+                    self._iter_combo.currentData() if mode == "in_project" else None
                 ),
                 "source_snapshot": (
-                    self._snap_combo.currentData() if mode == "in_project"
-                    else None
+                    self._snap_combo.currentData() if mode == "in_project" else None
                 ),
                 "external_snapshot_path": (
-                    self._external_path_edit.text() if mode == "external"
-                    else ""
+                    self._external_path_edit.text() if mode == "external" else ""
                 ),
                 "maxiters": int(self._maxiters_spin.value()),
                 "create_video": self._create_video_chk.isChecked(),
@@ -1059,8 +1076,15 @@ def _make_seed_bundle_picker_class():
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
-        QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
-        QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+        QFileDialog,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QListWidget,
+        QListWidgetItem,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
     )
 
     _ROLE_QSS = {
@@ -1129,18 +1153,12 @@ def _make_seed_bundle_picker_class():
             for b in bundles:
                 desc = b.get("description") or "(no description)"
                 bodyparts = b.get("bodyparts") or []
-                label = (
-                    f"{b['name']}\n"
-                    f"  bodyparts: {bodyparts}\n"
-                    f"  {desc}"
-                )
+                label = f"{b['name']}\n" f"  bodyparts: {bodyparts}\n" f"  {desc}"
                 item = QListWidgetItem(label)
                 item.setData(Qt.UserRole, b)
                 self._list.addItem(item)
             self._list.setCurrentRow(0)
-            self._list.itemDoubleClicked.connect(
-                lambda _item: self._on_use_clicked()
-            )
+            self._list.itemDoubleClicked.connect(lambda _item: self._on_use_clicked())
             content_layout.addWidget(self._list)
 
             # Buttons row 1: primary action + escape hatch.
@@ -1247,6 +1265,7 @@ def _make_seed_bundle_picker_class():
 # 1.2.0a3: no-arg dustrack.open() welcome modal
 # ---------------------------------------------------------------------
 
+
 def _render_recent_session_label(session) -> str:
     """One-line label for a recent-sessions entry in the picker.
 
@@ -1299,8 +1318,13 @@ def _make_open_video_overlay_class():
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
-        QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-        QPushButton, QVBoxLayout,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QListWidget,
+        QListWidgetItem,
+        QPushButton,
+        QVBoxLayout,
     )
 
     _PRIMARY_QSS = (
@@ -1313,16 +1337,8 @@ def _make_open_video_overlay_class():
         "  color: #777; border: 1px solid #333; }"
     )
 
-    _SECONDARY_QSS = (
-        "QPushButton { background-color: #2a2a2a; color: white; "
-        "  border: 1px solid #444; padding: 8px 24px; font-size: 11pt; }"
-        "QPushButton:hover { background-color: #3a3a3a; }"
-        "QPushButton:pressed { background-color: #1a1a1a; }"
-    )
-
     _HELP_NO_SELECTION = (
-        "Pick a video file or a DLC config.yaml. "
-        "Or click a recent session below."
+        "Pick a video file or a DLC config.yaml. " "Or click a recent session below."
     )
     _HELP_HAS_SELECTION = (
         "Click Load (or double-click the selected session) to open it."
@@ -1665,7 +1681,6 @@ def _show_first_paint_notice(tracker) -> None:
     except Exception:  # noqa: BLE001
         # Defensive: a failed notice should not block the session.
         pass
-
 
 
 # ---------------------------------------------------------------------

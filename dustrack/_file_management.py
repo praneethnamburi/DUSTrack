@@ -18,13 +18,14 @@ DLC project:
 
 Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1.
 """
+
 from __future__ import annotations
 
 import fnmatch
 import os
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import numpy as np
 import pyfilemanager
@@ -33,28 +34,34 @@ from skimage import img_as_ubyte, io
 from datanavigator import VideoReader, cpu
 
 from . import dlcloader as _dlcloader
-from ._layer_names import _is_dense_layer_name
 from .dlcloader import HAS_DLC, _ensure_dlc_loaded
-from .lk_filter import lk_moving_average_filter  # noqa: F401 -- kept for back-compat with callers of VideoFileManager who hot-import siblings
+from .lk_filter import (
+    lk_moving_average_filter,
+)  # noqa: F401 -- kept for back-compat with callers of VideoFileManager who hot-import siblings
 from .annotations import VideoAnnotation
 
+if TYPE_CHECKING:
+    from .dlcinterface import DLCProject
 
-def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coords: list):
+
+def _extract_frames(
+    video_file_name: str, frame_idx: list, output_path: str, coords: list
+):
     """
     Legacy frame extraction using DLC's VideoWriter (OpenCV-based).
-    
+
     Note:
         This function is kept for backwards compatibility but
         _extract_frames_decord is now used by default for better
         performance, and because of discrepancy in extracted frames (seeking
         issues) when using OpenCV vs decord.
-    
+
     Args:
         video_file_name (str): Path to video file.
         frame_idx (list): Frame numbers to extract (0-indexed).
         output_path (str): Directory to save extracted frames.
         coords (list): Crop coordinates [x, y, width, height].
-    
+
     Returns:
         list: Paths to saved image files.
     """
@@ -68,26 +75,31 @@ def _extract_frames(video_file_name: str, frame_idx: list, output_path: str, coo
         cap.set_to_frame(index)  # extract a particular frame
         frame = cap.read_frame(crop=True)
         if frame is not None:
-            img_name = output_path / f'img{str(index).zfill(indexlength)}.png'
+            img_name = output_path / f"img{str(index).zfill(indexlength)}.png"
             if not os.path.exists(img_name):
                 image = img_as_ubyte(frame)
                 io.imsave(img_name, image)
-                print(f'{img_name.parent.stem}/{img_name.stem} saved!')
+                print(f"{img_name.parent.stem}/{img_name.stem} saved!")
             else:
-                print(f'{img_name.parent.stem}/{img_name.stem} already exists. Skipping extraction.')
+                print(
+                    f"{img_name.parent.stem}/{img_name.stem} already exists. Skipping extraction."
+                )
             img_names.append(img_name)
         else:
             print("Frame", index, " not found!")
     cap.close()
     return img_names
 
-def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: str, coords: list):
+
+def _extract_frames_decord(
+    video_file_name: str, frame_idx: list, output_path: str, coords: list
+):
     """
     Extract video frames using Decord library for better performance.
-    
+
     This is the default frame extraction method. It uses batch reading for
     better I/O efficiency compared to OpenCV sequential reading.
-    
+
     Args:
         video_file_name (str): Path to video file.
         frame_idx (list): Frame numbers to extract (0-indexed).
@@ -95,10 +107,10 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
         coords (list): Crop coordinates. Interpreted as:
             - [x1, y1, x2, y2] if values look like absolute corners
             - [x, y, width, height] otherwise
-    
+
     Returns:
         list: Paths to saved image files.
-    
+
     Note:
         Skips extraction if image file already exists.
         Handles invalid frame indices gracefully.
@@ -108,7 +120,9 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
     # even when the source is monochrome-encoded (dnav 1.5.0a2 would
     # otherwise auto-detect gray and write 1-channel PNGs that DLC's
     # ResNet-50 backbone can't ingest).
-    vr = VideoReader(video_file_name, ctx=cpu(0), num_threads=1, pix_fmt='rgb24')  # HWC RGB uint8
+    vr = VideoReader(
+        video_file_name, ctx=cpu(0), num_threads=1, pix_fmt="rgb24"
+    )  # HWC RGB uint8
     n_frames = len(vr)
     indexlength = max(1, int(np.ceil(np.log10(max(1, n_frames)))))
 
@@ -129,14 +143,20 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
             x2, y2 = x0 + c2, y0 + c3
 
         # Clamp to bounds
-        x1 = max(0, min(w, x1)); x2 = max(0, min(w, x2))
-        y1 = max(0, min(h, y1)); y2 = max(0, min(h, y2))
+        x1 = max(0, min(w, x1))
+        x2 = max(0, min(w, x2))
+        y1 = max(0, min(h, y1))
+        y2 = max(0, min(h, y2))
         if x2 <= x1 or y2 <= y1:
             return img
         return img[y1:y2, x1:x2]
 
     # Keep only valid indices (and preserve order)
-    valid_indices = [int(i) for i in frame_idx if isinstance(i, (int, np.integer)) and 0 <= int(i) < n_frames]
+    valid_indices = [
+        int(i)
+        for i in frame_idx
+        if isinstance(i, (int, np.integer)) and 0 <= int(i) < n_frames
+    ]
 
     img_names = []
     if not valid_indices:
@@ -152,26 +172,29 @@ def _extract_frames_decord(video_file_name: str, frame_idx: list, output_path: s
             frame = _crop(frame, coords)
 
         image = frame if frame.dtype == np.uint8 else img_as_ubyte(frame)
-        img_name = output_path / f'img{str(idx).zfill(indexlength)}.png'
+        img_name = output_path / f"img{str(idx).zfill(indexlength)}.png"
         if not os.path.exists(img_name):
             io.imsave(str(img_name), image)
-            print(f'{img_name.parent.stem}/{img_name.stem} saved!')
+            print(f"{img_name.parent.stem}/{img_name.stem} saved!")
         else:
-            print(f'{img_name.parent.stem}/{img_name.stem} already exists. Skipping extraction.')
+            print(
+                f"{img_name.parent.stem}/{img_name.stem} already exists. Skipping extraction."
+            )
         img_names.append(img_name)
 
     return img_names
 
 
-
-def get_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -> Union[str, None]:
+def get_annotation_file_name(
+    video_file_name: Path, annotation_suffix: str = ""
+) -> Union[str, None]:
     """
     Get full path to annotation file if it exists.
-    
+
     Args:
         video_file_name (Path): Video file path.
         annotation_suffix (str): Annotation suffix (e.g., 'manual', 'refined').
-    
+
     Returns:
         str or None: Full path if file exists, None otherwise.
     """
@@ -180,17 +203,20 @@ def get_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -
         return annotation_file_name
     return None
 
-def make_annotation_file_name(video_file_name: Path, annotation_suffix: str='') -> str:
+
+def make_annotation_file_name(
+    video_file_name: Path, annotation_suffix: str = ""
+) -> str:
     """
     Construct annotation filename from video filename and suffix.
-    
+
     Args:
         video_file_name (Path): Video file path.
         annotation_suffix (str): Annotation suffix. Empty string means no suffix.
-    
+
     Returns:
         str: Full path to annotation file (may not exist yet).
-    
+
     Example:
         >>> make_annotation_file_name('video.mp4', 'manual')
         'video_annotations_manual.json'
@@ -198,42 +224,46 @@ def make_annotation_file_name(video_file_name: Path, annotation_suffix: str='') 
         'video_annotations.json'
     """
     v = Path(video_file_name)
-    annotation_file_name = v.parent / f'{v.stem}_annotations{"_" if annotation_suffix else ""}{annotation_suffix}.json'
+    annotation_file_name = (
+        v.parent
+        / f'{v.stem}_annotations{"_" if annotation_suffix else ""}{annotation_suffix}.json'
+    )
     return annotation_file_name
 
 
 class VideoFileManager(pyfilemanager.FileManager):
     """
     File manager for organizing annotation and result files for one video.
-    
+
     Provides convenient access to all files associated with a video in a DLC project:
     - Manual annotation JSON files
     - DLC prediction HDF5 files
     - Labeled data files for training
-    
+
     Attributes:
         project_name (str): Name of the DLC project.
         video_stem (str): Video filename without extension.
         video_fname (str): Full path to video file.
     """
+
     def __init__(self, d: DLCProject, video_index: int):
         """
         Initialize file manager for a specific video.
-        
+
         Args:
             d (DLCProject): Parent DLC project.
             video_index (int): Index of video in project's video list.
         """
         if not HAS_DLC:
             raise ImportError("Install deeplabcut to use VideoFileManager.")
-        
-        base_dir = d.paths['project']
+
+        base_dir = d.paths["project"]
         super().__init__(base_dir, exclude_hidden=True)
         self.add()
         self.project_name = d.name
         self.video_stem = d.video_names[video_index]
         self.video_fname = d.video_list[video_index]
-    
+
     @property
     def annotations(self) -> dict:
         """
@@ -242,7 +272,7 @@ class VideoFileManager(pyfilemanager.FileManager):
         Returns:
             dict: {annotation_name: file_path} for all JSON annotation files.
         """
-        pattern = f'*{self.video_stem}*_annotations*.json'
+        pattern = f"*{self.video_stem}*_annotations*.json"
         file_names = fnmatch.filter([Path(x).name for x in self.all_files], pattern)
         files = [self[file_name][0] for file_name in file_names]
         return {self.canonical_layer_name(fname): fname for fname in files}
@@ -282,10 +312,10 @@ class VideoFileManager(pyfilemanager.FileManager):
         """
         p = Path(fname)
         stem = p.stem
-        if '_annotations' in stem:
-            return stem.split('_annotations')[-1].removesuffix('.json').strip('_')
-        if 'DLC' in stem:
-            return 'dlc_' + p.parts[-2] + '_' + stem.split('_')[-1]
+        if "_annotations" in stem:
+            return stem.split("_annotations")[-1].removesuffix(".json").strip("_")
+        if "DLC" in stem:
+            return "dlc_" + p.parts[-2] + "_" + stem.split("_")[-1]
         return stem
 
     @staticmethod
@@ -293,7 +323,7 @@ class VideoFileManager(pyfilemanager.FileManager):
         """Return the 'name' of the video file <video_name>_annotations_<name>.json.
         For example, C:\\video01_annotations_brachialis_praneeth.json will return video01
         """
-        return Path(fname).stem.split('_annotations')[0]
+        return Path(fname).stem.split("_annotations")[0]
 
     @property
     def dlc_traces(self) -> dict:
@@ -305,7 +335,10 @@ class VideoFileManager(pyfilemanager.FileManager):
                 Trace names format: 'dlc_iteration-{N}_{training_iter}'
         """
         fm_temp = pyfilemanager.FileManager(str(Path(self.base_dir) / "videos")).add()
-        fnames = fm_temp[f'{self.video_stem}DLC*{self.project_name}*.h5'] + fm_temp[f'{self.video_stem}DLC*{self.project_name}*.json']
+        fnames = (
+            fm_temp[f"{self.video_stem}DLC*{self.project_name}*.h5"]
+            + fm_temp[f"{self.video_stem}DLC*{self.project_name}*.json"]
+        )
         return {self.canonical_layer_name(fname): fname for fname in fnames}
 
     @property
@@ -322,15 +355,17 @@ class VideoFileManager(pyfilemanager.FileManager):
     def labeled_data(self):
         """
         Path to HDF5 file containing training labels in DLC format.
-        
+
         Returns:
             str: Full path to CollectedData HDF5 file.
-        
+
         Raises:
             AssertionError: If file doesn't exist or multiple files found.
         """
-        fm_temp = pyfilemanager.FileManager(str(Path(self.base_dir) / "labeled-data")).add()
-        ret = fm_temp[f'{self.video_stem}*CollectedData*.h5']
+        fm_temp = pyfilemanager.FileManager(
+            str(Path(self.base_dir) / "labeled-data")
+        ).add()
+        ret = fm_temp[f"{self.video_stem}*CollectedData*.h5"]
         assert len(ret) == 1
         return ret[0]
 
@@ -338,31 +373,31 @@ class VideoFileManager(pyfilemanager.FileManager):
         """
         Create path for a new annotation file with given suffix.
         Used to generate the the filename for the next refinement iteration.
-        
+
         Args:
             new_suffix (str): Suffix for new annotation layer.
-        
+
         Returns:
             Path: Full path to new JSON file.
-        
+
         Raises:
             ValueError: If file with this suffix already exists.
         """
         annotations_json_new = (
-            Path(self.video_fname).parent / 
-            f'{self.video_stem}_annotations_{new_suffix}.json'
-            )
+            Path(self.video_fname).parent
+            / f"{self.video_stem}_annotations_{new_suffix}.json"
+        )
         if os.path.exists(annotations_json_new):
-            raise ValueError(f'File with {new_suffix} suffix already exists!')
+            raise ValueError(f"File with {new_suffix} suffix already exists!")
         return annotations_json_new
-    
-    def get_all_annotation_layers(self, new_annotation_suffix: str=None):
+
+    def get_all_annotation_layers(self, new_annotation_suffix: str = None):
         """
         Collect all annotation sources for loading into DUSTrack.
-        
+
         Args:
             new_annotation_suffix (str, optional): Suffix for a new layer to create.
-        
+
         Returns:
             dict: Maps layer names to file paths, including:
                 - Existing JSON annotation files
@@ -373,54 +408,48 @@ class VideoFileManager(pyfilemanager.FileManager):
         if new_annotation_suffix is None:
             new_json = {}
         else:
-            new_json = {new_annotation_suffix : self.get_new_json(new_annotation_suffix)}
-        
+            new_json = {new_annotation_suffix: self.get_new_json(new_annotation_suffix)}
+
         try:
             labeled_data = dict(labeled_data=self.labeled_data)
         except AssertionError:
             labeled_data = {}
-        
-        return dict(
-            **self.annotations, 
-            **new_json,
-            **labeled_data, 
-            **self.dlc_traces
-            )
+
+        return dict(**self.annotations, **new_json, **labeled_data, **self.dlc_traces)
 
 
-def merge_annotations_in_folder(path, annotation_suffix='merged'):
+def merge_annotations_in_folder(path, annotation_suffix="merged"):
     """
     Merge multiple annotation files for each video in a folder.
-    
+
     Useful for combining annotations from multiple annotators or sessions.
     Creates a single merged JSON file for each video.
-    
+
     Args:
         path (str): Directory containing videos and annotation JSON files.
         annotation_suffix (str): Suffix for merged output files. Defaults to 'merged'.
     """
     fm = pyfilemanager.FileManager(path).add_by_depth(0)
     all_names = [Path(x).name for x in fm.all_files]
-    all_video_names = fnmatch.filter(all_names, '*.mp4')
+    all_video_names = fnmatch.filter(all_names, "*.mp4")
     video_files = [fm[name][0] for name in all_video_names]
     for video_file in video_files:
-        video_stem = Path(video_file).stem.split('_annotations')[0]
-        pattern = f'{video_stem}*_annotations*.json'
+        video_stem = Path(video_file).stem.split("_annotations")[0]
+        pattern = f"{video_stem}*_annotations*.json"
         file_names = fnmatch.filter(all_names, pattern)
         annotation_file_names = sorted([fm[file_name][0] for file_name in file_names])
         if len(annotation_file_names) == 0:
             continue
-        print(f'Merging {len(annotation_file_names)} files for {video_stem}:')
+        print(f"Merging {len(annotation_file_names)} files for {video_stem}:")
         print(annotation_file_names)
         print(make_annotation_file_name(video_file, annotation_suffix))
         ann = VideoAnnotation.from_multiple_files(
-            fname_list = annotation_file_names,
-            vname = str(Path(path) / video_file),
-            name = annotation_suffix,
-            fname_merged = make_annotation_file_name(video_file, annotation_suffix)
+            fname_list=annotation_file_names,
+            vname=str(Path(path) / video_file),
+            name=annotation_suffix,
+            fname_merged=make_annotation_file_name(video_file, annotation_suffix),
         )
         ann.save()
-
 
 
 def rebase_to_config(config_path: str, old_path: str) -> str:
@@ -434,7 +463,11 @@ def rebase_to_config(config_path: str, old_path: str) -> str:
     Returns separators inferred from 'config_path'.
     """
     # Choose path flavor by the config path
-    is_windows_like = ("\\" in config_path) or config_path.startswith("\\\\") or bool(re.match(r"^[A-Za-z]:", config_path))
+    is_windows_like = (
+        ("\\" in config_path)
+        or config_path.startswith("\\\\")
+        or bool(re.match(r"^[A-Za-z]:", config_path))
+    )
     PathCls = PureWindowsPath if is_windows_like else PurePosixPath
 
     # Parse the config path *as-is* to keep its anchor
@@ -463,9 +496,10 @@ def rebase_to_config(config_path: str, old_path: str) -> str:
 
     idx = find_idx(old_parts, project_name)
     if idx is None:
-        raise ValueError(f"Project folder {project_name!r} not found in old_path: {old_path!r}")
+        raise ValueError(
+            f"Project folder {project_name!r} not found in old_path: {old_path!r}"
+        )
 
-    tail = old_parts[idx + 1:]
+    tail = old_parts[idx + 1 :]
     rebased = new_root / PathCls(*tail) if tail else new_root
     return str(rebased)
-

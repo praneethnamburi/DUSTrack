@@ -22,6 +22,7 @@ Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up; all
 functions are testable from synthetic dicts without instantiating
 the GUI.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -41,7 +42,8 @@ from ._layer_names import (
 
 
 def scan_incomplete_frames(
-    data: dict, target_labels: "list[str] | None" = None,
+    data: dict,
+    target_labels: "list[str] | None" = None,
 ) -> dict:
     """Find frames missing one or more required bodyparts in an
     annotation ``data`` dict (``{label: {frame: [x, y]}}``).
@@ -158,8 +160,7 @@ def normalize_layer_data(data: dict) -> dict:
         if not frames:
             continue
         out[label] = {
-            int(frame): [float(x) for x in xy]
-            for frame, xy in frames.items()
+            int(frame): [float(x) for x in xy] for frame, xy in frames.items()
         }
     return out
 
@@ -232,7 +233,9 @@ def scan_unsaved_layers(annotations, video_fname) -> dict:
 
 
 def scan_unsaved_and_incomplete(
-    annotations, video_fname, dlcproject=None,
+    annotations,
+    video_fname,
+    dlcproject=None,
 ) -> dict:
     """Across every manual annotation layer in the session, find
     in-memory-vs-disk diffs AND/OR incomplete frames. Returns
@@ -266,7 +269,8 @@ def scan_unsaved_and_incomplete(
         if not is_manual_layer_name(ann.name):
             continue
         incomplete = scan_incomplete_frames(
-            ann.data, target_labels=target_labels,
+            ann.data,
+            target_labels=target_labels,
         )
         diff = {"added": [], "removed": [], "modified": []}
         if is_manual_annotation_layer(video_fname, ann.fname, ann.name):
@@ -318,7 +322,8 @@ def format_unsaved_summary(unsaved: dict) -> str:
 
 
 def format_pre_flight_summary(
-    issues: dict, max_incomplete_examples: int = 3,
+    issues: dict,
+    max_incomplete_examples: int = 3,
 ) -> str:
     """Per-layer breakdown for the unified pre-flight modal's
     detailed-text panel.
@@ -347,13 +352,9 @@ def format_pre_flight_summary(
             lines.append(f"  Incomplete frames: {n}")
             for i, (frame, missing) in enumerate(sorted(incomplete.items())):
                 if i >= max_incomplete_examples:
-                    lines.append(
-                        f"    ... ({n - max_incomplete_examples} more)"
-                    )
+                    lines.append(f"    ... ({n - max_incomplete_examples} more)")
                     break
-                lines.append(
-                    f"    frame {frame}: missing {', '.join(missing)}"
-                )
+                lines.append(f"    frame {frame}: missing {', '.join(missing)}")
         else:
             lines.append("  (no incomplete frames)")
         blocks.append("\n".join(lines))
@@ -366,7 +367,11 @@ def format_pre_flight_summary(
 
 
 def apply_pre_flight_remediations(
-    annotations, video_fname, issues: dict, *, make_annotation_file_name,
+    annotations,
+    video_fname,
+    issues: dict,
+    *,
+    make_annotation_file_name,
 ) -> None:
     """For each layer with issues, drop incomplete frames (with
     recovery sidecar) and save the (possibly trimmed) layer.
@@ -384,9 +389,12 @@ def apply_pre_flight_remediations(
     for layer_name, info in issues.items():
         ann = annotations[layer_name]
         if ann.fname is None:
-            ann.fname = str(make_annotation_file_name(
-                Path(video_fname), annotation_suffix=ann.name,
-            ))
+            ann.fname = str(
+                make_annotation_file_name(
+                    Path(video_fname),
+                    annotation_suffix=ann.name,
+                )
+            )
         incomplete = info.get("incomplete") or {}
         if incomplete:
             save_dropped_incomplete_sidecar(ann, incomplete)

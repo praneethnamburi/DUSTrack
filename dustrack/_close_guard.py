@@ -24,6 +24,7 @@ split across two modules. The diff primitives themselves are in
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

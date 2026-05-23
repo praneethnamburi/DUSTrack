@@ -19,6 +19,7 @@ via the PEP 562 ``__getattr__`` proxy at the tail of
 
 Extracted from ``dlcinterface.py`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -47,9 +48,9 @@ def _is_dlc_project_root(folder) -> bool:
     """
     f = Path(folder)
     return (
-        (f / 'config.yaml').is_file()
-        and (f / 'videos').is_dir()
-        and (f / 'labeled-data').is_dir()
+        (f / "config.yaml").is_file()
+        and (f / "videos").is_dir()
+        and (f / "labeled-data").is_dir()
     )
 
 
@@ -72,16 +73,16 @@ def _find_dlc_config(path):
     if not p.exists():
         return None
 
-    if p.is_file() and p.name.lower() == 'config.yaml':
+    if p.is_file() and p.name.lower() == "config.yaml":
         return p if _is_dlc_project_root(p.parent) else None
 
     if p.is_dir() and _is_dlc_project_root(p):
-        return p / 'config.yaml'
+        return p / "config.yaml"
 
     if p.is_file():
         for ancestor in p.parents:
             if _is_dlc_project_root(ancestor):
-                return ancestor / 'config.yaml'
+                return ancestor / "config.yaml"
 
     return None
 

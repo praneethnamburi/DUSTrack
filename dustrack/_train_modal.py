@@ -15,6 +15,7 @@ dialog class factory.
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from ._overlays import (
@@ -41,7 +42,8 @@ def prompt_training_options(qt_window, dlcproject):
     TrainingOptionsDialog = _make_training_options_class()
     initial_state = _default_training_options(dlcproject)
     options = TrainingOptionsDialog(
-        qt_window, initial_state=initial_state,
+        qt_window,
+        initial_state=initial_state,
     ).exec_()
     if options is None:
         return None

@@ -20,6 +20,7 @@ between the picker and Browse paths as the user navigates.
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -37,6 +37,7 @@ Example:
     >>> # or a list:
     >>> dustrack.convert_to_mono(['vid1.mp4', 'vid2.mp4'])
 """
+
 from __future__ import annotations
 
 import shutil
@@ -45,15 +46,32 @@ from pathlib import Path
 from typing import Iterable, Union
 
 
-_MONO_PIX_FMTS = frozenset({
-    "gray", "gray8", "gray9", "gray9le", "gray9be",
-    "gray10", "gray10le", "gray10be",
-    "gray12", "gray12le", "gray12be",
-    "gray14", "gray14le", "gray14be",
-    "gray16", "gray16le", "gray16be",
-    "grayf32", "grayf32le", "grayf32be",
-    "yuvj400p", "yuv400p",
-})
+_MONO_PIX_FMTS = frozenset(
+    {
+        "gray",
+        "gray8",
+        "gray9",
+        "gray9le",
+        "gray9be",
+        "gray10",
+        "gray10le",
+        "gray10be",
+        "gray12",
+        "gray12le",
+        "gray12be",
+        "gray14",
+        "gray14le",
+        "gray14be",
+        "gray16",
+        "gray16le",
+        "gray16be",
+        "grayf32",
+        "grayf32le",
+        "grayf32be",
+        "yuvj400p",
+        "yuv400p",
+    }
+)
 
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
 
@@ -83,9 +101,20 @@ def _find_tool(name: str) -> str:
 def _probe_source_pix_fmt(ffprobe: str, src: Path) -> str:
     """Return the source's encoded pix_fmt via ffprobe, or '' on failure."""
     res = subprocess.run(
-        [ffprobe, "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", str(src)],
-        capture_output=True, text=True,
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt",
+            "-of",
+            "csv=p=0",
+            str(src),
+        ],
+        capture_output=True,
+        text=True,
     )
     if res.returncode != 0:
         return ""
@@ -103,7 +132,8 @@ def _iter_sources(sources) -> list[Path]:
         p = Path(sources)
         if p.is_dir():
             return sorted(
-                fp for fp in p.rglob("*")
+                fp
+                for fp in p.rglob("*")
                 if fp.is_file() and fp.suffix.lower() in _VIDEO_EXTS
             )
         return [p]
@@ -188,15 +218,25 @@ def convert_to_mono(
         if verbose:
             print(f"  encoding {src.name} -> {dst.name} (crf={crf}, preset={preset})")
         cmd = [
-            ffmpeg, "-hide_banner", "-loglevel", "warning",
-            "-i", str(src),
-            "-c:v", "libx265",
-            "-pix_fmt", "gray",
-            "-crf", str(crf),
-            "-preset", preset,
-            "-fps_mode", "passthrough",
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            str(src),
+            "-c:v",
+            "libx265",
+            "-pix_fmt",
+            "gray",
+            "-crf",
+            str(crf),
+            "-preset",
+            preset,
+            "-fps_mode",
+            "passthrough",
             "-an",
-            "-y", str(dst),
+            "-y",
+            str(dst),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:

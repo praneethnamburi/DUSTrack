@@ -1,6 +1,7 @@
 """
 Main DUSTrack module, including an interface to manage DeepLabCut (DLC) projects.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -15,11 +16,9 @@ import cv2 as cv
 import pyfilemanager
 import pysampled
 
-import datanavigator as dnav
-
 from .annotations import VideoAnnotation
 from . import _config
-from ._layer_names import _is_dense_layer_name
+
 # Lazy DLC loader -- the plumbing lives in dustrack.dlcloader. We import
 # the loader module so the PEP 562 ``__getattr__`` proxy below can route
 # through it for the *mutating* names (``DLC3``, ``deeplabcut``,
@@ -28,7 +27,7 @@ from ._layer_names import _is_dense_layer_name
 # import. The function-y names below are imported eagerly because
 # they're used directly by DLCProject.
 from . import dlcloader as _dlcloader
-from .dlcloader import HAS_DLC, _ensure_dlc_loaded, _ensure_dlc_loaded_async
+from .dlcloader import HAS_DLC, _ensure_dlc_loaded
 from ._file_management import (
     VideoFileManager,
     _extract_frames_decord,
@@ -40,42 +39,29 @@ from ._file_management import (
 EXPERIMENTER = _config.EXPERIMENTER
 
 
-# Layer-name patterns that indicate "dense" tracking output (data on
-# every frame, like a model prediction or a smoothed trajectory) --
-# the default rendering for these is a line plot, vs the dnav default
-# of "dot" which is right for sparse manual annotations. Kept here as
-# data, not a hardcoded predicate, so adding a new smoothing recipe
-# (e.g. a second post-processing filter that writes
-# <stem>_kalman_<param>.json) is a one-line tuple edit. See
-# :func:`_is_dense_layer_name`.
-
-
-
-
-
-
 class DLCData(pysampled.Data):
     """
     Data container for DeepLabCut tracking results.
-    
+
     Provides convenient loading and manipulation of DLC output files (HDF5 format),
     with automatic extraction of metadata like body part names and coordinate labels.
-    
+
     Attributes:
         signal_names (list): Names of tracked body parts (e.g., ['nose', 'left_ear']).
         signal_coords (list): Coordinate names (typically ['x', 'y', 'likelihood']).
-    
+
     Example:
         >>> # Load from DLC output file
         >>> data = DLCData.from_hdf('video_dlc_resnet50_model_name.h5')
-        >>> 
+        >>>
         >>> # Load from video (finds associated HDF5 file)
         >>> data = DLCData.from_video('video.mp4', iter_num=250000)
     """
+
     def __setstate__(self, state):
         """
         Restore object state with backwards compatibility.
-        
+
         Handles legacy attribute names ('coords', 'label_names') by converting
         them to current naming convention ('signal_coords', 'signal_names').
         """
@@ -84,55 +70,61 @@ class DLCData(pysampled.Data):
             self.signal_coords = self.meta.pop("coords")
         if "label_names" in self.meta:
             self.signal_names = self.meta.pop("label_names")
-    
+
     @classmethod
     def from_hdf(cls, file_path):
         """
         Load DLC data from an HDF5 file.
-        
+
         Args:
             file_path (str): Path to the DLC output HDF5 file.
-        
+
         Returns:
             DLCData: Loaded data with extracted metadata.
-        
+
         Raises:
             AssertionError: If file doesn't exist.
             FileNotFoundError: If corresponding labeled video cannot be found.
         """
         assert os.path.exists(file_path)
         df_h5 = pd.read_hdf(file_path)
-        label_names = list(df_h5.columns.unique(level='bodyparts'))
-        coords = list(df_h5.columns.unique(level='coords'))
-        vid_paths = pyfilemanager.FileManager(Path(file_path).parent).add()[f'*{Path(file_path).stem}*_labeled.mp4']
+        label_names = list(df_h5.columns.unique(level="bodyparts"))
+        coords = list(df_h5.columns.unique(level="coords"))
+        vid_paths = pyfilemanager.FileManager(Path(file_path).parent).add()[
+            f"*{Path(file_path).stem}*_labeled.mp4"
+        ]
         if len(vid_paths) == 0:
-            raise FileNotFoundError('Could not find the video file')
+            raise FileNotFoundError("Could not find the video file")
         sr = int(cv.VideoCapture(vid_paths[0]).get(cv.CAP_PROP_FPS))
-        return DLCData(df_h5.values, sr, meta=dict(label_names=label_names, coords=coords))
-    
+        return DLCData(
+            df_h5.values, sr, meta=dict(label_names=label_names, coords=coords)
+        )
+
     @classmethod
     def from_video(cls, vid_path, iter_num=None):
         """
         Load DLC data associated with a video file.
-        
+
         Automatically searches for HDF5 files matching the video name and
         loads the specified training iteration (or the highest if not specified).
-        
+
         Args:
             vid_path (str): Path to the video file.
             iter_num (int, optional): Training iteration number. If None, uses highest.
-        
+
         Returns:
             DLCData: Loaded tracking data.
-        
+
         Raises:
             AssertionError: If video file doesn't exist or requested iteration not found.
         """
         assert os.path.exists(vid_path)
         # find the hdf file
         vid_path = Path(vid_path)
-        h5_list = pyfilemanager.FileManager(vid_path.parent).add()[f'{vid_path.stem}*.h5']
-        iter_num_to_fname = {int(Path(x).stem.split('_')[-1]):x for x in h5_list}
+        h5_list = pyfilemanager.FileManager(vid_path.parent).add()[
+            f"{vid_path.stem}*.h5"
+        ]
+        iter_num_to_fname = {int(Path(x).stem.split("_")[-1]): x for x in h5_list}
         if iter_num is None:
             # pick the highest iteration number
             iter_num = max(iter_num_to_fname)
@@ -147,25 +139,34 @@ class DLCProject:
         1. Create a project with some videos. Videos will be copied.
             d = DLCProject(r'C:/data_opr02/004_02/ml_models/dlc', name='opr02_s004_muscles', experimenter='praneeth', videos=[<video_list>])
         2. Launch the initial annnotator for video 0, repeat if there are more videos
-            d.annotate(0) 
+            d.annotate(0)
         3. Extract frames, train network, evaluate network, analyze videos, and create labeled video
             d.process()
         4. Refine the labels
             d.annotate(0, 'praneeth_2') # the second argument determines the suffix for the annotations file.
-            **CAUTION**: Make sure that the files are read by extract_frames in the correct order! 
+            **CAUTION**: Make sure that the files are read by extract_frames in the correct order!
             Pay attention to the output of this method.
         5. Re-train network with refined labels
             d.process()
 
         Repeat steps 4 and 5 until satisfied with the results.
     """
-    def __init__(self, path, videos=[], name='test_01', experimenter=_config.EXPERIMENTER, annotation_suffix='', internal_to_dlc_labels: dict=None):
+
+    def __init__(
+        self,
+        path,
+        videos=[],
+        name="test_01",
+        experimenter=_config.EXPERIMENTER,
+        annotation_suffix="",
+        internal_to_dlc_labels: dict = None,
+    ):
         """
         Initialize or load a DeepLabCut project.
-        
+
         If a config.yaml exists at the path, loads the existing project.
         Otherwise, creates a new project with the provided videos.
-        
+
         Args:
             path (str): Directory containing or for the project.
             videos (list): List of video file paths to include.
@@ -173,13 +174,13 @@ class DLCProject:
             experimenter (str): Experimenter identifier.
             annotation_suffix (str): Suffix for annotation files (e.g., 'manual', 'refined').
             internal_to_dlc_labels (dict, optional): Custom label name mapping.
-        
+
         Note:
             Videos are copied into the project folder by default.
             Project names without underscores may cause config issues with network paths.
         """
         if not HAS_DLC:
-            raise RuntimeError('Install deeplabcut to use DLCProject functionality.')
+            raise RuntimeError("Install deeplabcut to use DLCProject functionality.")
         # Block here for the real ``deeplabcut`` import. If
         # ``_ensure_dlc_loaded_async`` already kicked off the loader
         # this returns immediately; otherwise it does the (~7 s) import
@@ -191,11 +192,11 @@ class DLCProject:
         _ensure_dlc_loaded()
         config_path = None
         if os.path.isfile(path):
-            assert Path(path).stem == 'config' and Path(path).suffix == '.yaml'
+            assert Path(path).stem == "config" and Path(path).suffix == ".yaml"
             config_path = path
         if os.path.isdir(path):
-            if os.path.exists(Path(path) / 'config.yaml'):
-                config_path = Path(path) / 'config.yaml'
+            if os.path.exists(Path(path) / "config.yaml"):
+                config_path = Path(path) / "config.yaml"
         self.path = path
 
         assert isinstance(annotation_suffix, str)
@@ -207,27 +208,39 @@ class DLCProject:
         new_project = False
         if config_path is None:
             assert len(videos) > 0
-            config_path = _dlcloader.deeplabcut.create_new_project(name, experimenter, videos, working_directory=path, copy_videos=True)
+            config_path = _dlcloader.deeplabcut.create_new_project(
+                name, experimenter, videos, working_directory=path, copy_videos=True
+            )
             new_project = True
-        
+
         self.config_path = config_path
 
         self.internal_to_dlc_labels = internal_to_dlc_labels
 
         if new_project:
             annotation_file_names = self.copy_annotations(videos)
-            n_annotations_set = {len(VideoAnnotation(fname, vname).labels) for fname, vname in zip(annotation_file_names, videos)}
-            assert len(n_annotations_set) == 1 # number of annotations in all the files should match
-            annotation_names = [set(VideoAnnotation(fname, vname).labels) for fname, vname in zip(annotation_file_names, videos)]
-            common_labels = functools.reduce(lambda x, y: x.intersection(y), annotation_names)
+            n_annotations_set = {
+                len(VideoAnnotation(fname, vname).labels)
+                for fname, vname in zip(annotation_file_names, videos)
+            }
+            assert (
+                len(n_annotations_set) == 1
+            )  # number of annotations in all the files should match
+            annotation_names = [
+                set(VideoAnnotation(fname, vname).labels)
+                for fname, vname in zip(annotation_file_names, videos)
+            ]
+            common_labels = functools.reduce(
+                lambda x, y: x.intersection(y), annotation_names
+            )
             all_labels = functools.reduce(lambda x, y: x.union(y), annotation_names)
             assert common_labels == all_labels
             annotation_names = sorted(list(common_labels))
-            bodyparts = [f'point{x}' for x in annotation_names]
+            bodyparts = [f"point{x}" for x in annotation_names]
             self.edit_config(bodyparts=bodyparts, skeleton=None)
-            self.edit_config(snapshotindex='all') # evaluate all snapshots
-            if not os.path.exists(self.paths['models']):
-                os.makedirs(self.paths['models'])
+            self.edit_config(snapshotindex="all")  # evaluate all snapshots
+            if not os.path.exists(self.paths["models"]):
+                os.makedirs(self.paths["models"])
 
         # Re-anchor each video path so it shares config.yaml's root, regardless
         # of which NIC / drive letter / OS was used when the project was created.
@@ -244,14 +257,16 @@ class DLCProject:
             _dlcloader.deeplabcut.auxiliaryfunctions.read_config(self.config_path)
         except _dlcloader.ScannerError:
             print("Config file is corrupted. Fix it manually.")
-            print("If there is no _ in the name, then the config file has issues "
-                  "when dealing with folders on the server.")
+            print(
+                "If there is no _ in the name, then the config file has issues "
+                "when dealing with folders on the server."
+            )
 
     @property
     def paths(self) -> Mapping[str, Path]:
         """
         Full paths to project folder and standard DLC subfolders.
-        
+
         Returns:
             dict: Mapping of folder names to Path objects with keys:
                 - 'project': Main project directory
@@ -262,91 +277,96 @@ class DLCProject:
                 - 'videos': Video files
         """
         project_path = Path(self.config_path).parent
-        model_folder_name = 'dlc-models-pytorch' if _dlcloader.DLC3 else 'dlc-models'
-        evaluation_folder_name = 'evaluation-results-pytorch' if _dlcloader.DLC3 else 'evaluation-results'
-        return dict(
-            project       = project_path,
-            models        = project_path / model_folder_name,
-            results       = project_path / evaluation_folder_name,
-            labels        = project_path / 'labeled-data',
-            training_data = project_path / 'training-datasets',
-            videos        = project_path / 'videos',
+        model_folder_name = "dlc-models-pytorch" if _dlcloader.DLC3 else "dlc-models"
+        evaluation_folder_name = (
+            "evaluation-results-pytorch" if _dlcloader.DLC3 else "evaluation-results"
         )
-    
+        return dict(
+            project=project_path,
+            models=project_path / model_folder_name,
+            results=project_path / evaluation_folder_name,
+            labels=project_path / "labeled-data",
+            training_data=project_path / "training-datasets",
+            videos=project_path / "videos",
+        )
+
     @property
     def config(self) -> dict:
         """
         Current project configuration dictionary.
-        
+
         Returns:
             dict: Parsed contents of config.yaml.
         """
         return _dlcloader.deeplabcut.auxiliaryfunctions.read_config(self.config_path)
-    
+
     @property
     def name(self) -> str:
         """Project name from configuration."""
-        return self.config['Task']
+        return self.config["Task"]
 
     @property
     def trackers(self) -> list:
         """
         Names of tracked body parts as used internally by DLC.
-        
+
         Returns:
             list: Body part names (e.g., ['point0', 'point1']).
         """
-        return self.config['bodyparts']
+        return self.config["bodyparts"]
 
     @property
     def label_names(self) -> list:
         """
         Human-readable names for tracked points.
-        
+
         Returns meaningful names from dlc_trackermap.txt if available,
         otherwise returns the internal tracker names.
-        
+
         Returns:
             list: Display names for body parts.
         """
         trackermap = self.trackermap
-        return [trackermap[tracker] if tracker in trackermap else tracker for tracker in self.trackers]
+        return [
+            trackermap[tracker] if tracker in trackermap else tracker
+            for tracker in self.trackers
+        ]
 
     @property
     def trackermap(self):
         """
         Load meaningful label names from dlc_trackermap.txt.
-        
+
         This file maps internal names (point0, point1) to biological names
         (nose, left_ear, etc.) for better interpretability.
-        
+
         Returns:
             dict: Mapping from internal names to display names.
-        
+
         Example dlc_trackermap.txt content:
             point0 - muscle_boundary
             point1 - fascia
             point2 - bone
         """
-        map_file = Path(self.paths['project']) / 'dlc_trackermap.txt'
+        map_file = Path(self.paths["project"]) / "dlc_trackermap.txt"
         # Path.read_text rather than builtin open() because the module
         # defines a top-level `open` (the workflow entry point) that
         # shadows builtins.open inside this module.
         if map_file.is_file():
-            text = map_file.read_text(encoding='utf-8-sig')
-            trackermap = [x.split(' - ') for x in text.splitlines() if x]
+            text = map_file.read_text(encoding="utf-8-sig")
+            trackermap = [x.split(" - ") for x in text.splitlines() if x]
             return {x[0]: x[1] for x in trackermap}
         else:
             return {}
-    
+
     def edit_config(self, config_file=None, **kwargs):
         """
         Modify project configuration parameters.
-        
+
         Args:
             config_file (str, optional): Path to config file. Defaults to main config.
             **kwargs: Configuration parameters to update (e.g., iteration=2, snapshotindex=5).
-        
+
         Returns:
             Result of deeplabcut.auxiliaryfunctions.edit_config().
         """
@@ -358,39 +378,39 @@ class DLCProject:
     @property
     def video_list(self) -> list[Path]:
         """Full paths to videos in the project."""
-        return list(self.config['video_sets'].keys())
-    
+        return list(self.config["video_sets"].keys())
+
     @property
     def video_names(self) -> list[str]:
         """Video filenames without extensions."""
         return [Path(vname).stem for vname in self.video_list]
-    
+
     @property
     def current_iteration(self) -> int:
         """Model iteration number currently set in config.yaml."""
-        return self.config['iteration']
-    
+        return self.config["iteration"]
+
     @current_iteration.setter
     def current_iteration(self, iteration_num: int):
         """
         Set the active model iteration in config.yaml.
-        
+
         Args:
             iteration_num: Iteration number, or 'latest' for most recent,
                 or 'next' for latest+1 (if latest is trained).
         """
         if isinstance(iteration_num, str):
-            assert iteration_num in ('latest', 'next')
-            if iteration_num == 'latest':
+            assert iteration_num in ("latest", "next")
+            if iteration_num == "latest":
                 iteration_num = self.latest_iteration
-            elif iteration_num == 'next':
+            elif iteration_num == "next":
                 if self.latest_iteration_is_trained():
                     iteration_num = self.latest_iteration + 1
                 else:
                     iteration_num = self.latest_iteration
         assert isinstance(iteration_num, int)
         self.edit_config(iteration=iteration_num)
-    
+
     @property
     def latest_iteration(self) -> int:
         """Highest iteration number in dlc-models folder."""
@@ -398,16 +418,27 @@ class DLCProject:
         if not all_iterations:
             return 0
         return self.all_iterations[-1]
-    
+
     @property
     def latest_trained_iteration(self) -> int:
         """Most recent iteration that has saved model snapshots."""
-        return max([iteration for iteration,snapshot in self.all_snapshots.items() if len(snapshot)], default=-1)
-    
+        return max(
+            [
+                iteration
+                for iteration, snapshot in self.all_snapshots.items()
+                if len(snapshot)
+            ],
+            default=-1,
+        )
+
     @property
     def all_iterations(self) -> list:
         """All iteration numbers found in dlc-models, sorted ascending."""
-        ret = [int(x.split('-')[-1]) for x in os.listdir(self.paths['models']) if x.startswith('iteration-') and os.path.isdir(self.paths['models'] / x)]
+        ret = [
+            int(x.split("-")[-1])
+            for x in os.listdir(self.paths["models"])
+            if x.startswith("iteration-") and os.path.isdir(self.paths["models"] / x)
+        ]
         ret.sort()
         return ret
 
@@ -415,7 +446,7 @@ class DLCProject:
     def all_snapshots(self) -> Mapping[int, list[int]]:
         """
         Training snapshots for each model iteration.
-        
+
         Returns:
             dict: Maps iteration number to list of training iteration numbers.
                 For DLC3, identifies .pt files; for DLC2, identifies .index files.
@@ -424,21 +455,31 @@ class DLCProject:
             ext = ".pt"
         else:
             ext = ".index"
-    
+
         ret = {}
         for iteration_num in self.all_iterations:
-            source_path = self.paths['models'] / f'iteration-{iteration_num}'
-            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot*{ext}']
-            snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" not in Path(x).stem]
+            source_path = self.paths["models"] / f"iteration-{iteration_num}"
+            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[
+                f"*train/snapshot*{ext}"
+            ]
+            snapshot_numbers = [
+                int(Path(x).stem.split("-")[-1])
+                for x in snapshot_filenames
+                if "best" not in Path(x).stem
+            ]
             snapshot_numbers.sort()
-            snapshot_numbers += [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
+            snapshot_numbers += [
+                int(Path(x).stem.split("-")[-1])
+                for x in snapshot_filenames
+                if "best" in Path(x).stem
+            ]
             ret[iteration_num] = snapshot_numbers
         return ret
-    
+
     def current_iteration_is_trained(self) -> bool:
         """Check if current iteration has any saved snapshots."""
         return self.iteration_is_trained(self.current_iteration)
-    
+
     def latest_iteration_is_trained(self) -> bool:
         """Check if latest iteration has any saved snapshots."""
         return self.iteration_is_trained(self.latest_iteration)
@@ -446,34 +487,34 @@ class DLCProject:
     def iteration_is_trained(self, iteration_num: int) -> bool:
         """
         Check if a specific iteration has been trained.
-        
+
         Args:
             iteration_num (int): Model iteration to check.
-        
+
         Returns:
             bool: True if snapshots exist for this iteration.
         """
         if iteration_num not in self.all_snapshots:
             return False
         return len(self.all_snapshots[iteration_num]) > 0
-    
+
     def increment_iteration(self):
         """
         Advance to next iteration if current one is trained.
-        
+
         Returns:
             self: For method chaining.
         """
-        self.current_iteration = 'next'
+        self.current_iteration = "next"
         return self
-        
+
     def add_videos(self, videos: list[Path]):
         """
         Add new videos to existing project and copy their annotations.
-        
+
         Args:
             videos: List of video file paths to add.
-        
+
         Returns:
             self: For method chaining.
         """
@@ -482,17 +523,17 @@ class DLCProject:
         _dlcloader.deeplabcut.add_new_videos(self.config_path, videos, copy_videos=True)
         self.copy_annotations(videos)
         return self
-    
+
     def copy_annotations(self, video_name: Union[Path, list]):
         """
         Copy DUSTrack JSON files into project's video folder.
-        
+
         Args:
             video_name: Single video path or list of video paths.
-        
+
         Returns:
             str or list: Path(s) to copied annotation file(s), or None if not found.
-        
+
         Note:
             Looks for files matching {video_stem}_annotations_{suffix}.json
         """
@@ -506,32 +547,38 @@ class DLCProject:
         v = Path(video_name)
         a_name = f'{v.stem}_annotations{"_" if self.annotation_suffix else ""}{self.annotation_suffix}.json'
         annotation_file_src = v.parent / a_name
-        annotation_file_dest = Path(self.config_path).parent / 'videos' / a_name
+        annotation_file_dest = Path(self.config_path).parent / "videos" / a_name
         if os.path.exists(annotation_file_src):
             shutil.copyfile(annotation_file_src, annotation_file_dest)
             return annotation_file_dest
         return None
 
-    def extract_frames(self, annotation_file_names=None, suffix_merged='merged', save_merged_json=False, check=False):
+    def extract_frames(
+        self,
+        annotation_file_names=None,
+        suffix_merged="merged",
+        save_merged_json=False,
+        check=False,
+    ):
         """
         Extract labeled frames from videos and convert annotations to DLC format.
-        
+
         This method:
         1. Finds all annotation JSON files for each video
         2. Merges multiple annotation files if present
         3. Extracts the annotated frames from videos
         4. Converts annotations to DLC's CSV/HDF5 format in labeled-data folder
-        
+
         Args:
             annotation_file_names (list, optional): Specific annotation files to use.
                 If None, automatically finds all matching files.
             suffix_merged (str): Suffix for merged annotation file. Defaults to 'merged'.
             save_merged_json (bool): Whether to save the merged JSON. Defaults to False.
             check (bool): Whether to run deeplabcut.check_labels(). Defaults to False.
-        
+
         Returns:
             self: For method chaining.
-        
+
         Note:
             Automatically excludes files with '_dlccorr' suffix (correction files).
         """
@@ -539,139 +586,171 @@ class DLCProject:
         for video_file_name in self.video_list:
             coords = self.config["video_sets"][video_file_name]["crop"].split(",")
             video_stem = Path(video_file_name).stem
-            output_path = self.paths['labels'] / video_stem
+            output_path = self.paths["labels"] / video_stem
 
             if annotation_file_names_input is None:
-                pattern = f'{video_stem}*_annotations*.json'
-                fm = pyfilemanager.FileManager(self.paths['videos']).add()
-                file_names = fnmatch.filter([Path(x).name for x in fm.all_files], pattern)
-                annotation_file_names = sorted([fm[file_name][0] for file_name in file_names])
+                pattern = f"{video_stem}*_annotations*.json"
+                fm = pyfilemanager.FileManager(self.paths["videos"]).add()
+                file_names = fnmatch.filter(
+                    [Path(x).name for x in fm.all_files], pattern
+                )
+                annotation_file_names = sorted(
+                    [fm[file_name][0] for file_name in file_names]
+                )
                 # annotation_file_names = sorted(pyfilemanager.FileManager(self.paths['videos']).add()[f'{video_stem}*_annotations*.json'])
                 # ignore the *correction* files. In theory, no training is to be done after the dlccorr files are created, but just being careful.
-                annotation_file_names = [x for x in annotation_file_names if "_dlccorr" not in x]
-                print(f'Loading annotations from {len(annotation_file_names)} file(s): ')
+                annotation_file_names = [
+                    x for x in annotation_file_names if "_dlccorr" not in x
+                ]
+                print(
+                    f"Loading annotations from {len(annotation_file_names)} file(s): "
+                )
                 print([Path(x).stem for x in annotation_file_names])
                 print()
-            
+
             if len(annotation_file_names) == 0:
                 # there are multiple videos, but one of them does not have any labels
                 continue
-            
+
             ann = VideoAnnotation.from_multiple_files(
-                fname_list = annotation_file_names,
-                vname = video_file_name,
-                name = suffix_merged,
-                fname_merged = make_annotation_file_name(video_file_name, suffix_merged)
+                fname_list=annotation_file_names,
+                vname=video_file_name,
+                name=suffix_merged,
+                fname_merged=make_annotation_file_name(video_file_name, suffix_merged),
             )
 
             if save_merged_json:
                 ann.save()
             _extract_frames_decord(video_file_name, ann.frames, output_path, coords)
             ann.to_dlc(
-                scorer       = self.config['scorer'],
-                output_path  = output_path,
-                file_prefix  = f"CollectedData_{self.config['scorer']}",
-                img_prefix   = 'img',
-                img_suffix   = '.png',
-                label_prefix = 'point',
-                save         = True,
-                internal_to_dlc_labels=self.internal_to_dlc_labels
-                )
-            
+                scorer=self.config["scorer"],
+                output_path=output_path,
+                file_prefix=f"CollectedData_{self.config['scorer']}",
+                img_prefix="img",
+                img_suffix=".png",
+                label_prefix="point",
+                save=True,
+                internal_to_dlc_labels=self.internal_to_dlc_labels,
+            )
+
             if check:
-                _dlcloader.deeplabcut.check_labels(self.config_path) # this creates an _labeled folder, which doesn't seem necessary in this case
-        
+                _dlcloader.deeplabcut.check_labels(
+                    self.config_path
+                )  # this creates an _labeled folder, which doesn't seem necessary in this case
+
         return self
-    
-    def get_pose_cfg_file(self, iteration_num: int=None, type_: str='train') -> Path:
+
+    def get_pose_cfg_file(
+        self, iteration_num: int = None, type_: str = "train"
+    ) -> Path:
         """
         Get path to pose configuration file for an iteration.
-        
+
         Args:
             iteration_num (int, optional): Iteration number. Defaults to current.
             type_ (str): 'train' or 'test' subfolder. Defaults to 'train'.
-        
+
         Returns:
             Path: Full path to pose_cfg.yaml (DLC2) or pytorch_config (DLC3).
         """
         if iteration_num is None:
             iteration_num = self.current_iteration
-        assert type_ in ('train', 'test')
+        assert type_ in ("train", "test")
         if _dlcloader.DLC3:
             cfg_name = "pytorch_config"
         else:
             cfg_name = "pose_cfg"
-        cfg_files = pyfilemanager.FileManager(self.paths['models'] / f'iteration-{iteration_num}').add()[f'*{type_}/{cfg_name}*']
+        cfg_files = pyfilemanager.FileManager(
+            self.paths["models"] / f"iteration-{iteration_num}"
+        ).add()[f"*{type_}/{cfg_name}*"]
         assert len(cfg_files) == 1
         return cfg_files[0]
-    
-    def get_best_snapshot(self, iteration_num: int=None) -> int:
+
+    def get_best_snapshot(self, iteration_num: int = None) -> int:
         """
         Find training iteration with lowest test error.
-        
+
         For DLC3, uses the snapshot marked as 'best' unless DLC3_USE_LAST_SNAPSHOT
         is True in config, in which case returns the last snapshot.
         For DLC2, parses CombinedEvaluation-results.csv.
-        
+
         Args:
             iteration_num (int, optional): Model iteration. Defaults to current.
-        
+
         Returns:
             int: Training iteration number of best snapshot.
         """
         if iteration_num is None:
             iteration_num = self.current_iteration
-        
+
         if _dlcloader.DLC3:
-            source_path = self.paths['models'] / f'iteration-{iteration_num}'
-            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot*.pt']
-            snapshot_numbers = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames]
-            best_snapshot_number = [int(Path(x).stem.split('-')[-1]) for x in snapshot_filenames if "best" in Path(x).stem]
+            source_path = self.paths["models"] / f"iteration-{iteration_num}"
+            snapshot_filenames = pyfilemanager.FileManager(source_path).add()[
+                f"*train/snapshot*.pt"
+            ]
+            snapshot_numbers = [
+                int(Path(x).stem.split("-")[-1]) for x in snapshot_filenames
+            ]
+            best_snapshot_number = [
+                int(Path(x).stem.split("-")[-1])
+                for x in snapshot_filenames
+                if "best" in Path(x).stem
+            ]
             if not _config.DLC3_USE_LAST_SNAPSHOT:
                 if best_snapshot_number:
                     return best_snapshot_number[0]
             return sorted(snapshot_numbers)[-1]
 
-        eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
+        eval_file_name = (
+            self.paths["results"]
+            / f"iteration-{iteration_num}"
+            / "CombinedEvaluation-results.csv"
+        )
         if os.path.exists(eval_file_name):
             # pick the snapshot with the lowest training error
             df_eval = pd.read_csv(eval_file_name)
             df_eval = df_eval.rename(columns=lambda x: x.strip())
-            best_snapshot = df_eval[df_eval['Test error(px)'] == min(df_eval['Test error(px)'])]['Training iterations:'].iloc[0]
+            best_snapshot = df_eval[
+                df_eval["Test error(px)"] == min(df_eval["Test error(px)"])
+            ]["Training iterations:"].iloc[0]
         else:
             # pick the latest snapshot
-            print('Could not evaluate best snapshot, setting it to latest')
+            print("Could not evaluate best snapshot, setting it to latest")
             best_snapshot = self.all_snapshots[iteration_num][-1]
         return best_snapshot
-    
-    def get_best_snapshot_test_error(self, iteration_num: int=None) -> float:
+
+    def get_best_snapshot_test_error(self, iteration_num: int = None) -> float:
         """
         Get test error (RMSE in pixels) at best snapshot.
-        
+
         Args:
             iteration_num (int, optional): Model iteration. Defaults to latest trained.
-        
+
         Returns:
             float: Test error in pixels, or -1.0 if evaluation file doesn't exist.
         """
         if iteration_num is None:
             iteration_num = self.latest_trained_iteration
-        eval_file_name = self.paths['results'] / f'iteration-{iteration_num}' / 'CombinedEvaluation-results.csv'
-        column_name = 'test rmse_pcutoff' if _dlcloader.DLC3 else 'Test error(px)'
+        eval_file_name = (
+            self.paths["results"]
+            / f"iteration-{iteration_num}"
+            / "CombinedEvaluation-results.csv"
+        )
+        column_name = "test rmse_pcutoff" if _dlcloader.DLC3 else "Test error(px)"
         if os.path.exists(eval_file_name):
             # pick the snapshot with the lowest training error
             df_eval = pd.read_csv(eval_file_name)
             df_eval = df_eval.rename(columns=lambda x: x.strip())
             return float(min(df_eval[column_name]))
-        return -1.
-    
-    def get_best_snapshot_idx(self, iteration_num: int=None) -> int:
+        return -1.0
+
+    def get_best_snapshot_idx(self, iteration_num: int = None) -> int:
         """
         Get snapshot index (not training iteration number) of best snapshot.
-        
+
         Args:
             iteration_num (int, optional): Model iteration. Defaults to current.
-        
+
         Returns:
             int: Index in the all_snapshots list for this iteration.
         """
@@ -680,29 +759,34 @@ class DLCProject:
         best_snapshot = self.get_best_snapshot(iteration_num)
         return self.all_snapshots[iteration_num].index(best_snapshot)
 
-    def initialize_weights(self, source_iteration: int=None, source_snapshot: int=None, dest_iteration: int=None):
+    def initialize_weights(
+        self,
+        source_iteration: int = None,
+        source_snapshot: int = None,
+        dest_iteration: int = None,
+    ):
         """
         Initialize model weights from a previous iteration (transfer learning).
-        
+
         Used when refining a model with additional labels. Edits the pose_cfg
         file to set init_weights parameter.
-        
+
         Args:
-            source_iteration (int, optional): Iteration to copy from. 
+            source_iteration (int, optional): Iteration to copy from.
                 Defaults to second-to-last iteration.
             source_snapshot (int, optional): Training iteration within source_iteration.
                 Defaults to best snapshot.
-            dest_iteration (int, optional): Iteration to initialize. 
+            dest_iteration (int, optional): Iteration to initialize.
                 Defaults to latest iteration.
-        
+
         Returns:
             self: For method chaining.
-        
+
         Note:
             Does nothing if there's only one iteration (no source to copy from).
-        """        
+        """
         all_iterations = self.all_iterations
-        if source_iteration is None: # pick the last iteration
+        if source_iteration is None:  # pick the last iteration
             if len(all_iterations) <= 1:
                 return self
             source_iteration = all_iterations[-2]
@@ -712,18 +796,25 @@ class DLCProject:
 
         if dest_iteration is None:
             dest_iteration = all_iterations[-1]
-        
+
         # find the correct pose_cfg file
         cfg_file = self.get_pose_cfg_file(dest_iteration)
-        source_path = self.paths['models'] / f'iteration-{source_iteration}'
-        ext = '.pt' if _dlcloader.DLC3 else '.index'
-        init_weights_files = pyfilemanager.FileManager(source_path).add()[f'*train/snapshot-*{source_snapshot}{ext}']
+        source_path = self.paths["models"] / f"iteration-{source_iteration}"
+        ext = ".pt" if _dlcloader.DLC3 else ".index"
+        init_weights_files = pyfilemanager.FileManager(source_path).add()[
+            f"*train/snapshot-*{source_snapshot}{ext}"
+        ]
         assert len(init_weights_files) == 1
 
         if _dlcloader.DLC3:
-            self.edit_config(cfg_file, resume_training_from=init_weights_files[0].removesuffix('.index'))
+            self.edit_config(
+                cfg_file,
+                resume_training_from=init_weights_files[0].removesuffix(".index"),
+            )
         else:
-            self.edit_config(cfg_file, init_weights=init_weights_files[0].removesuffix('.index'))
+            self.edit_config(
+                cfg_file, init_weights=init_weights_files[0].removesuffix(".index")
+            )
         return self
 
     def _initialize_weights_from_external_path(self, external_path):
@@ -771,76 +862,94 @@ class DLCProject:
 
     def create_training_dataset(self, **kwargs):
         """Call deeplabcut.create_training_dataset."""
-        net_type = kwargs.pop('net_type', 'resnet_50')
-        _dlcloader.deeplabcut.create_training_dataset(self.config_path, net_type=net_type, **kwargs)
+        net_type = kwargs.pop("net_type", "resnet_50")
+        _dlcloader.deeplabcut.create_training_dataset(
+            self.config_path, net_type=net_type, **kwargs
+        )
         return self
 
     def train(self, **kwargs):
         """
         Train the neural network model.
-        
+
         Sets custom learning rate schedule and trains with more iterations than
         DLC defaults for better convergence.
-        
+
         Args:
             **kwargs: Passed to deeplabcut.train_network().
                 - maxiters (int): Total training iterations. Default: 500000 (DLC2) or 1000 (DLC3 epochs).
                 - max_snapshots_to_keep (int): Max saved checkpoints. Default: 20.
-        
+
         Returns:
             self: For method chaining.
-        
+
         Note:
             Custom learning rate schedule: [0.005@10k, 0.02@350k, 0.002@425k, 0.001@1M]
         """
-        maxiters = kwargs.pop('maxiters', 500000)
-        max_snapshots_to_keep = kwargs.pop('max_snapshots_to_keep', 20)
+        maxiters = kwargs.pop("maxiters", 500000)
+        max_snapshots_to_keep = kwargs.pop("max_snapshots_to_keep", 20)
         cfg_file = self.get_pose_cfg_file()
-        self.edit_config(cfg_file, multi_step = [[0.005, 10000], [0.02, 350000], [0.002, 425000], [0.001, 1000000]])
-        _dlcloader.deeplabcut.train_network(self.config_path, maxiters=maxiters, max_snapshots_to_keep=max_snapshots_to_keep, pytorch_cfg_updates={"runner.eval_interval": 25},**kwargs)
+        self.edit_config(
+            cfg_file,
+            multi_step=[
+                [0.005, 10000],
+                [0.02, 350000],
+                [0.002, 425000],
+                [0.001, 1000000],
+            ],
+        )
+        _dlcloader.deeplabcut.train_network(
+            self.config_path,
+            maxiters=maxiters,
+            max_snapshots_to_keep=max_snapshots_to_keep,
+            pytorch_cfg_updates={"runner.eval_interval": 25},
+            **kwargs,
+        )
         return self
-    
+
     def evaluate(self, **kwargs):
         """
         Evaluate all training snapshots on test set.
-        
+
         Temporarily sets snapshotindex to 'all' to evaluate every checkpoint,
         then restores original value.
-        
+
         Args:
             **kwargs: Passed to deeplabcut.evaluate_network().
-        
+
         Returns:
             self: For method chaining.
         """
-        current_snapshotindex_value = self.config['snapshotindex']
-        self.edit_config(snapshotindex='all')
+        current_snapshotindex_value = self.config["snapshotindex"]
+        self.edit_config(snapshotindex="all")
         _dlcloader.deeplabcut.evaluate_network(self.config_path, **kwargs)
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
 
-    def analyze_videos(self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs):
+    def analyze_videos(
+        self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs
+    ):
         """
         Run inference on videos and optionally create labeled output videos.
-        
+
         Args:
             iteration_num (int, optional): Model iteration to use. Defaults to current.
-            snapshotindex (int, optional): Snapshot index to use. 
+            snapshotindex (int, optional): Snapshot index to use.
                 Defaults to best snapshot. Negative indices supported.
             create_video (bool): Whether to create labeled video. Defaults to True.
             **kwargs: Additional arguments for deeplabcut.analyze_videos().
                 - videos: List of video paths or indices. If not provided, analyzes all videos.
-        
+
         Returns:
             self: For method chaining.
-        
+
         Note:
             Results saved to videos/iteration-{N}/ subfolder.
             If videos kwarg contains integers, they're treated as indices into self.video_list.
         """
         if iteration_num is None:
             iteration_num = self.current_iteration
-        
+
         if snapshotindex is None:
             snapshotindex = self.get_best_snapshot_idx(iteration_num)
         else:
@@ -848,8 +957,8 @@ class DLCProject:
             if snapshotindex < 0:
                 snapshotindex = snapshotindex % n_snapshots
             assert 0 <= snapshotindex < n_snapshots
-        
-        save_as_csv = kwargs.pop('save_as_csv', True)
+
+        save_as_csv = kwargs.pop("save_as_csv", True)
 
         # DeepLabCut's PyTorch backend defaults to batch_size=1 when neither
         # the kwarg nor the project config sets one, which leaves an RTX-class
@@ -857,8 +966,8 @@ class DLCProject:
         # a 706x558 video on DLC 3.0.0rc14 + RTX 4090 is batchsize~4 (median
         # 154 fps; see S:/_corpus/dustrack/dlc_inference_bench_2026-05-20/).
         # Respect the project config if it sets ``batch_size`` explicitly.
-        if 'batchsize' not in kwargs and self.config.get('batch_size') is None:
-            kwargs['batchsize'] = 4
+        if "batchsize" not in kwargs and self.config.get("batch_size") is None:
+            kwargs["batchsize"] = 4
 
         if "videos" in kwargs:
             assert isinstance(kwargs["videos"], list)
@@ -869,61 +978,76 @@ class DLCProject:
                 for idx in video_indices:
                     if idx < 0:
                         idx = len(self.video_list) + idx
-                    assert 0 <= idx < len(self.video_list), f"Video index {idx} is out of range."
+                    assert (
+                        0 <= idx < len(self.video_list)
+                    ), f"Video index {idx} is out of range."
                     video_name = self.video_list[idx]
-                    assert os.path.exists(video_name), f"Video {video_name} does not exist."
+                    assert os.path.exists(
+                        video_name
+                    ), f"Video {video_name} does not exist."
                     video_list.append(video_name)
                 kwargs["videos"] = video_list
         else:
             kwargs["videos"] = self.video_list
-        
-        current_snapshotindex_value = self.config['snapshotindex']
+
+        current_snapshotindex_value = self.config["snapshotindex"]
         self.edit_config(snapshotindex=snapshotindex)
 
         common_params = dict(
-            config     = self.config_path, 
-            videos     = kwargs.pop('videos'), 
-            destfolder = self.paths['videos'] / f'iteration-{iteration_num}'
-            )
+            config=self.config_path,
+            videos=kwargs.pop("videos"),
+            destfolder=self.paths["videos"] / f"iteration-{iteration_num}",
+        )
 
-        _dlcloader.deeplabcut.analyze_videos(**common_params, save_as_csv=save_as_csv, **kwargs)
+        _dlcloader.deeplabcut.analyze_videos(
+            **common_params, save_as_csv=save_as_csv, **kwargs
+        )
         if create_video:
             _dlcloader.deeplabcut.create_labeled_video(**common_params)
-        
+
         self.edit_config(snapshotindex=current_snapshotindex_value)
         return self
+
     # refine can be both bool or string, if string, it is the path of the model to initialize weights from
-    def process(self, iteration_num=None, maxiters=None, refine: Union[bool, str]=True, create_video=True, source_snapshot=None, **kwargs):
+    def process(
+        self,
+        iteration_num=None,
+        maxiters=None,
+        refine: Union[bool, str] = True,
+        create_video=True,
+        source_snapshot=None,
+        **kwargs,
+    ):
         """
         Automated workflow: extract frames, train, evaluate, and analyze.
-        
+
         This is the main method for handling the full DLC pipeline. It intelligently
         decides what steps to run based on the current project state:
         - If iteration already evaluated: just analyze videos
         - If frames need extraction: extract them
         - If not trained: train the model
         - If refining: initialize weights from previous iteration
-        
+
         Args:
-            iteration_num (int or str, optional): Iteration to process. 
+            iteration_num (int or str, optional): Iteration to process.
                 Can be integer or 'latest'. Defaults to 'latest'.
-            maxiters (int, optional): Training iterations. 
+            maxiters (int, optional): Training iterations.
                 Defaults: 500000 (DLC2) or 1000 epochs (DLC3).
             refine (bool): Use transfer learning from previous iteration. Defaults to True.
             create_video (bool): Create labeled output video. Defaults to True.
             source_snapshot (int, optional): Specific snapshot for weight initialization.
             **kwargs: Additional arguments.
                 - videos: List of videos to analyze (can be indices or paths).
-        
+
         Returns:
             self: For method chaining.
-        
+
         Example:
             >>> proj = DLCProject('path/to/project')
             >>> proj.process()  # Full automated workflow
         """
         if iteration_num is None:
-            iteration_num = 'latest'
+            iteration_num = "latest"
         else:
             assert isinstance(iteration_num, int)
 
@@ -933,7 +1057,7 @@ class DLCProject:
                 # datanavigator/DUSTrack test-bed iteration loop
                 # (S:\_corpus\dustrack\). REVERT to 1000 before 1.1.0rc2
                 # ships.
-                maxiters = 50 # epochs
+                maxiters = 50  # epochs
             else:
                 maxiters = 500000
 
@@ -944,21 +1068,30 @@ class DLCProject:
         if current_iteration < latest_iteration:
             return self.evaluate().analyze_videos(create_video=create_video)
 
-        self.extract_frames() # do this every time in case there are any updates to the manual annotations.
-        
+        self.extract_frames()  # do this every time in case there are any updates to the manual annotations.
+
         if self.latest_iteration_is_trained():
-            self.increment_iteration() # increment iteration in the config.yaml file
-        
-        if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
+            self.increment_iteration()  # increment iteration in the config.yaml file
+
+        if not os.path.exists(
+            self.paths["training_data"] / f"iteration-{self.current_iteration}"
+        ):
             self.create_training_dataset()
-        
+
         if isinstance(refine, bool) and refine:
-            if not self.latest_iteration_is_trained() and self.current_iteration == self.latest_iteration:
+            if (
+                not self.latest_iteration_is_trained()
+                and self.current_iteration == self.latest_iteration
+            ):
                 if source_snapshot is not None:
-                    source_iteration = self.latest_iteration - int(not self.latest_iteration_is_trained())
+                    source_iteration = self.latest_iteration - int(
+                        not self.latest_iteration_is_trained()
+                    )
                 else:
                     source_iteration = None
-                self.initialize_weights(source_iteration=source_iteration, source_snapshot=source_snapshot)
+                self.initialize_weights(
+                    source_iteration=source_iteration, source_snapshot=source_snapshot
+                )
 
         if not self.current_iteration_is_trained():
             try:
@@ -978,7 +1111,9 @@ class DLCProject:
         if "analyze_batchsize" in kwargs:
             analyze_videos_kwargs["batchsize"] = kwargs.pop("analyze_batchsize")
 
-        return self.evaluate().analyze_videos(create_video=create_video, **analyze_videos_kwargs)
+        return self.evaluate().analyze_videos(
+            create_video=create_video, **analyze_videos_kwargs
+        )
 
     def train_iteration(
         self,
@@ -1067,7 +1202,9 @@ class DLCProject:
         self.extract_frames()  # capture any new manual annotations
         if self.latest_iteration_is_trained():
             self.increment_iteration()
-        if not os.path.exists(self.paths['training_data'] / f'iteration-{self.current_iteration}'):
+        if not os.path.exists(
+            self.paths["training_data"] / f"iteration-{self.current_iteration}"
+        ):
             self.create_training_dataset()
 
         # Apply refine mode.
@@ -1104,7 +1241,9 @@ class DLCProject:
             analyze_kwargs["videos"] = videos
         if analyze_batchsize is not None:
             analyze_kwargs["batchsize"] = analyze_batchsize
-        return self.evaluate().analyze_videos(create_video=create_video, **analyze_kwargs)
+        return self.evaluate().analyze_videos(
+            create_video=create_video, **analyze_kwargs
+        )
 
     def _validate_train_iteration_args(
         self,
@@ -1156,9 +1295,7 @@ class DLCProject:
                     f"external_snapshot_path={external_snapshot_path!r}"
                 )
             if source_iteration is None:
-                raise ValueError(
-                    "refine_mode='in_project' requires source_iteration"
-                )
+                raise ValueError("refine_mode='in_project' requires source_iteration")
             if not isinstance(source_iteration, int):
                 raise TypeError(
                     f"source_iteration must be int, got "
@@ -1197,7 +1334,9 @@ class DLCProject:
                 )
             return
 
-    def annotate(self, video_index: int=0, new_annotation_suffix=None, **dustrack_kwargs):
+    def annotate(
+        self, video_index: int = 0, new_annotation_suffix=None, **dustrack_kwargs
+    ):
         """
         Launch interactive annotation GUI for a video.
 
@@ -1231,11 +1370,13 @@ class DLCProject:
                 new_iteration_num = self.latest_iteration + 1
             else:
                 new_iteration_num = self.latest_iteration
-            new_annotation_suffix = f'iteration-{new_iteration_num}'
+            new_annotation_suffix = f"iteration-{new_iteration_num}"
 
         fm_annotations = VideoFileManager(self, video_index)
-        annotation_names = fm_annotations.get_all_annotation_layers(new_annotation_suffix)
-        annotation_names['buffer'] = fm_annotations.get_new_json('buffer')
+        annotation_names = fm_annotations.get_all_annotation_layers(
+            new_annotation_suffix
+        )
+        annotation_names["buffer"] = fm_annotations.get_new_json("buffer")
         # fast_render default is set by DUSTrack.__init__; no need to
         # duplicate here. Callers can pass ``fast_render=False`` via
         # ``dustrack_kwargs`` to opt out.
@@ -1243,7 +1384,13 @@ class DLCProject:
         # imports DLCProject at module-load; dlcinterface.py can't
         # import gui at module-load without cycling).
         from .gui import DUSTrack
-        ret = DUSTrack(self.video_list[video_index], annotation_names, height_ratios=(3,1,1), **dustrack_kwargs)
+
+        ret = DUSTrack(
+            self.video_list[video_index],
+            annotation_names,
+            height_ratios=(3, 1, 1),
+            **dustrack_kwargs,
+        )
         # Wire the DUSTrack back to this project so the Train / Reduce
         # jitter buttons (and `_refresh_dlc_layers`) work on a
         # re-entered session — without this the GUI's `_dlcproject`
@@ -1273,14 +1420,14 @@ class DLCProject:
     def get_trajectories(self, videos=None, iteration=None):
         """
         Load tracking results as DLCData objects.
-        
+
         Args:
             videos (list or str, optional): Videos to load. Defaults to all videos.
             iteration (int, optional): Model iteration. Defaults to current.
-        
+
         Returns:
             dict: Maps video stem to DLCData object.
-        
+
         Raises:
             ValueError: If a requested video is not in the project.
         """
@@ -1294,16 +1441,17 @@ class DLCProject:
         data = {}
         for video in videos:
             if video not in self.video_list:
-                raise ValueError(f"{video} does not exist in this project. It cannot be loaded.")
-            data[Path(video).stem] = DLCData.from_video(video) ### Need to find a way to relate training iterations (gradient descent) with training iterations (number of times retrained)
+                raise ValueError(
+                    f"{video} does not exist in this project. It cannot be loaded."
+                )
+            data[Path(video).stem] = DLCData.from_video(
+                video
+            )  ### Need to find a way to relate training iterations (gradient descent) with training iterations (number of times retrained)
         return data
-    
+
     def open(self):
         """Open project folder in Windows Explorer."""
         os.system(f'explorer.exe "{str(Path(self.config_path).parent)}"')
-
-
-
 
 
 # ---------------------------------------------------------------------
@@ -1325,14 +1473,23 @@ class DLCProject:
 # load completes. Routing attribute access through __getattr__
 # returns the live value from the loader.
 # ---------------------------------------------------------------------
-_LAZY_NAMES = frozenset((
-    'DLC3', 'deeplabcut', 'VideoWriter', 'ScannerError',
-    '_DLC_LOAD_STATE', '_DLC_LOAD_THREAD',
-    # Loader-state accessors used by tests + the workflow-gates module
-    # for monkeypatch back-compat (``dustrack.dlcinterface._dlc_load_state``).
-    '_dlc_load_state', 'register_dlc_load_callback',
-    '_fire_dlc_load_callbacks', '_DLC_LOAD_CALLBACKS', '_DLC_LOAD_LOCK',
-))
+_LAZY_NAMES = frozenset(
+    (
+        "DLC3",
+        "deeplabcut",
+        "VideoWriter",
+        "ScannerError",
+        "_DLC_LOAD_STATE",
+        "_DLC_LOAD_THREAD",
+        # Loader-state accessors used by tests + the workflow-gates module
+        # for monkeypatch back-compat (``dustrack.dlcinterface._dlc_load_state``).
+        "_dlc_load_state",
+        "register_dlc_load_callback",
+        "_fire_dlc_load_callbacks",
+        "_DLC_LOAD_CALLBACKS",
+        "_DLC_LOAD_LOCK",
+    )
+)
 
 # Names that relocated in the 1.2.0rc1 refactor. Exposed here as a
 # lazy attribute proxy so existing ``from dustrack.dlcinterface import
@@ -1340,33 +1497,60 @@ _LAZY_NAMES = frozenset((
 # eagerly (which would cycle through dlcinterface at module-load time
 # -- gui.py imports DLCProject from this module).
 _RELOCATED_NAMES = {
-    'DUSTrack': ('dustrack.gui', 'DUSTrack'),
-    'open': ('dustrack._open', 'open'),
-    '_open_seed_session': ('dustrack._open', '_open_seed_session'),
-    '_SEED_VIDEO_PATH': ('dustrack._open', '_SEED_VIDEO_PATH'),
-    '_attach_bundles_or_fallback': ('dustrack._open', '_attach_bundles_or_fallback'),
+    "DUSTrack": ("dustrack.gui", "DUSTrack"),
+    "open": ("dustrack._open", "open"),
+    "_open_seed_session": ("dustrack._open", "_open_seed_session"),
+    "_SEED_VIDEO_PATH": ("dustrack._open", "_SEED_VIDEO_PATH"),
+    "_attach_bundles_or_fallback": ("dustrack._open", "_attach_bundles_or_fallback"),
     # Path predicates relocated to _dlc_paths.py in the follow-up refactor.
-    '_is_dlc_config_yaml': ('dustrack._dlc_paths', '_is_dlc_config_yaml'),
-    '_is_dlc_project_root': ('dustrack._dlc_paths', '_is_dlc_project_root'),
-    '_find_dlc_config': ('dustrack._dlc_paths', '_find_dlc_config'),
-    '_find_video_index': ('dustrack._dlc_paths', '_find_video_index'),
-    '_session_inside_dlc_project': ('dustrack._dlc_paths', '_session_inside_dlc_project'),
-    '_resolve_multi_video_from_list': ('dustrack._dlc_paths', '_resolve_multi_video_from_list'),
+    "_is_dlc_config_yaml": ("dustrack._dlc_paths", "_is_dlc_config_yaml"),
+    "_is_dlc_project_root": ("dustrack._dlc_paths", "_is_dlc_project_root"),
+    "_find_dlc_config": ("dustrack._dlc_paths", "_find_dlc_config"),
+    "_find_video_index": ("dustrack._dlc_paths", "_find_video_index"),
+    "_session_inside_dlc_project": (
+        "dustrack._dlc_paths",
+        "_session_inside_dlc_project",
+    ),
+    "_resolve_multi_video_from_list": (
+        "dustrack._dlc_paths",
+        "_resolve_multi_video_from_list",
+    ),
     # Bundle worker -- relocated to _bundle.py (Phase D earlier in 1.2.0rc1).
-    '_BgHydrationWorker': ('dustrack._bundle', '_BgHydrationWorker'),
-    '_BundleState': ('dustrack._bundle', '_BundleState'),
-    '_HDF5_LOCK': ('dustrack._bundle', '_HDF5_LOCK'),
+    "_BgHydrationWorker": ("dustrack._bundle", "_BgHydrationWorker"),
+    "_BundleState": ("dustrack._bundle", "_BundleState"),
+    "_HDF5_LOCK": ("dustrack._bundle", "_HDF5_LOCK"),
     # Modal / overlay factories -- relocated to _overlays.py.
-    '_make_open_video_overlay_class': ('dustrack._overlays', '_make_open_video_overlay_class'),
-    '_make_confirm_overlay_class': ('dustrack._overlays', '_make_confirm_overlay_class'),
-    '_make_progress_overlay_class': ('dustrack._overlays', '_make_progress_overlay_class'),
-    '_make_seed_bundle_picker_class': ('dustrack._overlays', '_make_seed_bundle_picker_class'),
-    '_make_training_options_class': ('dustrack._overlays', '_make_training_options_class'),
-    '_default_training_options': ('dustrack._overlays', '_default_training_options'),
-    '_training_options_to_train_iteration_kwargs': ('dustrack._overlays', '_training_options_to_train_iteration_kwargs'),
-    '_prompt_for_videos': ('dustrack._overlays', '_prompt_for_videos'),
-    '_render_recent_session_label': ('dustrack._overlays', '_render_recent_session_label'),
-    '_show_first_paint_notice': ('dustrack._overlays', '_show_first_paint_notice'),
+    "_make_open_video_overlay_class": (
+        "dustrack._overlays",
+        "_make_open_video_overlay_class",
+    ),
+    "_make_confirm_overlay_class": (
+        "dustrack._overlays",
+        "_make_confirm_overlay_class",
+    ),
+    "_make_progress_overlay_class": (
+        "dustrack._overlays",
+        "_make_progress_overlay_class",
+    ),
+    "_make_seed_bundle_picker_class": (
+        "dustrack._overlays",
+        "_make_seed_bundle_picker_class",
+    ),
+    "_make_training_options_class": (
+        "dustrack._overlays",
+        "_make_training_options_class",
+    ),
+    "_default_training_options": ("dustrack._overlays", "_default_training_options"),
+    "_training_options_to_train_iteration_kwargs": (
+        "dustrack._overlays",
+        "_training_options_to_train_iteration_kwargs",
+    ),
+    "_prompt_for_videos": ("dustrack._overlays", "_prompt_for_videos"),
+    "_render_recent_session_label": (
+        "dustrack._overlays",
+        "_render_recent_session_label",
+    ),
+    "_show_first_paint_notice": ("dustrack._overlays", "_show_first_paint_notice"),
 }
 
 
@@ -1375,7 +1559,7 @@ def __getattr__(name):  # PEP 562 module-level __getattr__
         return getattr(_dlcloader, name)
     if name in _RELOCATED_NAMES:
         import importlib as _il
+
         modname, attr = _RELOCATED_NAMES[name]
         return getattr(_il.import_module(modname), attr)
     raise AttributeError(f"module 'dustrack.dlcinterface' has no attribute {name!r}")
-

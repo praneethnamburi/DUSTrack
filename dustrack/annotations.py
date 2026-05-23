@@ -20,6 +20,7 @@ The Lucas-Kanade postprocess shortcut (``VideoAnnotation.postprocess``)
 is attached in ``dustrack/__init__.py`` rather than here, so this
 module stays free of LK-RSTC concerns.
 """
+
 from __future__ import annotations
 
 import functools
@@ -27,7 +28,7 @@ import json
 import os
 import weakref
 from pathlib import Path
-from typing import Callable, Mapping, Any
+from typing import Any, Mapping
 from tqdm import tqdm
 
 import numpy as np
@@ -160,7 +161,7 @@ class VideoAnnotation:
         vname: str | None = None,
         name: str | None = None,
         n_labels: int = 1,
-        **kwargs
+        **kwargs,
     ) -> None:
         self.fname, vname = self._parse_inp(fname, vname, name)
 
@@ -211,15 +212,14 @@ class VideoAnnotation:
             self.data = preloaded_json
 
         self._original_palette = utils.get_palette(
-            kwargs.pop("palette_name", "Set2"),
-            n_colors=1000
+            kwargs.pop("palette_name", "Set2"), n_colors=1000
         )  # seaborn Set 2
         self.plot_handles = {
             "ax_list_scatter": kwargs.pop("ax_list_scatter", []),
             "ax_list_trace_x": kwargs.pop("ax_list_trace_x", []),
             "ax_list_trace_y": kwargs.pop("ax_list_trace_y", []),
         }
-        self._plot_type = "dot" # line or dot
+        self._plot_type = "dot"  # line or dot
         self.setup_display()
 
     @property
@@ -265,7 +265,9 @@ class VideoAnnotation:
         """Merge annotations from multiple files.
         If multiple files contain an annotation label for the same frame, values from the last file will be kept.
         """
-        ann_list: list[VideoAnnotation] = [cls(fname, vname, name, **kwargs) for fname in fname_list]
+        ann_list: list[VideoAnnotation] = [
+            cls(fname, vname, name, **kwargs) for fname in fname_list
+        ]
         assert len({ann.video.name for ann in ann_list}) == 1
 
         labels = sorted(list({label for ann in ann_list for label in ann.labels}))
@@ -498,7 +500,7 @@ class VideoAnnotation:
     def labels(self) -> list[str]:
         """Labels of the annotations."""
         return list(self.data.keys())
-    
+
     @property
     def palette(self) -> list[tuple]:
         """Color palette for the annotations."""
@@ -523,12 +525,12 @@ class VideoAnnotation:
         )
         ret.sort()
         return ret
-    
+
     @property
     def plot_type(self) -> str:
         """Type of plot to use for the annotations."""
         return self._plot_type
-    
+
     @plot_type.setter
     def plot_type(self, plot_type: str) -> None:
         """Set the type of plot to use for the annotations.
@@ -592,7 +594,7 @@ class VideoAnnotation:
             json.dump(data, f, indent=4)
         labels_annotations = {label: len(self.data[label]) for label in self.labels}
         print(f"Saved {fname} with labels-n_annotations \n {labels_annotations}")
-    
+
     def to_json(self) -> None:
         """Alias for save method."""
         fname = self.fname
@@ -624,12 +626,20 @@ class VideoAnnotation:
 
         last_index = last_nonzero_index(n_labeled_frames)
 
-        self.data = {label: self.data[label] for idx, label in enumerate(self.labels) if idx <= last_index}
+        self.data = {
+            label: self.data[label]
+            for idx, label in enumerate(self.labels)
+            if idx <= last_index
+        }
         self._revision += 1
 
     def remove_empty_labels(self) -> None:
         """Remove empty labels from the annotation dictionary."""
-        self.data = {label: self.data[label] for label in self.labels if len(self.data[label]) > 0}
+        self.data = {
+            label: self.data[label]
+            for label in self.labels
+            if len(self.data[label]) > 0
+        }
         self._revision += 1
 
     def get_values_cv(self, frame_num: int) -> np.ndarray:
@@ -667,9 +677,7 @@ class VideoAnnotation:
                 ret.append([np.nan, np.nan])
         return ret
 
-    def __getitem__(
-        self, key: str | int
-    ) -> dict[int, list[float]] | list[list[float]]:
+    def __getitem__(self, key: str | int) -> dict[int, list[float]] | list[list[float]]:
         """Easy access to specific annotation, or data from a frame number."""
         if key in self.labels:
             return self.data[key]
@@ -814,7 +822,7 @@ class VideoAnnotation:
             Mapping[str, pysampled.Data]: Dictionary mapping labels to pysampled.Data.
         """
         return {label: self.to_signal(label) for label in self.labels}
-    
+
     def to_pysampled(self) -> pysampled.Data:
         """Return annotations as a pysampled.Data object
 
@@ -826,7 +834,7 @@ class VideoAnnotation:
             sr=self.video.get_avg_fps(),
             signal_names=self.labels,
             signal_coords=["x", "y"],
-            )
+        )
 
     def add_label(
         self,
@@ -841,7 +849,7 @@ class VideoAnnotation:
         assert label.isdigit()
 
         if int(label) > len(self._original_palette):
-            self._original_palette = self._original_palette*2
+            self._original_palette = self._original_palette * 2
         if color is None:
             color = self._original_palette[int(label)]
 
@@ -874,9 +882,7 @@ class VideoAnnotation:
         self._revision += 1
 
     # display management
-    def _process_ax_list(
-        self, ax_list, type_: str
-    ) -> list:
+    def _process_ax_list(self, ax_list, type_: str) -> list:
         """Process the list of axes (or Tier-2 scatter targets) for plots.
 
         The trace-axis types must still be mpl axes -- traces remain
@@ -901,7 +907,8 @@ class VideoAnnotation:
         return ax_list
 
     def setup_display_scatter(
-        self, ax_list_scatter=None,
+        self,
+        ax_list_scatter=None,
     ) -> None:
         """Setup scatter plot display.
 
@@ -920,9 +927,7 @@ class VideoAnnotation:
         dummy_xy = [np.nan] * len(palette)
         for ax_cnt, ax in enumerate(ax_list_scatter):
             if isinstance(ax, plt.Axes):
-                handle = ax.scatter(
-                    dummy_xy, dummy_xy, color=palette, picker=5
-                )
+                handle = ax.scatter(dummy_xy, dummy_xy, color=palette, picker=5)
             else:
                 # Qt marker group -> _QtScatterArtist facade.
                 # The marker group carries a back-reference to the
@@ -930,10 +935,14 @@ class VideoAnnotation:
                 # lets the artist register for pick-adapter
                 # hit-testing.
                 from datanavigator._qt import _make_qt_scatter_artist_class
+
                 scatter_cls = _make_qt_scatter_artist_class()
                 image_pane = getattr(ax, "_image_pane", None)
                 handle = scatter_cls(
-                    ax, palette, picker_radius=5.0, image_pane=image_pane,
+                    ax,
+                    palette,
+                    picker_radius=5.0,
+                    image_pane=image_pane,
                 )
             self.plot_handles[f"labels_in_ax{ax_cnt}"] = handle
 
@@ -997,7 +1006,7 @@ class VideoAnnotation:
                     if handle_name in self.plot_handles:
                         self.plot_handles[handle_name].remove()
         plt.draw()
-    
+
     def re_setup_display(self) -> None:
         """re-establish display elements when adding a label"""
         self.clear_display()
@@ -1193,9 +1202,7 @@ class VideoAnnotation:
             )
             return
         self.data = {
-            label: {
-                k: v for k, v in self.data[label].items() if k in frames_to_keep
-            }
+            label: {k: v for k, v in self.data[label].items() if k in frames_to_keep}
             for label in self.labels
         }
         self._revision += 1
@@ -1216,9 +1223,7 @@ class VideoAnnotation:
             )
             return
         self.data = {
-            label: {
-                k: v for k, v in self.data[label].items() if k in frames_to_keep
-            }
+            label: {k: v for k, v in self.data[label].items() if k in frames_to_keep}
             for label in self.labels
         }
         self._revision += 1
@@ -1256,19 +1261,24 @@ class VideoAnnotation:
         if self.video is None:  # return np.array
             return area_vals
         return pysampled.Data(area_vals, sr=self.video.get_avg_fps())
-    
+
     def export_video(self, out_file_name=None, start_frame=None, end_frame=None):
         assert self.video is not None
 
         if start_frame is None:
             start_frame = 0
-        
+
         if end_frame is None:
             end_frame = self.n_frames - 1
 
         if out_file_name is None:
-            assert self.fname is not None, "Please provide a file name to save the video."
-            out_file_name = str(Path(self.fname).parent / f"{Path(self.fname).stem}_sf{start_frame}_ef{end_frame}.mp4")
+            assert (
+                self.fname is not None
+            ), "Please provide a file name to save the video."
+            out_file_name = str(
+                Path(self.fname).parent
+                / f"{Path(self.fname).stem}_sf{start_frame}_ef{end_frame}.mp4"
+            )
             print(f"Saving video to {out_file_name}")
 
         dpi = 200
@@ -1282,6 +1292,7 @@ class VideoAnnotation:
             arr = self.video[i].asnumpy()
             if arr.ndim == 2:
                 import cv2 as _cv2
+
                 arr = _cv2.cvtColor(arr, _cv2.COLOR_GRAY2RGB)
             return arr
 
@@ -1292,9 +1303,16 @@ class VideoAnnotation:
 
             figure = plt.figure(frameon=False, figsize=((nx / dpi), (ny / dpi)))
             ax = figure.add_subplot(111)
-            dummy_xy = [np.nan]*len(ann.palette)
+            dummy_xy = [np.nan] * len(ann.palette)
             plot_handles["im"] = ax.imshow(first_frame)
-            plot_handles["scatter"] = ax.scatter(dummy_xy, dummy_xy, color=ann.palette, s=4**2, edgecolors=[0, 0, 0], linewidths=0.3)
+            plot_handles["scatter"] = ax.scatter(
+                dummy_xy,
+                dummy_xy,
+                color=ann.palette,
+                s=4**2,
+                edgecolors=[0, 0, 0],
+                linewidths=0.3,
+            )
             ax.set_xlim(0, nx)
             ax.set_ylim(0, ny)
             ax.axis("off")
@@ -1311,8 +1329,8 @@ class VideoAnnotation:
                 scatter_points = ann.get_at_frame(frame_number)
             scatter_offsets[[int(label) for label in ann.labels], :] = scatter_points
             plot_handles["im"].set_data(_read_frame_rgb(frame_number))
-            plot_handles['scatter'].set_offsets(scatter_offsets)
-        
+            plot_handles["scatter"].set_offsets(scatter_offsets)
+
         prev_backend = plt.get_backend()
         plt.switch_backend("agg")
         plot_handles = setup(self)
@@ -1320,17 +1338,21 @@ class VideoAnnotation:
         n_frames = end_frame - start_frame + 1
         writer = FFMpegWriter(fps=self.video.get_avg_fps(), codec="h264")
 
-        
         assert not os.path.exists(out_file_name)
         p1, p2 = list(self.to_signals().values())
         p1 = p1.lowpass(15)
         p2 = p2.lowpass(15)
         with writer.saving(plot_handles["figure"], out_file_name, dpi=dpi):
-            for frame_number in tqdm(range(start_frame, end_frame+1)): # tqdm(range(ann.n_frames)):
-                scatter_points = [list(p1[int(frame_number)]), list(p2[int(frame_number)])]
+            for frame_number in tqdm(
+                range(start_frame, end_frame + 1)
+            ):  # tqdm(range(ann.n_frames)):
+                scatter_points = [
+                    list(p1[int(frame_number)]),
+                    list(p2[int(frame_number)]),
+                ]
                 update(self, frame_number, plot_handles, scatter_points=scatter_points)
                 writer.grab_frame()
-        
+
         plt.close(plot_handles["figure"])
         plt.switch_backend(prev_backend)
 

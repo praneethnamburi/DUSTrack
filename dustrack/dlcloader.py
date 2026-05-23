@@ -26,6 +26,7 @@ Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1. The names
 are re-imported by ``dlcinterface.py`` so existing
 ``from dustrack.dlcinterface import HAS_DLC`` paths keep working.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -174,7 +175,9 @@ def register_dlc_load_callback(cb) -> None:
     if fire_now:
         try:
             cb()
-        except Exception:  # noqa: BLE001 -- defensive; callback errors must not propagate.
+        except (
+            Exception
+        ):  # noqa: BLE001 -- defensive; callback errors must not propagate.
             traceback.print_exc()
 
 
@@ -186,12 +189,14 @@ def _fire_dlc_load_callbacks() -> None:
     for cb in callbacks:
         try:
             cb()
-        except Exception:  # noqa: BLE001 -- defensive; one bad callback can't block the rest.
+        except (
+            Exception
+        ):  # noqa: BLE001 -- defensive; one bad callback can't block the rest.
             traceback.print_exc()
 
 
 if not HAS_DLC:
     warnings.warn(
-        'deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.',
+        "deeplabcut is not installed. You can still use the optical flow functions with DUSTrack.",
         stacklevel=2,
     )

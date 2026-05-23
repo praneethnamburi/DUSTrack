@@ -21,16 +21,16 @@ Path-classification helpers (:func:`_is_dlc_config_yaml` /
 
 Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1.
 """
+
 from __future__ import annotations
 
-import os
-import warnings
 from pathlib import Path
 from typing import Optional
 
+import matplotlib.pyplot as plt
+
 from . import _config
 from ._overlays import (
-    _VIDEO_PICKER_EXTENSIONS,
     _make_open_video_overlay_class,
     _prompt_for_videos,
     _show_first_paint_notice,
@@ -42,7 +42,6 @@ from ._dlc_paths import (
     _is_dlc_config_yaml,
     _is_dlc_project_root,
     _resolve_multi_video_from_list,
-    _session_inside_dlc_project,
 )
 from .dlcloader import HAS_DLC, _ensure_dlc_loaded_async
 from .gui import DUSTrack
@@ -53,7 +52,6 @@ from .gui import DUSTrack
 # h264 (~1.7 KB); co-shipped ``.mp4.dnav-toc`` skips the first-launch
 # TOC build. Regeneratable via ``tests/_assets/build_seed_video.py``.
 _SEED_VIDEO_PATH = Path(__file__).resolve().parent / "_data" / "seed_video.mp4"
-
 
 
 def _open_seed_session(**dustrack_kwargs):
@@ -76,9 +74,7 @@ def _open_seed_session(**dustrack_kwargs):
             unavailable" and falls back to the legacy direct picker.
     """
     if not _SEED_VIDEO_PATH.is_file():
-        raise FileNotFoundError(
-            f"seed video asset missing: {_SEED_VIDEO_PATH}"
-        )
+        raise FileNotFoundError(f"seed video asset missing: {_SEED_VIDEO_PATH}")
     # Phase 1 layer naming: ``_seed`` keeps the seed annotations
     # distinct from any real session's ``iteration-0`` layer (in
     # particular, the seed's ``buffer`` layer won't collide with a
@@ -94,10 +90,6 @@ def _open_seed_session(**dustrack_kwargs):
     if init is not None:
         init(project=None, video_paths=[_SEED_VIDEO_PATH])
     return tracker
-
-
-
-
 
 
 def open(path=None, layer_name=None, **dustrack_kwargs):
@@ -244,7 +236,8 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             OpenVideoOverlay = _make_open_video_overlay_class()
             recent = _config.get_recent_sessions()
             picked = OpenVideoOverlay(
-                qt_window, recent_sessions=recent,
+                qt_window,
+                recent_sessions=recent,
             ).exec_()
             if picked is None:
                 # Window X / dismiss -> close the seed tracker and
@@ -261,7 +254,8 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             seed_tracker._is_seed_session = False
             try:
                 seed_tracker.replace_active_with(
-                    picked, layer_name=layer_name,
+                    picked,
+                    layer_name=layer_name,
                 )
             except Exception:
                 # If hydration of the picked path failed, the
@@ -304,9 +298,7 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
         path_list = [Path(p) for p in path]
         for p in path_list:
             if not p.exists():
-                raise FileNotFoundError(
-                    f"dustrack.open: path does not exist: {p}"
-                )
+                raise FileNotFoundError(f"dustrack.open: path does not exist: {p}")
         if len(path_list) == 1:
             # Single-element list dispatches identically to a scalar
             # path -- preserves the pre-1.2.0a3 list-form parity.
@@ -445,7 +437,8 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             **dustrack_kwargs,
         )
         _attach_bundles_or_fallback(
-            tracker, project,
+            tracker,
+            project,
             [Path(project.video_list[video_index])],
         )
 
@@ -468,6 +461,3 @@ def _attach_bundles_or_fallback(tracker, project, video_paths) -> None:
         init(project=project, video_paths=video_paths)
         return
     tracker._video_queue = [Path(v) for v in video_paths[1:]]
-
-
-

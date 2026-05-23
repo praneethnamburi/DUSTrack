@@ -106,6 +106,26 @@ from .seed import (
     set_seed_bundles_root,
 )
 
+__all__ = [
+    "__version__",
+    "DUSTrack",
+    "DLCProject",
+    "VideoAnnotation",
+    "VideoAnnotations",
+    "convert_to_mono",
+    "dlcpatch",
+    "extract_snapshot_for_seeding",
+    "get_seed_bundles_root",
+    "import_seed_bundle_into_project",
+    "inspect_seed_bundle",
+    "list_seed_bundles",
+    "lk_moving_average_filter",
+    "lucas_kanade",
+    "lucas_kanade_rstc",
+    "open",
+    "set_seed_bundles_root",
+]
+
 # ``dlcpatch`` exposes two independent runtime patches for DLC:
 #
 #   * ``patch_dlc()`` -- multi-threaded preprocessing + force-on

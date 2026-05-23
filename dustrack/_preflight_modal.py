@@ -29,6 +29,7 @@ thin coordinator on top of both.
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from ._overlays import _make_confirm_overlay_class
@@ -151,7 +152,10 @@ def apply_pre_flight_remediations(annotations, video_fname, issues: dict) -> Non
     ``_file_management``).
     """
     from ._file_management import make_annotation_file_name
+
     _apply_remediations_logic(
-        annotations, video_fname, issues,
+        annotations,
+        video_fname,
+        issues,
         make_annotation_file_name=make_annotation_file_name,
     )

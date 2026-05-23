@@ -19,6 +19,7 @@ Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1. Public
 for downstream callers (no underscore prefix); kept callable as
 ``dustrack._image_enhance.enhance_ultrasound_image`` after the move.
 """
+
 from __future__ import annotations
 
 import cv2 as cv
@@ -29,7 +30,9 @@ import numpy as np
 # Full enhancement pipeline (public, called by DUSTrack.update on the
 # active frame)
 # ---------------------------------------------------------------------
-def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, brightness=0):
+def enhance_ultrasound_image(
+    image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, brightness=0
+):
     """
     Enhance ultrasound image for better visibility.
 
@@ -56,12 +59,16 @@ def enhance_ultrasound_image(image, clahe_clip=2.0, clahe_grid=8, gamma=1.0, bri
     # Apply gamma correction
     if gamma != 1.0:
         inv_gamma = 1.0 / gamma
-        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(
+            "uint8"
+        )
         enhanced = cv.LUT(enhanced, table)
 
     # Apply brightness
     if brightness != 0:
-        enhanced = np.clip(enhanced.astype(np.int16) + brightness, 0, 255).astype(np.uint8)
+        enhanced = np.clip(enhanced.astype(np.int16) + brightness, 0, 255).astype(
+            np.uint8
+        )
 
     # Convert back to RGB for matplotlib
     return cv.cvtColor(enhanced, cv.COLOR_GRAY2RGB)
@@ -128,9 +135,9 @@ def _apply_gamma_only(image, gamma: float):
     the grayscale intermediate.
     """
     inv_gamma = 1.0 / float(gamma)
-    table = np.array(
-        [((i / 255.0) ** inv_gamma) * 255 for i in range(256)]
-    ).astype("uint8")
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(
+        "uint8"
+    )
     return cv.LUT(image, table)
 
 
@@ -168,10 +175,10 @@ def _enhance_is_passthrough(clahe_clip: float, gamma: float) -> bool:
 #   (p50~60, dyn~80) a near-bypass (clip~1.0, gamma=1.0); Auto
 #   only kicks in noticeably for dark + low-contrast frames.
 # Adjust here, not in callers.
-_AUTO_DYN_RANGE_LOW = 0.0     # at this dyn range, suggest clip=max
-_AUTO_DYN_RANGE_HIGH = 75.0   # at this dyn range, suggest clip=min
-_AUTO_MEDIAN_DARK = 0.0       # at this median, suggest gamma=max
-_AUTO_MEDIAN_MID = 25.0       # at this median, suggest gamma=min
+_AUTO_DYN_RANGE_LOW = 0.0  # at this dyn range, suggest clip=max
+_AUTO_DYN_RANGE_HIGH = 75.0  # at this dyn range, suggest clip=min
+_AUTO_MEDIAN_DARK = 0.0  # at this median, suggest gamma=max
+_AUTO_MEDIAN_MID = 25.0  # at this median, suggest gamma=min
 
 
 def _auto_enhance_params(image) -> tuple[float, float]:
@@ -239,8 +246,13 @@ def _make_enhance_widget_class():
     """
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider,
-        QVBoxLayout, QWidget,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QSizePolicy,
+        QSlider,
+        QVBoxLayout,
+        QWidget,
     )
 
     class EnhanceWidget(QWidget):
@@ -279,7 +291,8 @@ def _make_enhance_widget_class():
 
             # CLAHE clip slider row.
             self._clip_label = QLabel(
-                f"Clip: {float(owner._clahe_clip):.2f}", self,
+                f"Clip: {float(owner._clahe_clip):.2f}",
+                self,
             )
             outer.addWidget(self._clip_label)
             self._clip_slider = QSlider(Qt.Horizontal, self)
@@ -291,7 +304,8 @@ def _make_enhance_widget_class():
 
             # Gamma slider row.
             self._gamma_label = QLabel(
-                f"Gamma: {float(owner._gamma):.2f}", self,
+                f"Gamma: {float(owner._gamma):.2f}",
+                self,
             )
             outer.addWidget(self._gamma_label)
             self._gamma_slider = QSlider(Qt.Horizontal, self)

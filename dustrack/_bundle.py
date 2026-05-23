@@ -121,7 +121,6 @@ class _BundleState:
         return self.hydration_state in (HYDRATION_READY, HYDRATION_FAILED)
 
 
-
 # ---------------------------------------------------------------------
 # Background hydration worker
 # ---------------------------------------------------------------------
@@ -264,7 +263,9 @@ class _BgHydrationWorker:
                 continue
             try:
                 self.dustrack._finalise_bundle_artists(
-                    bundle, payload, self.project,
+                    bundle,
+                    payload,
+                    self.project,
                 )
             except BaseException as exc:  # noqa: BLE001
                 bundle.hydration_state = HYDRATION_FAILED
@@ -281,9 +282,7 @@ class _BgHydrationWorker:
         # Queue is drained for this tick. If every bundle has reached
         # a terminal state, stop the poller so it doesn't keep
         # firing forever on an empty queue.
-        if self._poll_timer is not None and all(
-            b.is_terminal for b in self.bundles
-        ):
+        if self._poll_timer is not None and all(b.is_terminal for b in self.bundles):
             try:
                 self._poll_timer.stop()
             except Exception:  # noqa: BLE001
@@ -309,7 +308,8 @@ class _BgHydrationWorker:
     def _hydrate_one(self, bundle) -> None:
         try:
             payload = self.dustrack._hydrate_bundle_data_only(
-                bundle, self.project,
+                bundle,
+                self.project,
             )
         except BaseException as exc:  # noqa: BLE001
             bundle.hydration_state = HYDRATION_FAILED
@@ -351,9 +351,6 @@ class _BgHydrationWorker:
 # :func:`hydrate_bundle_sync` runs both halves on the calling thread
 # (used by single-video entry paths + tests). The multi-video happy
 # path goes through :class:`_BgHydrationWorker`.
-
-import os
-from typing import Any  # noqa: F401 -- re-exported in some signatures
 
 
 def _ann_path_alongside_video(bundle: "_BundleState", layer_name: str) -> str:
@@ -443,7 +440,10 @@ def hydrate_bundle_data_only(dustrack, bundle: "_BundleState", project) -> dict:
 
 
 def hydrate_phase1_bundle_data(
-    dustrack, bundle: "_BundleState", *, layer_name: str = "iteration-0",
+    dustrack,
+    bundle: "_BundleState",
+    *,
+    layer_name: str = "iteration-0",
 ) -> dict:
     """Off-thread half of Phase 1 (bare-video, no DLC project) hydration.
 
@@ -499,9 +499,7 @@ def _union_labels_across_layers(container) -> None:
     each layer presents the same label rotation. Mirrors
     ``_DUSTrackBase.add_annotation_layers``.
     """
-    all_labels = sorted(
-        {label for ann in container._list for label in ann.labels}
-    )
+    all_labels = sorted({label for ann in container._list for label in ann.labels})
     if not all_labels:
         all_labels = ["0"]
     for ann in container._list:
@@ -513,7 +511,10 @@ def _union_labels_across_layers(container) -> None:
 
 
 def finalise_bundle_artists(
-    dustrack, bundle: "_BundleState", payload: dict, project,
+    dustrack,
+    bundle: "_BundleState",
+    payload: dict,
+    project,
 ) -> None:
     """Qt-thread half of bundle hydration.
 
@@ -566,7 +567,9 @@ def finalise_bundle_artists(
     bundle.annotations = container
     # Derive the canonical fresh-load selections for this bundle.
     derived = derive_initial_bundle_selections(
-        dustrack, container, project=project,
+        dustrack,
+        container,
+        project=project,
     )
     # If the user toggled a broadcast statevar (annotation_label /
     # label_range / number_keys) while this bundle was pending, the
@@ -601,10 +604,7 @@ def derive_initial_bundle_selections(dustrack, container, project=None) -> dict:
     names = container.names
     # Latest manual layer = active. Manual layers are everything
     # except buffer / dense (dlc_* / dlccorr* / lkmovavg).
-    manuals = [
-        n for n in names
-        if n != "buffer" and not _is_dense_layer_name(n)
-    ]
+    manuals = [n for n in names if n != "buffer" and not _is_dense_layer_name(n)]
     # The new iteration-{N+1} layer (just created by
     # get_all_annotation_layers) lands at the tail of the manuals
     # block -- match DLCProject.annotate's convention by picking the

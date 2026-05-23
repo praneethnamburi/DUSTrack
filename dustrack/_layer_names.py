@@ -29,6 +29,7 @@ Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1; the manual-
 layer predicates + filename constructor folded in during the 1.2.0rc1
 follow-up refactor (lifted from ``gui.DUSTrack``).
 """
+
 from __future__ import annotations
 
 import os
@@ -79,9 +80,8 @@ def _is_dense_layer_name(name: str) -> bool:
     manual edits spliced in -- per-frame coverage is inherited from
     the overlay.
     """
-    return (
-        any(name.startswith(p) for p in _DENSE_LAYER_PREFIXES)
-        or any(s in name for s in _DENSE_LAYER_SUBSTRINGS)
+    return any(name.startswith(p) for p in _DENSE_LAYER_PREFIXES) or any(
+        s in name for s in _DENSE_LAYER_SUBSTRINGS
     )
 
 

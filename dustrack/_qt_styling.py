@@ -16,6 +16,7 @@ Two concerns:
 
 Extracted from ``dlcinterface.py`` in dustrack 1.2.0rc1.
 """
+
 from __future__ import annotations
 
 
@@ -95,31 +96,31 @@ def _pin_qt_palette(dark: bool) -> None:
     app.setStyle("Fusion")
     pal = QPalette()
     if dark:
-        pal.setColor(QPalette.Window,          QColor(45, 45, 45))
-        pal.setColor(QPalette.WindowText,      QColor(220, 220, 220))
-        pal.setColor(QPalette.Base,            QColor(30, 30, 30))
-        pal.setColor(QPalette.AlternateBase,   QColor(45, 45, 45))
-        pal.setColor(QPalette.Text,            QColor(220, 220, 220))
-        pal.setColor(QPalette.Button,          QColor(60, 60, 60))
-        pal.setColor(QPalette.ButtonText,      QColor(220, 220, 220))
-        pal.setColor(QPalette.ToolTipBase,     QColor(45, 45, 45))
-        pal.setColor(QPalette.ToolTipText,     QColor(220, 220, 220))
-        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
+        pal.setColor(QPalette.Window, QColor(45, 45, 45))
+        pal.setColor(QPalette.WindowText, QColor(220, 220, 220))
+        pal.setColor(QPalette.Base, QColor(30, 30, 30))
+        pal.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+        pal.setColor(QPalette.Text, QColor(220, 220, 220))
+        pal.setColor(QPalette.Button, QColor(60, 60, 60))
+        pal.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+        pal.setColor(QPalette.ToolTipBase, QColor(45, 45, 45))
+        pal.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+        pal.setColor(QPalette.Highlight, QColor(70, 110, 180))
         pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
     else:
         # Explicit light palette. Do NOT use ``app.style().standardPalette()``
         # -- in Qt 6.5+ Fusion's standard palette follows the OS color
         # scheme, so on a Windows-dark-mode machine it returns dark
         # colors and the whole point of the pin is lost.
-        pal.setColor(QPalette.Window,          QColor(240, 240, 240))
-        pal.setColor(QPalette.WindowText,      QColor(0, 0, 0))
-        pal.setColor(QPalette.Base,            QColor(255, 255, 255))
-        pal.setColor(QPalette.AlternateBase,   QColor(245, 245, 245))
-        pal.setColor(QPalette.Text,            QColor(0, 0, 0))
-        pal.setColor(QPalette.Button,          QColor(240, 240, 240))
-        pal.setColor(QPalette.ButtonText,      QColor(0, 0, 0))
-        pal.setColor(QPalette.ToolTipBase,     QColor(255, 255, 220))
-        pal.setColor(QPalette.ToolTipText,     QColor(0, 0, 0))
-        pal.setColor(QPalette.Highlight,       QColor(70, 110, 180))
+        pal.setColor(QPalette.Window, QColor(240, 240, 240))
+        pal.setColor(QPalette.WindowText, QColor(0, 0, 0))
+        pal.setColor(QPalette.Base, QColor(255, 255, 255))
+        pal.setColor(QPalette.AlternateBase, QColor(245, 245, 245))
+        pal.setColor(QPalette.Text, QColor(0, 0, 0))
+        pal.setColor(QPalette.Button, QColor(240, 240, 240))
+        pal.setColor(QPalette.ButtonText, QColor(0, 0, 0))
+        pal.setColor(QPalette.ToolTipBase, QColor(255, 255, 220))
+        pal.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
+        pal.setColor(QPalette.Highlight, QColor(70, 110, 180))
         pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
     app.setPalette(pal)

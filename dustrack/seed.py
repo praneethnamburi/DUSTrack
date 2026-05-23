@@ -33,17 +33,18 @@ rewriting them when wiring the bundle into a destination project.
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 from typing import Optional, Union
 
 import yaml
 
-# User-config IO lives in ``_config.py`` (canonical home) -- re-exported
-# here so existing direct callers (and the seed-bundles-root accessors
-# below) keep working without paths or imports changing externally.
-from ._config import (
+# User-config IO lives in ``_config.py`` (canonical home). The four
+# names below are re-exported here for back-compat: the test fixture
+# in ``tests/test_seed.py`` monkeypatches ``dustrack.seed._USER_CONFIG_DIR``
+# / ``_USER_CONFIG_PATH``, and external callers of the seed module
+# reach for ``_read_user_config`` / ``_write_user_config`` directly.
+from ._config import (  # noqa: F401  -- intentional re-exports
     _USER_CONFIG_DIR,
     _USER_CONFIG_PATH,
     _read_user_config,
@@ -167,9 +168,7 @@ def extract_snapshot_for_seeding(
     shutil.copy2(pytorch_config, destination_path / pytorch_config.name)
     shutil.copy2(pose_cfg, destination_path / pose_cfg.name)
     if description:
-        (destination_path / "description.txt").write_text(
-            description.strip() + "\n"
-        )
+        (destination_path / "description.txt").write_text(description.strip() + "\n")
 
     return destination_path
 
@@ -198,9 +197,7 @@ def inspect_seed_bundle(bundle_path: Union[str, Path]) -> dict:
 
     pt_files = sorted(bundle_path.glob("snapshot-*.pt"))
     if not pt_files:
-        raise FileNotFoundError(
-            f"No snapshot-*.pt in bundle: {bundle_path}"
-        )
+        raise FileNotFoundError(f"No snapshot-*.pt in bundle: {bundle_path}")
     if len(pt_files) > 1:
         raise ValueError(
             f"Bundle has {len(pt_files)} snapshot-*.pt files; expected exactly one: "
@@ -226,9 +223,7 @@ def inspect_seed_bundle(bundle_path: Union[str, Path]) -> dict:
 
     description_path = bundle_path / "description.txt"
     description = (
-        description_path.read_text().strip()
-        if description_path.is_file()
-        else ""
+        description_path.read_text().strip() if description_path.is_file() else ""
     )
 
     return {
@@ -301,9 +296,7 @@ def import_seed_bundle_into_project(
     cfg = dlc_project.config
     proj_id = f"{cfg['Task']}{cfg['date']}"
     train_frac = cfg["TrainingFraction"][0]
-    modelfolder_name = (
-        f"{proj_id}-trainset{int(train_frac * 100)}shuffle{shuffle}"
-    )
+    modelfolder_name = f"{proj_id}-trainset{int(train_frac * 100)}shuffle{shuffle}"
 
     project_root = Path(dlc_project.config_path).parent
     modelfolder = (

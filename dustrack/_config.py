@@ -32,11 +32,12 @@ are general-purpose. ``seed.py`` continues to re-export
 ``_read_user_config`` / ``_write_user_config`` for back-compat with
 any direct callers.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 # Experimenter name used when creating DeepLabCut projects.
 # This identifier is embedded in project paths and configuration files.
@@ -87,6 +88,7 @@ def _write_user_config(cfg: dict) -> None:
 # ---------------------------------------------------------------------
 # Recent-session history (unified list-of-path-tuples)
 # ---------------------------------------------------------------------
+
 
 def _migrate_legacy_recent_keys(cfg: dict) -> dict:
     """Fold pre-1.2.0a3 ``recent_videos`` / ``recent_folders`` keys into
@@ -296,6 +298,7 @@ def get_recent_sessions() -> list[list[Path]]:
 # ---------------------------------------------------------------------
 # Back-compat accessors (pre-1.2.0a3 surface)
 # ---------------------------------------------------------------------
+
 
 def record_recent_video(path: Union[str, Path]) -> None:
     """Pre-1.2.0a3 single-video recorder. Forwarded to the unified

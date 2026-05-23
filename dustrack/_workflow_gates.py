@@ -21,6 +21,7 @@ resolves.
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 import traceback
@@ -83,8 +84,7 @@ def evaluate_workflow_gates(dustrack) -> dict:
     if dustrack._current_overlay is None:
         gates["Apply manual corrections"] = (
             False,
-            "Set an overlay layer (typically a 'dlc_*' trace) "
-            "first.",
+            "Set an overlay layer (typically a 'dlc_*' trace) " "first.",
         )
     elif ann_name == corrections_layer:
         gates["Apply manual corrections"] = (

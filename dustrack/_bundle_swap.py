@@ -30,6 +30,7 @@ Pairs with :mod:`._bundle` (the per-bundle hydration half).
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 import time as _time
@@ -81,11 +82,14 @@ def init_bundles(dustrack, project, video_paths: list) -> None:
     # Pending bundles for the tail. All share the same project as
     # bundle 0 (multi-video contract: same-project only).
     for i, vp in enumerate(video_paths[1:], start=1):
-        dustrack._bundles.append(_BundleState(
-            fname=Path(vp), video_index=i,
-            project=project,
-            hydration_state=HYDRATION_PENDING,
-        ))
+        dustrack._bundles.append(
+            _BundleState(
+                fname=Path(vp),
+                video_index=i,
+                project=project,
+                hydration_state=HYDRATION_PENDING,
+            )
+        )
 
     dustrack._active_index = 0
     # Back-compat: ``_video_queue`` (set since 1.2.0a2 by
@@ -96,7 +100,9 @@ def init_bundles(dustrack, project, video_paths: list) -> None:
     dustrack._hydration_worker = None
     if project is not None and len(dustrack._bundles) > 1:
         dustrack._hydration_worker = _BgHydrationWorker(
-            dustrack, project, dustrack._bundles[1:],
+            dustrack,
+            project,
+            dustrack._bundles[1:],
         )
         dustrack._hydration_worker.start()
 
@@ -114,6 +120,7 @@ def init_bundles(dustrack, project, video_paths: list) -> None:
     # of swap_to.
     try:
         from qtpy.QtCore import QTimer
+
         QTimer.singleShot(0, dustrack.figure.canvas.draw)
     except Exception:  # noqa: BLE001
         try:
@@ -177,7 +184,9 @@ def capture_statevar_selections(dustrack) -> dict:
 
 
 def restore_statevar_selections(
-    dustrack, selections: dict, layer_names: list,
+    dustrack,
+    selections: dict,
+    layer_names: list,
 ) -> None:
     """Rewrite each statevar's ``states`` list to the new bundle's
     rotation, restore the snapshotted selection silently (bypass
@@ -248,6 +257,7 @@ def await_hydration(bundle: _BundleState) -> bool:
         return bundle.is_ready
     try:
         from qtpy.QtCore import QCoreApplication
+
         qt_pump = QCoreApplication.processEvents
     except Exception:  # noqa: BLE001
         qt_pump = None
@@ -329,7 +339,9 @@ def swap_to(dustrack, index: int) -> bool:
 
     # 5. Restore statevars + image viewport + enhance state.
     restore_statevar_selections(
-        dustrack, target.selections, target.annotations.names,
+        dustrack,
+        target.selections,
+        target.annotations.names,
     )
     dustrack._set_image_view_state(target.image_view_state)
     dustrack._set_enhance_state(target.enhance_state)
@@ -404,7 +416,11 @@ def attach_bundle(dustrack, bundle: _BundleState) -> None:
 
 
 def add_video(
-    dustrack, path_or_paths, *, layer_name=None, set_active=False,
+    dustrack,
+    path_or_paths,
+    *,
+    layer_name=None,
+    set_active=False,
     **dustrack_kwargs,
 ) -> list:
     """Append one or more videos to the tracker's bundle list.
@@ -435,17 +451,19 @@ def add_video(
         )
     new_bundles.append(first)
     for i, vp in enumerate(video_paths[1:], start=1):
-        new_bundles.append(_BundleState(
-            fname=Path(vp), video_index=base_index + i,
-            project=project,
-            hydration_state=HYDRATION_PENDING,
-        ))
+        new_bundles.append(
+            _BundleState(
+                fname=Path(vp),
+                video_index=base_index + i,
+                project=project,
+                hydration_state=HYDRATION_PENDING,
+            )
+        )
     dustrack._bundles.extend(new_bundles)
     dustrack._video_queue = [b.fname for b in dustrack._bundles[1:]]
     # Kick off the bg worker for any PENDING tail bundles.
     pending_tail = [
-        b for b in new_bundles[1:]
-        if b.hydration_state == HYDRATION_PENDING
+        b for b in new_bundles[1:] if b.hydration_state == HYDRATION_PENDING
     ]
     if pending_tail and project is not None:
         worker = _BgHydrationWorker(dustrack, project, pending_tail)
@@ -494,7 +512,11 @@ def remove_video(dustrack, index: int) -> bool:
 
 
 def replace_active_with(
-    dustrack, path_or_paths, *, layer_name=None, **dustrack_kwargs,
+    dustrack,
+    path_or_paths,
+    *,
+    layer_name=None,
+    **dustrack_kwargs,
 ) -> list:
     """Swap the active bundle for one (or more) newly-picked
     video(s); drop the previously-active bundle. See
@@ -554,18 +576,14 @@ def validate_bundle_paths(path_or_paths) -> tuple:
         paths = [Path(p) for p in path_or_paths]
         for p in paths:
             if not p.exists():
-                raise FileNotFoundError(
-                    f"add_video: path does not exist: {p}"
-                )
+                raise FileNotFoundError(f"add_video: path does not exist: {p}")
         if len(paths) == 1:
             return validate_bundle_paths(paths[0])
         return _resolve_multi_video_from_list(paths)
 
     p = Path(path_or_paths)
     if not p.exists():
-        raise FileNotFoundError(
-            f"add_video: path does not exist: {p}"
-        )
+        raise FileNotFoundError(f"add_video: path does not exist: {p}")
     if _is_dlc_config_yaml(p):
         # Mirror dustrack.open's config.yaml dispatch: queue every
         # video in the project, in config['video_sets'] order.
@@ -577,9 +595,7 @@ def validate_bundle_paths(path_or_paths) -> tuple:
         project = DLCProject(str(p))
         video_paths = [Path(v) for v in project.video_list]
         if not video_paths:
-            raise ValueError(
-                f"add_video: DLC project at {p.parent} has no videos."
-            )
+            raise ValueError(f"add_video: DLC project at {p.parent} has no videos.")
         return project, video_paths
     if p.is_dir():
         if not _is_dlc_project_root(p):
@@ -595,9 +611,7 @@ def validate_bundle_paths(path_or_paths) -> tuple:
         project = DLCProject(str(p / "config.yaml"))
         video_paths = [Path(v) for v in project.video_list]
         if not video_paths:
-            raise ValueError(
-                f"add_video: DLC project at {p} has no videos."
-            )
+            raise ValueError(f"add_video: DLC project at {p} has no videos.")
         return project, video_paths
 
     # File. Phase 1 vs Phase 2 split by config.yaml discovery.

@@ -41,6 +41,7 @@ confirmed bit-exact agreement with cv2 on a 500-frame CFR clip;
 decode-speed difference is irrelevant because decode is not the
 inference bottleneck. Opt-out: ``DUSTRACK_DISABLE_DLC_DECODER_PATCH=1``.
 """
+
 from __future__ import annotations
 
 import os
@@ -159,7 +160,9 @@ def _worker_rc10(self, images):
                             for mk, v in self._model_kwargs.items()
                         }
         if self._batch is not None and len(self._batch) > 0:
-            self._input_queue.put((self._batch, self._model_kwargs), timeout=self.timeout)
+            self._input_queue.put(
+                (self._batch, self._model_kwargs), timeout=self.timeout
+            )
     except Exception as e:  # noqa: BLE001
         self._exception = e
         self._stop_event.set()
@@ -377,6 +380,7 @@ def _make_patched_pose_predict(_orig):
             }
             for b in range(batch_size)
         ]
+
     return predict
 
 
@@ -436,11 +440,14 @@ def patch_dlc(
         if hasattr(_inf.InferenceRunner, "_safe_put"):
             worker = _worker_rc13
             flavor = "rc13+"
-        elif "_batch" in getattr(
-            _inf.InferenceRunner.__init__,
-            "__code__",
-            type("", (), {"co_names": ()})(),
-        ).co_names:
+        elif (
+            "_batch"
+            in getattr(
+                _inf.InferenceRunner.__init__,
+                "__code__",
+                type("", (), {"co_names": ()})(),
+            ).co_names
+        ):
             worker = _worker_rc10
             flavor = "<=rc10"
         else:
@@ -490,14 +497,13 @@ def _make_dnav_videoreader_init(_orig_init):
     but the in-tree DLC code accesses cv2 via the wrapper methods we
     also override, so the only at-risk caller is third-party).
     """
+
     def __init__(self, video_path):
         import os
         from datanavigator.video_reader import VideoReader as _DnavReader
 
         if not os.path.isfile(video_path):
-            raise ValueError(
-                f'Video path "{video_path}" does not point to a file.'
-            )
+            raise ValueError(f'Video path "{video_path}" does not point to a file.')
         self.video_path = video_path
         self.video = _DnavReader(video_path)
         self._bbox = 0, 1, 0, 1
@@ -509,16 +515,16 @@ def _make_dnav_videoreader_init(_orig_init):
         frame0 = np.asarray(self.video[0])
         self._dnav_height, self._dnav_width = int(frame0.shape[0]), int(frame0.shape[1])
         self.parse_metadata()
+
     return __init__
 
 
 def _dnav_parse_metadata(self):
     import warnings as _w
+
     self._n_frames = int(self._dnav_frame_count)
     if self._n_frames >= 1e9:
-        _w.warn(
-            "The video has more than 10^9 frames, we recommend chopping it up."
-        )
+        _w.warn("The video has more than 10^9 frames, we recommend chopping it up.")
     self._width = int(self._dnav_width)
     self._height = int(self._dnav_height)
     self._fps = float(self._dnav_fps)
@@ -526,6 +532,7 @@ def _dnav_parse_metadata(self):
 
 def _dnav_set_to_frame(self, ind):
     import warnings as _w
+
     if ind < 0:
         raise ValueError("Index must be a positive integer.")
     last_frame = len(self) - 1
@@ -544,6 +551,7 @@ def _dnav_reset(self):
 
 def _dnav_read_frame(self, shrink=1, crop=False):
     import cv2 as _cv2
+
     if self._cursor >= self._n_frames:
         return None
     frame = np.asarray(self.video[int(self._cursor)])  # already RGB
@@ -572,6 +580,7 @@ def _dnav_check_integrity_robust(self):
     # Walk every frame to exercise the decode path. dnav's __getitem__
     # raises on a bad seek; surface as a warning to match cv2 behaviour.
     import warnings as _w
+
     for fr in range(self._n_frames):
         try:
             _ = self.video[fr]
@@ -606,6 +615,7 @@ def patch_dlc_decoder(verbose: bool = True) -> bool:
         return False
     try:
         from deeplabcut.utils import auxfun_videos as _av
+
         # Trigger an import error early if dnav is missing.
         from datanavigator.video_reader import VideoReader as _DnavReader  # noqa: F401
     except ImportError:
@@ -623,6 +633,7 @@ def patch_dlc_decoder(verbose: bool = True) -> bool:
     if verbose:
         try:
             import deeplabcut
+
             version = getattr(deeplabcut, "__version__", "?")
         except ImportError:
             version = "?"

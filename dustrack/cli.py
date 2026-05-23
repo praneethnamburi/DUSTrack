@@ -15,6 +15,7 @@ no-CLI ergonomic is the goal. A path-argument form (``dustrack
 S:/path/to/video.mp4``) is a natural follow-up but not required by
 the "no command line" success criterion.
 """
+
 from __future__ import annotations
 
 import sys
@@ -34,6 +35,7 @@ def main() -> int:
         tracker = dustrack_open()
     except Exception:  # noqa: BLE001 -- surface a clean traceback at the CLI boundary.
         import traceback
+
         traceback.print_exc()
         return 1
     if tracker is None:

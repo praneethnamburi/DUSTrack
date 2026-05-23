@@ -13,6 +13,7 @@ session is opened later.
 
 Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,7 +38,12 @@ def add_nav_widget(dustrack) -> None:
     from qtpy.QtCore import Qt
     from qtpy.QtGui import QColor
     from qtpy.QtWidgets import (
-        QComboBox, QFrame, QHBoxLayout, QSizePolicy, QToolButton, QWidget,
+        QComboBox,
+        QFrame,
+        QHBoxLayout,
+        QSizePolicy,
+        QToolButton,
+        QWidget,
     )
 
     row = QWidget(col.host)
@@ -112,12 +118,16 @@ def add_video_nav_key_bindings(dustrack) -> None:
     """
     try:
         dustrack.add_key_binding(
-            "alt+left", dustrack.swap_prev,
-            "Previous video", group="0. Video navigation",
+            "alt+left",
+            dustrack.swap_prev,
+            "Previous video",
+            group="0. Video navigation",
         )
         dustrack.add_key_binding(
-            "alt+right", dustrack.swap_next,
-            "Next video", group="0. Video navigation",
+            "alt+right",
+            dustrack.swap_next,
+            "Next video",
+            group="0. Video navigation",
         )
     except Exception:  # noqa: BLE001 - older dnav signature / no method
         pass
@@ -169,6 +179,7 @@ def sync_nav_combo(dustrack, combo, *, n: int, active: int) -> None:
     """
     try:
         from qtpy.QtCore import Qt
+
         tooltip_role = Qt.ToolTipRole
     except Exception:  # noqa: BLE001 -- no qtpy in this env
         tooltip_role = 3  # Qt::ToolTipRole

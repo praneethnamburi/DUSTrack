@@ -34,7 +34,7 @@ Algorithm Overview:
     combines the two trajectories using sigmoid weights that emphasize the
     forward path at the start and the backward path at the end. This reduces
     drift accumulation compared to pure forward tracking.
-    
+
     The moving average applies RSTC over overlapping time windows and averages
     the results, further reducing noise while maintaining temporal coherence.
 
@@ -44,7 +44,7 @@ Performance:
     - Number of tracked points
     - Window size (larger = more computation)
     - Parallel processing (use_parallel=True recommended)
-    
+
     Typical performance: ~5-10 fps for 1080p video with 10 points and 0.5s window.
 
 Reference for the LK-RSTC Algorithm:
@@ -104,14 +104,16 @@ def gray(video_frame: np.ndarray) -> np.ndarray:
     return cv.cvtColor(video_frame, cv.COLOR_RGB2GRAY)
 
 
-def lucas_kanade_2(frame_list: list, init_points: np.ndarray, **lk_config) -> np.ndarray:
+def lucas_kanade_2(
+    frame_list: list, init_points: np.ndarray, **lk_config
+) -> np.ndarray:
     """
     Track points through a sequence of frames using Lucas-Kanade optical flow.
-    
+
     This implementation uses OpenCV's pyramidal Lucas-Kanade method to track
     points from the initial position through all subsequent frames. Tracking
     is performed in a single forward pass.
-    
+
     Args:
         frame_list (list): List of grayscale video frames (each frame is np.ndarray).
         init_points (np.ndarray): Initial point positions, shape (n_points, 2) where
@@ -124,11 +126,11 @@ def lucas_kanade_2(frame_list: list, init_points: np.ndarray, **lk_config) -> np
     Returns:
         np.ndarray: Tracked point trajectories, shape (n_frames, n_points, 2).
             Missing/lost points are filled with NaN.
-    
+
     Note:
         Larger winSize provides more robustness but slower computation.
         Higher maxLevel helps track larger motions but may lose precision.
-    
+
     Example:
         >>> frames = [gray(f) for f in video_frames]
         >>> initial_pts = np.array([[100, 200], [150, 250]])
@@ -138,15 +140,17 @@ def lucas_kanade_2(frame_list: list, init_points: np.ndarray, **lk_config) -> np
     return _lk_track_frames(frame_list, init_points, **lk_config)
 
 
-def compute_sigmoid_weights(n_frames: int, epsilon: float = 0.01) -> tuple[np.ndarray, np.ndarray]:
+def compute_sigmoid_weights(
+    n_frames: int, epsilon: float = 0.01
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute forward and reverse sigmoid weights for RSTC blending.
-    
+
     The weights control how forward and backward tracking paths are combined:
     - At the start: forward weight ≈ 1, reverse weight ≈ 0
     - At the end: forward weight ≈ 0, reverse weight ≈ 1
     - In the middle: both weights ≈ 0.5
-    
+
     Args:
         n_frames (int): Number of frames.
         epsilon (float, optional): Small value to control sigmoid scaling. Defaults to 0.01.
@@ -155,9 +159,9 @@ def compute_sigmoid_weights(n_frames: int, epsilon: float = 0.01) -> tuple[np.nd
         tuple[np.ndarray, np.ndarray]: Two arrays of shape (n_frames,):
             - sigmoid_forward: Decreasing weights from ~1 to ~0
             - sigmoid_reverse: Increasing weights from ~0 to ~1
-            
+
             Forward and reverse weights sum to 1.0 at each frame.
-    
+
     Mathematical Form:
         sigmoid(x) = 1 / (1 + exp(b * (x - c)))
         where b controls steepness and c is the center point.
@@ -182,17 +186,17 @@ def lucas_kanade_rstc_2(
 ) -> np.ndarray:
     """
     Apply Reverse Sigmoid Tracking Correction (RSTC) for robust point tracking.
-    
+
     RSTC combines forward tracking (from start_points) and backward tracking
     (from end_points) using sigmoid weights. This reduces error accumulation
     compared to pure forward tracking, especially over long sequences.
-    
+
     Algorithm:
         1. Track forward from start_points through all frames
         2. Track backward from end_points through all frames (in reverse)
         3. Blend the two paths using sigmoid weights:
            result = forward_path * sigmoid_forward + reverse_path * sigmoid_reverse
-    
+
     Args:
         frame_list (list): List of grayscale video frames.
         start_points (np.ndarray): Initial positions at first frame, shape (n_points, 2).
@@ -204,11 +208,11 @@ def lucas_kanade_rstc_2(
 
     Returns:
         np.ndarray: Blended tracking paths, shape (n_frames, n_points, 2).
-    
+
     Note:
         Precomputing sigmoid weights and reusing them across windows significantly
         improves performance when processing multiple sequences of the same length.
-    
+
     Example:
         >>> frames = [gray(f) for f in video_frames[10:20]]
         >>> start = np.array([[100, 200]])
@@ -237,20 +241,22 @@ def lucas_kanade_rstc_2(
     return rstc_path
 
 
-def process_window(video_frame_buffer, start_points, end_points, sigmoid_forward, sigmoid_reverse):
+def process_window(
+    video_frame_buffer, start_points, end_points, sigmoid_forward, sigmoid_reverse
+):
     """
     Process a single time window using RSTC.
-    
+
     This is a helper function designed for parallel execution by ThreadPoolExecutor.
     It wraps lucas_kanade_rstc_2 with precomputed sigmoid weights.
-    
+
     Args:
         video_frame_buffer: Deque or list of grayscale frames for this window.
         start_points (np.ndarray): Point positions at window start.
         end_points (np.ndarray): Point positions at window end.
         sigmoid_forward (np.ndarray): Precomputed forward weights.
         sigmoid_reverse (np.ndarray): Precomputed reverse weights.
-    
+
     Returns:
         np.ndarray: Tracked trajectories for this window, shape (window_frames, n_points, 2).
     """
@@ -367,12 +373,16 @@ def lk_moving_average_filter(
         after the window moves past them.
     """
     if isinstance(tracked_points, str):
-        assert video_name is not None, "video_name must be provided if tracked_points is a file path."
+        assert (
+            video_name is not None
+        ), "video_name must be provided if tracked_points is a file path."
         ann = VideoAnnotation(video_name, tracked_points)
     else:
         ann = tracked_points
 
-    assert isinstance(ann, VideoAnnotation), "tracked_points must be a VideoAnnotation object or a path to a json or h5 file."
+    assert isinstance(
+        ann, VideoAnnotation
+    ), "tracked_points must be a VideoAnnotation object or a path to a json or h5 file."
 
     postprocess_path = Path(ann.fname).parent
     suffix = f"lkmovavg_{window_size:.3f}"
@@ -388,7 +398,8 @@ def lk_moving_average_filter(
     all_labels = ann.labels
     frame_list = list(range(ann.n_frames))
     label_list = [
-        label for label in all_labels
+        label
+        for label in all_labels
         if all(frame in ann.data[label] for frame in frame_list)
     ]
     skipped = [label for label in all_labels if label not in label_list]
@@ -406,9 +417,8 @@ def lk_moving_average_filter(
         raise ValueError(
             f"Layer {layer_name!r} has no labels with complete frame "
             f"coverage ({ann.n_frames} frames). Nothing to smooth. "
-            f"Per-label coverage: " + ", ".join(
-                f"{label!r}={len(ann.data[label])}" for label in all_labels
-            )
+            f"Per-label coverage: "
+            + ", ".join(f"{label!r}={len(ann.data[label])}" for label in all_labels)
         )
     fname_processed = str(postprocess_path / f"{ann.fstem}_{suffix}.json")
 
@@ -437,7 +447,10 @@ def lk_moving_average_filter(
         # Branch 3: full computation.
         video = ann.video
         n_window_frames = round(window_size * video.get_avg_fps())
-        video_frame_buffer = deque([gray(f) for f in video[:n_window_frames - 1].asnumpy()], maxlen=n_window_frames)
+        video_frame_buffer = deque(
+            [gray(f) for f in video[: n_window_frames - 1].asnumpy()],
+            maxlen=n_window_frames,
+        )
 
         # Precompute sigmoid weights for the given window size
         sigmoid_forward, sigmoid_reverse = compute_sigmoid_weights(n_window_frames)
@@ -446,10 +459,16 @@ def lk_moving_average_filter(
         # ``_record(cnt, start_frame, rstc_path)`` callable so the
         # parallel + sequential loops below stay uniform.
         if save_raw:
-            rstc_paths = np.full((n_window_frames, ann.n_frames, len(label_list), 2), np.nan)
+            rstc_paths = np.full(
+                (n_window_frames, ann.n_frames, len(label_list), 2), np.nan
+            )
+
             def _record(cnt, start_frame, rstc_path):
                 n = rstc_path.shape[0]
-                rstc_paths[cnt % n_window_frames, start_frame:start_frame + n, :, :] = rstc_path
+                rstc_paths[
+                    cnt % n_window_frames, start_frame : start_frame + n, :, :
+                ] = rstc_path
+
         else:
             # Streaming sum + count, no per-window slab. ``count_paths``
             # is per (frame, label) -- the same window touches all
@@ -457,10 +476,11 @@ def lk_moving_average_filter(
             # is safe.
             sum_paths = np.zeros((ann.n_frames, len(label_list), 2), dtype=np.float64)
             count_paths = np.zeros((ann.n_frames, len(label_list)), dtype=np.int32)
+
             def _record(cnt, start_frame, rstc_path):
                 n = rstc_path.shape[0]
-                sum_paths[start_frame:start_frame + n] += rstc_path
-                count_paths[start_frame:start_frame + n] += 1
+                sum_paths[start_frame : start_frame + n] += rstc_path
+                count_paths[start_frame : start_frame + n] += 1
 
         if use_parallel:
             # Bounded-inflight ThreadPoolExecutor loop. Pre-2026-05-21
@@ -497,7 +517,7 @@ def lk_moving_average_filter(
             # either a different system allocator (mimalloc/jemalloc)
             # or a custom LK that pools pyramid memory across calls;
             # neither is in scope.
-            pair_iter = enumerate(zip(frame_list, frame_list[n_window_frames - 1:]))
+            pair_iter = enumerate(zip(frame_list, frame_list[n_window_frames - 1 :]))
             n_windows = len(frame_list) - n_window_frames + 1
             saved_cv_threads = cv.getNumThreads()
             cv.setNumThreads(1)
@@ -513,9 +533,15 @@ def lk_moving_average_filter(
                                     cnt, (start_frame, end_frame) = next(pair_iter)
                                 except StopIteration:
                                     break
-                                video_frame_buffer.append(gray(video[end_frame].asnumpy()))
-                                start_points = [ann.data[label][start_frame] for label in label_list]
-                                end_points = [ann.data[label][end_frame] for label in label_list]
+                                video_frame_buffer.append(
+                                    gray(video[end_frame].asnumpy())
+                                )
+                                start_points = [
+                                    ann.data[label][start_frame] for label in label_list
+                                ]
+                                end_points = [
+                                    ann.data[label][end_frame] for label in label_list
+                                ]
                                 fut = executor.submit(
                                     process_window,
                                     video_frame_buffer.copy(),
@@ -538,10 +564,17 @@ def lk_moving_average_filter(
                 cv.setNumThreads(saved_cv_threads)
         else:
             # Sequential processing
-            with tqdm(total=len(frame_list) - n_window_frames + 1, desc="Processing sequentially") as pbar:
-                for cnt, (start_frame, end_frame) in enumerate(zip(frame_list, frame_list[n_window_frames - 1:])):
+            with tqdm(
+                total=len(frame_list) - n_window_frames + 1,
+                desc="Processing sequentially",
+            ) as pbar:
+                for cnt, (start_frame, end_frame) in enumerate(
+                    zip(frame_list, frame_list[n_window_frames - 1 :])
+                ):
                     video_frame_buffer.append(gray(video[end_frame].asnumpy()))
-                    start_points = [ann.data[label][start_frame] for label in label_list]
+                    start_points = [
+                        ann.data[label][start_frame] for label in label_list
+                    ]
                     end_points = [ann.data[label][end_frame] for label in label_list]
 
                     # Process the window sequentially
@@ -578,8 +611,10 @@ def lk_moving_average_filter(
         # nested ``data[label][frame] = ...`` loop. Same end state,
         # one fewer name-lookup chain per write.
         ann_processed.data = {
-            label: {frame_num: rstc_paths_avg[frame_num, label_cnt, :]
-                    for frame_num in frame_list}
+            label: {
+                frame_num: rstc_paths_avg[frame_num, label_cnt, :]
+                for frame_num in frame_list
+            }
             for label_cnt, label in enumerate(label_list)
         }
         ann_processed.save()
