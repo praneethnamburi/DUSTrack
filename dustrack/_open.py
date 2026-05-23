@@ -35,8 +35,8 @@ from ._overlays import (
     _prompt_for_videos,
     _show_first_paint_notice,
 )
-from .dlcinterface import (
-    DLCProject,
+from .dlcinterface import DLCProject
+from ._dlc_paths import (
     _find_dlc_config,
     _find_video_index,
     _is_dlc_config_yaml,

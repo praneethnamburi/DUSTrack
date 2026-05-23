@@ -5,113 +5,34 @@ from __future__ import annotations
 
 import fnmatch
 import functools
-import importlib
-import importlib.util
 import os
-import queue
-import re
 import shutil
-import sys
-import threading
-import traceback
-import warnings
-from pathlib import Path, PureWindowsPath, PurePosixPath
-from typing import Literal, Mapping, Optional, Union
+from pathlib import Path
+from typing import Literal, Mapping, Union
 
-import numpy as np
 import pandas as pd
 import cv2 as cv
 import pyfilemanager
 import pysampled
-from skimage import io, img_as_ubyte
 
-import matplotlib.pyplot as plt
 import datanavigator as dnav
-from datanavigator import VideoReader, cpu
 
-from .lk_filter import lk_moving_average_filter
-from .annotations import VideoAnnotation, VideoAnnotations
-from .seed import (
-    get_seed_bundles_root,
-    import_seed_bundle_into_project,
-    inspect_seed_bundle,
-    list_seed_bundles,
-    set_seed_bundles_root,
-)
+from .annotations import VideoAnnotation
 from . import _config
-from ._bundle import (
-    HYDRATION_FAILED,
-    HYDRATION_HYDRATING,
-    HYDRATION_PENDING,
-    HYDRATION_READY,
-    _BgHydrationWorker,
-    _BundleState,
-    _HDF5_LOCK,
-)
-from ._layer_names import (
-    _DENSE_LAYER_PREFIXES,
-    _DENSE_LAYER_SUBSTRINGS,
-    _dlc_bodyparts_to_layer_labels,
-    _is_dense_layer_name,
-)
-from ._qt_styling import _make_group_styler, _pin_qt_palette, _qss_for_group
-from ._image_enhance import (
-    _CLAHE_CLIP_MAX,
-    _CLAHE_CLIP_MIN,
-    _GAMMA_MAX,
-    _GAMMA_MIN,
-    _SLIDER_TICKS,
-    _apply_gamma_only,
-    _auto_enhance_params,
-    _clahe_clip_to_slider,
-    _enhance_is_passthrough,
-    _gamma_to_slider,
-    _make_enhance_widget_class,
-    _slider_to_clahe_clip,
-    _slider_to_gamma,
-    enhance_ultrasound_image,
-)
-# Lazy DLC loader -- the plumbing lives in dustrack.dlcloader after the
-# 1.2.0rc1 refactor. We import the loader module and re-export the
-# function-y names directly. The *mutating* names (``DLC3``,
-# ``deeplabcut``, ``VideoWriter``, ``ScannerError``, ``_DLC_LOAD_STATE``,
-# ``_DLC_LOAD_THREAD``) are routed through the module-level
-# ``__getattr__`` defined at the end of this file -- ``from .dlcloader
-# import DLC3`` would snapshot the value at import time and miss
-# mutations done by ``_ensure_dlc_loaded()`` on the loader's globals.
+from ._layer_names import _is_dense_layer_name
+# Lazy DLC loader -- the plumbing lives in dustrack.dlcloader. We import
+# the loader module so the PEP 562 ``__getattr__`` proxy below can route
+# through it for the *mutating* names (``DLC3``, ``deeplabcut``,
+# ``VideoWriter``, ``ScannerError``, ``_DLC_LOAD_STATE``,
+# ``_DLC_LOAD_THREAD``) that ``_ensure_dlc_loaded()`` populates after
+# import. The function-y names below are imported eagerly because
+# they're used directly by DLCProject.
 from . import dlcloader as _dlcloader
-from .dlcloader import (
-    HAS_DLC,
-    _DLC_LOAD_CALLBACKS,
-    _DLC_LOAD_LOCK,
-    _dlc_load_state,
-    _ensure_dlc_loaded,
-    _ensure_dlc_loaded_async,
-    _fire_dlc_load_callbacks,
-    register_dlc_load_callback,
-)
-from ._overlays import (
-    _VIDEO_PICKER_EXTENSIONS,
-    _default_training_options,
-    _make_confirm_overlay_class,
-    _make_open_video_overlay_class,
-    _make_progress_overlay_class,
-    _make_seed_bundle_picker_class,
-    _make_training_options_class,
-    _prompt_for_videos,
-    _render_recent_session_label,
-    _show_first_paint_notice,
-    _training_options_to_train_iteration_kwargs,
-    _QueueWriter,
-    _Tee,
-)
+from .dlcloader import HAS_DLC, _ensure_dlc_loaded, _ensure_dlc_loaded_async
 from ._file_management import (
     VideoFileManager,
-    _extract_frames,
     _extract_frames_decord,
-    get_annotation_file_name,
     make_annotation_file_name,
-    merge_annotations_in_folder,
     rebase_to_config,
 )
 
@@ -1386,167 +1307,13 @@ class DLCProject:
 
 
 # ---------------------------------------------------------------------
-# DLC project / video path helpers used by dustrack.open dispatch AND
-# by DUSTrack class methods (swap_to, add_video, create_dlc_project).
-# Kept in dlcinterface to avoid a gui.py <-> open.py cycle.
+# DLC project / video path helpers
 # ---------------------------------------------------------------------
-def _is_dlc_config_yaml(path) -> bool:
-    """True iff ``path`` is a DLC ``config.yaml`` file (case-insensitive
-    on the basename; the file's parent must exist but we don't structurally
-    validate it as a full project here -- DLCProject construction will
-    surface a clearer error if the config is malformed)."""
-    p = Path(path)
-    if not p.is_file():
-        return False
-    return p.name.lower() == "config.yaml"
-
-
-def _is_dlc_project_root(folder) -> bool:
-    """Cheap structural check for a DLC project folder.
-
-    DLC's ``create_new_project`` always lays down ``config.yaml`` next to
-    ``videos/`` and ``labeled-data/``; requiring all three avoids matching
-    a stray ``config.yaml`` that belongs to something else. No YAML
-    parsing -- pure filesystem.
-    """
-    f = Path(folder)
-    return (
-        (f / 'config.yaml').is_file()
-        and (f / 'videos').is_dir()
-        and (f / 'labeled-data').is_dir()
-    )
-
-
-def _find_dlc_config(path):
-    """Resolve ``path`` to the DLC ``config.yaml`` that contains it, or None.
-
-    Resolves four input shapes:
-
-    - ``config.yaml`` file -> that path (only if the sibling project structure exists)
-    - DLC project folder -> ``folder / 'config.yaml'``
-    - Any file inside a project (notably a video under ``videos/``) -> walks up
-      ancestors until a DLC-root is found
-    - Anything else (a bare video outside any project, a non-existent path) -> None
-
-    Returning None signals Phase 1 to :func:`open`. Note the walk-up stops
-    at the filesystem root; in practice DLC's layout means it terminates
-    after one step.
-    """
-    p = Path(path)
-    if not p.exists():
-        return None
-
-    if p.is_file() and p.name.lower() == 'config.yaml':
-        return p if _is_dlc_project_root(p.parent) else None
-
-    if p.is_dir() and _is_dlc_project_root(p):
-        return p / 'config.yaml'
-
-    if p.is_file():
-        for ancestor in p.parents:
-            if _is_dlc_project_root(ancestor):
-                return ancestor / 'config.yaml'
-
-    return None
-
-
-def _find_video_index(project, video_path):
-    """Look up a video's index in ``project.video_list`` by filename stem.
-
-    Stem matching (rather than full-path equality) is robust to the
-    drive-letter / UNC / posix shuffling that :func:`rebase_to_config`
-    already handles inside ``DLCProject``. Returns None if the video
-    isn't part of the project.
-    """
-    target_stem = Path(video_path).stem
-    for i, name in enumerate(project.video_names):
-        if name == target_stem:
-            return i
-    return None
-
-
-def _session_inside_dlc_project(dustrack) -> Optional[Path]:
-    """Return the DLC project root the session sits inside, or None.
-
-    Reuses :func:`_find_dlc_config` for the filesystem walk-up so the
-    structural check (``config.yaml + videos/ + labeled-data/``) stays
-    in one place. ``self._dlcproject`` is checked first as the cheap
-    short-circuit: a session that was opened via ``dustrack.open(<project>)``
-    or that survived a successful ``create_dlc_project`` already knows
-    its project; we only fall back to walking up ``self.fname``'s
-    ancestors when the attribute is unset (e.g. a video opened bare
-    that happens to live inside an existing project tree).
-    """
-    proj = getattr(dustrack, "_dlcproject", None)
-    if proj is not None:
-        config_path = getattr(proj, "config_path", None)
-        if config_path is not None:
-            return Path(config_path).parent
-    fname = getattr(dustrack, "fname", None)
-    if fname is None:
-        return None
-    config = _find_dlc_config(fname)
-    return config.parent if config is not None else None
-
-
-
-def _resolve_multi_video_from_list(path_list: list) -> tuple:
-    """Validate that every entry of ``path_list`` resolves to one
-    shared DLC project, returning ``(DLCProject, list[Path])``.
-
-    Strict-single-project contract (Roadmap *Next 1.2.0* item 3,
-    1.2.0a3 cut): every video in a multi-video session must belong to
-    the same DLC project. Bare-video entries, mixed projects, and
-    ``config.yaml`` paths all raise ``ValueError`` so the user can fix
-    the input rather than landing in an undefined state.
-
-    The returned video-path list is the input order (the user's
-    queue), NOT the project's canonical order. Bundle indexing follows
-    the queue.
-
-    Raises:
-        ImportError: ``deeplabcut`` isn't installed.
-        ValueError: Any entry isn't inside a DLC project, or entries
-            span multiple projects, or a non-video entry sneaks in.
-    """
-    if not HAS_DLC:
-        raise ImportError(
-            "dustrack.open: multi-video sessions require deeplabcut "
-            "(every video must belong to a single DLC project)."
-        )
-    resolved: list[Path] = []
-    config_paths: set = set()
-    for p in path_list:
-        if not p.is_file():
-            raise ValueError(
-                f"dustrack.open: multi-video entry {p!s} is not a file. "
-                "Multi-video sessions accept videos inside one DLC project; "
-                "pass a project folder to open every video in the project."
-            )
-        if _is_dlc_config_yaml(p):
-            raise ValueError(
-                f"dustrack.open: multi-video entry {p!s} is a DLC "
-                "config.yaml. To open every video in a project, pass the "
-                "config.yaml (or the project folder) by itself -- not "
-                "as a list entry alongside videos."
-            )
-        cp = _find_dlc_config(p)
-        if cp is None:
-            raise ValueError(
-                f"dustrack.open: multi-video entry {p!s} is not inside a "
-                "DLC project. Multi-video sessions require every video to "
-                "belong to one shared project."
-            )
-        config_paths.add(Path(cp).resolve())
-        resolved.append(p)
-    if len(config_paths) > 1:
-        raise ValueError(
-            "dustrack.open: multi-video entries span multiple DLC projects "
-            f"({sorted(str(c) for c in config_paths)}). All entries must "
-            "belong to one shared project."
-        )
-    project = DLCProject(str(next(iter(config_paths))))
-    return project, resolved
+# Six pure filesystem / path predicates moved to dustrack._dlc_paths in
+# the 1.2.0rc1 follow-up. Names continue to resolve via the PEP 562
+# ``__getattr__`` proxy below so existing
+# ``from dustrack.dlcinterface import _find_dlc_config`` callers keep
+# working without modification.
 
 
 # ---------------------------------------------------------------------
@@ -1561,26 +1328,45 @@ def _resolve_multi_video_from_list(path_list: list) -> tuple:
 _LAZY_NAMES = frozenset((
     'DLC3', 'deeplabcut', 'VideoWriter', 'ScannerError',
     '_DLC_LOAD_STATE', '_DLC_LOAD_THREAD',
+    # Loader-state accessors used by tests + the workflow-gates module
+    # for monkeypatch back-compat (``dustrack.dlcinterface._dlc_load_state``).
+    '_dlc_load_state', 'register_dlc_load_callback',
+    '_fire_dlc_load_callbacks', '_DLC_LOAD_CALLBACKS', '_DLC_LOAD_LOCK',
 ))
 
 # Names that relocated in the 1.2.0rc1 refactor. Exposed here as a
 # lazy attribute proxy so existing ``from dustrack.dlcinterface import
-# DUSTrack`` / ``from dustrack.dlcinterface import open`` paths keep
-# resolving without forcing dustrack.gui / dustrack.open to load
-# eagerly (which would cycle through dlcinterface at module-load
-# time -- gui.py imports DLCProject from this module).
+# X`` paths keep resolving without forcing the new module to load
+# eagerly (which would cycle through dlcinterface at module-load time
+# -- gui.py imports DLCProject from this module).
 _RELOCATED_NAMES = {
     'DUSTrack': ('dustrack.gui', 'DUSTrack'),
     'open': ('dustrack._open', 'open'),
     '_open_seed_session': ('dustrack._open', '_open_seed_session'),
     '_SEED_VIDEO_PATH': ('dustrack._open', '_SEED_VIDEO_PATH'),
-    '_is_dlc_config_yaml': ('dustrack._open', '_is_dlc_config_yaml'),
-    '_is_dlc_project_root': ('dustrack._open', '_is_dlc_project_root'),
-    '_find_dlc_config': ('dustrack._open', '_find_dlc_config'),
-    '_find_video_index': ('dustrack._open', '_find_video_index'),
-    '_session_inside_dlc_project': ('dustrack._open', '_session_inside_dlc_project'),
     '_attach_bundles_or_fallback': ('dustrack._open', '_attach_bundles_or_fallback'),
-    '_resolve_multi_video_from_list': ('dustrack._open', '_resolve_multi_video_from_list'),
+    # Path predicates relocated to _dlc_paths.py in the follow-up refactor.
+    '_is_dlc_config_yaml': ('dustrack._dlc_paths', '_is_dlc_config_yaml'),
+    '_is_dlc_project_root': ('dustrack._dlc_paths', '_is_dlc_project_root'),
+    '_find_dlc_config': ('dustrack._dlc_paths', '_find_dlc_config'),
+    '_find_video_index': ('dustrack._dlc_paths', '_find_video_index'),
+    '_session_inside_dlc_project': ('dustrack._dlc_paths', '_session_inside_dlc_project'),
+    '_resolve_multi_video_from_list': ('dustrack._dlc_paths', '_resolve_multi_video_from_list'),
+    # Bundle worker -- relocated to _bundle.py (Phase D earlier in 1.2.0rc1).
+    '_BgHydrationWorker': ('dustrack._bundle', '_BgHydrationWorker'),
+    '_BundleState': ('dustrack._bundle', '_BundleState'),
+    '_HDF5_LOCK': ('dustrack._bundle', '_HDF5_LOCK'),
+    # Modal / overlay factories -- relocated to _overlays.py.
+    '_make_open_video_overlay_class': ('dustrack._overlays', '_make_open_video_overlay_class'),
+    '_make_confirm_overlay_class': ('dustrack._overlays', '_make_confirm_overlay_class'),
+    '_make_progress_overlay_class': ('dustrack._overlays', '_make_progress_overlay_class'),
+    '_make_seed_bundle_picker_class': ('dustrack._overlays', '_make_seed_bundle_picker_class'),
+    '_make_training_options_class': ('dustrack._overlays', '_make_training_options_class'),
+    '_default_training_options': ('dustrack._overlays', '_default_training_options'),
+    '_training_options_to_train_iteration_kwargs': ('dustrack._overlays', '_training_options_to_train_iteration_kwargs'),
+    '_prompt_for_videos': ('dustrack._overlays', '_prompt_for_videos'),
+    '_render_recent_session_label': ('dustrack._overlays', '_render_recent_session_label'),
+    '_show_first_paint_notice': ('dustrack._overlays', '_show_first_paint_notice'),
 }
 
 

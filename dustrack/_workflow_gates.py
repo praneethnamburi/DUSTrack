@@ -36,7 +36,7 @@ def evaluate_workflow_gates(dustrack) -> dict:
     ``_dlc_load_state()``. Pure -- no widget mutations. Testable
     with a mock dustrack (any object with the right attrs).
     """
-    from .dlcinterface import _session_inside_dlc_project
+    from ._dlc_paths import _session_inside_dlc_project
 
     gates: dict = {}
     corrections_layer = type(dustrack).CORRECTIONS_LAYER_NAME

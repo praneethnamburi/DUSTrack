@@ -381,7 +381,7 @@ def hydrate_bundle_data_only(dustrack, bundle: "_BundleState", project) -> dict:
     the pipeline. Returns a payload dict for :func:`finalise_bundle_artists`.
     """
     from .annotations import VideoAnnotation, VideoAnnotations
-    from .dlcinterface import _find_video_index
+    from ._dlc_paths import _find_video_index
     from ._file_management import VideoFileManager
     from datanavigator import VideoReader
 

@@ -539,8 +539,8 @@ def validate_bundle_paths(path_or_paths) -> tuple:
       project).
     - ``config.yaml`` -> Phase 2 single on the first project video.
     """
-    from .dlcinterface import (
-        DLCProject,
+    from .dlcinterface import DLCProject
+    from ._dlc_paths import (
         _find_dlc_config,
         _is_dlc_config_yaml,
         _is_dlc_project_root,
