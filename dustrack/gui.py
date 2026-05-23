@@ -24,137 +24,67 @@ import cycle.
 """
 from __future__ import annotations
 
-import fnmatch
-import functools
-import importlib
-import importlib.util
 import os
 import queue
-import re
-import shutil
 import sys
 import threading
 import traceback
-import warnings
-from pathlib import Path, PureWindowsPath, PurePosixPath
-from typing import Any, Callable, Literal, Mapping, Optional, Union
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 import numpy as np
-import pandas as pd
 import cv2 as cv
-import pyfilemanager
-import pysampled
-from skimage import io, img_as_ubyte
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 import datanavigator as dnav
-from datanavigator import VideoReader, cpu, utils
+from datanavigator import utils
 from datanavigator.videos import VideoBrowser
 
 from .lk_filter import lk_moving_average_filter
 from .lk_opticalflow import lucas_kanade, lucas_kanade_rstc
 from .annotations import VideoAnnotation, VideoAnnotations
-from .seed import (
-    get_seed_bundles_root,
-    import_seed_bundle_into_project,
-    inspect_seed_bundle,
-    list_seed_bundles,
-    set_seed_bundles_root,
-)
 from . import _config
-from ._bundle import (
-    HYDRATION_FAILED,
-    HYDRATION_HYDRATING,
-    HYDRATION_PENDING,
-    HYDRATION_READY,
-    _BgHydrationWorker,
-    _BundleState,
-    _HDF5_LOCK,
-)
+from ._bundle import _BundleState
 from ._layer_names import (
-    _DENSE_LAYER_PREFIXES,
-    _DENSE_LAYER_SUBSTRINGS,
     _dlc_bodyparts_to_layer_labels,
     _is_dense_layer_name,
+    get_fname_annotations,
+    is_manual_annotation_layer,
+    is_manual_layer_name,
 )
-from ._qt_styling import _make_group_styler, _pin_qt_palette, _qss_for_group
+from . import _bundle as _bundle_helpers
+from . import _bundle_swap
+from . import _close_guard
+from . import _nav_widget
+from . import _preflight
+from . import _preflight_modal
+from . import _seed_bundle_modal
+from . import _train_modal
+from . import _view_state
+from . import _workflow_gates
+from ._qt_styling import _make_group_styler, _pin_qt_palette
 from ._image_enhance import (
-    _CLAHE_CLIP_MAX,
     _CLAHE_CLIP_MIN,
-    _GAMMA_MAX,
     _GAMMA_MIN,
-    _SLIDER_TICKS,
     _apply_gamma_only,
-    _auto_enhance_params,
-    _clahe_clip_to_slider,
-    _enhance_is_passthrough,
-    _gamma_to_slider,
     _make_enhance_widget_class,
-    _slider_to_clahe_clip,
-    _slider_to_gamma,
     enhance_ultrasound_image,
 )
-# Lazy DLC loader -- the plumbing lives in dustrack.dlcloader after the
-# 1.2.0rc1 refactor. We import the loader module and re-export the
-# function-y names directly. The *mutating* names (``DLC3``,
-# ``deeplabcut``, ``VideoWriter``, ``ScannerError``, ``_DLC_LOAD_STATE``,
-# ``_DLC_LOAD_THREAD``) are routed through the module-level
-# ``__getattr__`` defined at the end of this file -- ``from .dlcloader
-# import DLC3`` would snapshot the value at import time and miss
-# mutations done by ``_ensure_dlc_loaded()`` on the loader's globals.
-from . import dlcloader as _dlcloader
-from .dlcloader import (
-    HAS_DLC,
-    _DLC_LOAD_CALLBACKS,
-    _DLC_LOAD_LOCK,
-    _dlc_load_state,
-    _ensure_dlc_loaded,
-    _ensure_dlc_loaded_async,
-    _fire_dlc_load_callbacks,
-    register_dlc_load_callback,
-)
+from .dlcloader import HAS_DLC
 from ._overlays import (
     _CREATE_PROJECT_PHASES,
     _JITTER_PHASES,
     _PROGRESS_PATTERNS,
     _SEED_PROJECT_PHASES,
     _TRAINING_PHASES,
-    _VIDEO_PICKER_EXTENSIONS,
-    _default_training_options,
     _make_confirm_overlay_class,
-    _make_open_video_overlay_class,
     _make_progress_overlay_class,
-    _make_seed_bundle_picker_class,
-    _make_training_options_class,
-    _prompt_for_videos,
-    _render_recent_session_label,
-    _show_first_paint_notice,
-    _training_options_to_train_iteration_kwargs,
     _QueueWriter,
     _Tee,
 )
-from ._file_management import (
-    VideoFileManager,
-    _extract_frames,
-    _extract_frames_decord,
-    get_annotation_file_name,
-    make_annotation_file_name,
-    merge_annotations_in_folder,
-    rebase_to_config,
-)
-
-
-
-from .dlcinterface import (
-    DLCProject,
-    _find_dlc_config,
-    _find_video_index,
-    _is_dlc_config_yaml,
-    _is_dlc_project_root,
-    _resolve_multi_video_from_list,
-    _session_inside_dlc_project,
-)
+from ._file_management import VideoFileManager, make_annotation_file_name
+from .dlcinterface import DLCProject, _find_video_index
 
 class DUSTrack(VideoBrowser):
     """
@@ -680,178 +610,22 @@ class DUSTrack(VideoBrowser):
         sv.setStyleSheet("")
 
     def _install_dlc_load_gate_refresh(self) -> None:
-        """Re-evaluate workflow gates once the lazy DLC import resolves.
-
-        Poll-based: starts a 250 ms ``QTimer`` on the Qt main thread
-        that watches :func:`_dlc_load_state`; when state transitions
-        out of ``"pending"`` / ``"loading"`` the timer fires
-        :meth:`_refresh_workflow_button_state` once and stops itself.
-        Polling (vs. a cross-thread signal hop from the loader thread)
-        keeps every Qt touch on the main thread and mirrors the
-        ``_run_with_overlay`` pattern already in this file.
-
-        No-op on the mpl-fallback path (no Qt window) and on the
-        ``HAS_DLC=False`` path (Workflow buttons aren't created).
+        """Arm a QTimer that re-evaluates gates after the lazy DLC import.
+        See :func:`._workflow_gates.install_dlc_load_gate_refresh`.
         """
-        if not HAS_DLC:
-            return
-        if _dlc_load_state() in ("done", "missing"):
-            # Already resolved (e.g. tests pre-bound state, or the
-            # user spent >7 s in the picker on a warm cache). Gates
-            # were already in their final state when
-            # ``_refresh_workflow_button_state()`` ran above.
-            return
-        try:
-            from qtpy.QtCore import QTimer
-        except Exception:  # noqa: BLE001 -- mpl-only / pre-Qt teardown
-            return
-
-        qt_window = self._find_qt_window()
-        if qt_window is None:
-            return
-
-        timer = QTimer(qt_window)
-        timer.setInterval(250)
-
-        def _tick():
-            if _dlc_load_state() in ("done", "missing"):
-                timer.stop()
-                try:
-                    self._refresh_workflow_button_state()
-                except Exception:  # noqa: BLE001 -- defensive; never break the event loop.
-                    traceback.print_exc()
-
-        timer.timeout.connect(_tick)
-        timer.start()
-        # Keep a reference so Qt doesn't garbage-collect the timer
-        # mid-poll. Same convention as the overlay-worker timer above.
-        self._dlc_load_gate_timer = timer
+        _workflow_gates.install_dlc_load_gate_refresh(self)
 
     def _refresh_workflow_button_state(self) -> None:
-        """Enable / disable Workflow-group buttons based on session state.
-
-        Three gates run here:
-
-        - **Create DLC Project** is disabled when the session already
-          sits inside a DLC project (either ``self._dlcproject`` is
-          set, or the video path resolves into a project tree). DLC's
-          ``copy_videos`` would otherwise scaffold a nested project at
-          ``<project>/videos/`` whose downstream paths nothing handles.
-        - **Train DLC model** is disabled when ``self._dlcproject`` is
-          None. Replaces the click-time ``ValueError("DLCProject not
-          created. ...")`` with a greyed-out button + tooltip.
-        - **Apply manual corrections** is disabled when there's no
-          overlay layer set, or when the active layer is already the
-          corrections output. Mirrors the two
-          :class:`ValueError` paths in :meth:`apply_manual_corrections`.
-
-        ``Reduce jitter`` is intentionally *not* gated here: its real
-        precondition is "every frame in the active layer is fully
-        annotated", which is a data property rather than a name-pattern
-        property. The cheap name-based proxy
-        (:func:`_is_dense_layer_name`) is correct for rendering style
-        but would false-disable a fully-annotated manual layer; the
-        gate is deferred until a cheap data-side check exists. See
-        :func:`lk_moving_average_filter`'s sparse-labels guard for the
-        canonical run-time check.
-
-        Qt-only: walks ``self.buttons`` and writes ``setEnabled`` +
-        ``setToolTip`` on each Button's ``_qt_btn`` attribute. The
-        helper no-ops on any button whose Qt handle is missing (the
-        legacy mpl-fallback path; no longer supported as a first-class
-        deployment, kept working for users on pinned older versions).
+        """Apply current gate decisions to the Workflow-group buttons.
+        See :func:`._workflow_gates.refresh_workflow_button_state`.
         """
-        if not HAS_DLC:
-            # The Workflow group's DLC buttons aren't added when
-            # deeplabcut is missing; nothing to gate.
-            return
-        gates = self._evaluate_workflow_gates()
-        for label, (enabled, tooltip) in gates.items():
-            if label not in self.buttons:
-                continue
-            btn = self.buttons[label]
-            qt_btn = getattr(btn, "_qt_btn", None)
-            if qt_btn is None:
-                continue
-            qt_btn.setEnabled(enabled)
-            qt_btn.setToolTip(tooltip)
+        _workflow_gates.refresh_workflow_button_state(self)
 
     def _evaluate_workflow_gates(self) -> dict:
         """Compute ``{button_label: (enabled, tooltip)}`` for the gated buttons.
-
-        Pulled out of :meth:`_refresh_workflow_button_state` so the
-        gate semantics can be unit-tested without standing up a Qt
-        window. Reads only ``self._dlcproject`` /
-        ``self._current_overlay`` / ``self.ann`` / ``self.fname`` --
-        the same state the click handlers themselves consult.
+        See :func:`._workflow_gates.evaluate_workflow_gates`.
         """
-        gates: dict = {}
-
-        # --- Create DLC Project --------------------------------------
-        proj_root = _session_inside_dlc_project(self)
-        dlc_state = _dlc_load_state()
-        if proj_root is not None:
-            # "Inside a project" wins over "still loading" -- the click
-            # would refuse on that ground first.
-            gates["Create DLC Project"] = (
-                False,
-                f"Already inside DLC project {proj_root.name!r} — "
-                "use Train DLC model to extend it.",
-            )
-        elif dlc_state in ("pending", "loading"):
-            # The bg preload (``_ensure_dlc_loaded_async`` fired from
-            # ``dustrack.open()``) hasn't finished yet. Subtle "we're
-            # not ready" signal via greyed-out button + tooltip; flips
-            # to enabled when ``register_dlc_load_callback`` fires the
-            # post-load gate refresh in ``__init__``.
-            gates["Create DLC Project"] = (
-                False,
-                "Loading DeepLabCut… (this button enables once the "
-                "import completes -- typically a few seconds after "
-                "DUSTrack launches).",
-            )
-        elif dlc_state == "missing":
-            # ``find_spec`` said yes but the import raised. Edge case
-            # (broken torch / dependency conflict / partial DLC
-            # install); ``HAS_DLC=False`` would have skipped button
-            # creation entirely.
-            gates["Create DLC Project"] = (
-                False,
-                "DeepLabCut failed to load. Check the launching "
-                "terminal for the import error.",
-            )
-        else:
-            gates["Create DLC Project"] = (True, "")
-
-        # --- Train DLC model -----------------------------------------
-        if self._dlcproject is None:
-            gates["Train DLC model"] = (
-                False,
-                "Create a DLC project first.",
-            )
-        else:
-            gates["Train DLC model"] = (True, "")
-
-        # --- Apply manual corrections --------------------------------
-        ann = getattr(self, "ann", None)
-        ann_name = getattr(ann, "name", None) if ann is not None else None
-        if self._current_overlay is None:
-            gates["Apply manual corrections"] = (
-                False,
-                "Set an overlay layer (typically a 'dlc_*' trace) "
-                "first.",
-            )
-        elif ann_name == self.CORRECTIONS_LAYER_NAME:
-            gates["Apply manual corrections"] = (
-                False,
-                "Switch the active layer back to your manual "
-                f"annotations — {self.CORRECTIONS_LAYER_NAME!r} is the "
-                "output, not the input.",
-            )
-        else:
-            gates["Apply manual corrections"] = (True, "")
-
-        return gates
+        return _workflow_gates.evaluate_workflow_gates(self)
 
     def _apply_dark_theme(self):
         """Apply dark theme to the GUI for better ultrasound visibility."""
@@ -1436,1020 +1210,146 @@ class DUSTrack(VideoBrowser):
         )
         return self
 
-    @staticmethod
-    def _scan_incomplete_frames(
-        data: dict, target_labels: list[str] | None = None,
-    ) -> dict:
-        """Find frames missing one or more required bodyparts in an
-        annotation ``data`` dict (``{label: {frame: [x, y]}}``).
-
-        Two modes:
-
-        - ``target_labels=None`` (legacy, project-unaware): "required"
-          = labels that have at least one annotation. Empty labels
-          are treated as UI placeholders so they don't fail every
-          frame. This is the right behavior for a session without a
-          DLC project, where the user's declared label set may be the
-          default ``[" 0"]`` bootstrap with no project bodyparts to
-          anchor against.
-        - ``target_labels=<list>`` (project-aware): "required" =
-          exactly that list. Used when a ``DLCProject`` exists and
-          its ``config['bodyparts']`` are the load-bearing label
-          set -- training fails if a frame is missing any of them,
-          regardless of whether the user has touched that label
-          anywhere in the layer yet. Closes the case where a
-          seeded project has bodyparts ``["point0", "point1"]``
-          but the user annotated only the ``"0"`` label, and
-          pre-flight wrongly reported the layer as complete.
-
-        Returns ``{frame: [missing_label, ...]}`` for incomplete
-        frames, frame-sorted with missing-labels lists in the same
-        order as the required-label list. Empty dict iff every
-        annotated frame has every required label.
-
-        Pure data-in / data-out; testable from synthetic dicts.
-        """
-        if target_labels is None:
-            required = [L for L, frames in data.items() if frames]
-        else:
-            required = list(target_labels)
-        if not required:
-            return {}
-        all_frames: set = set()
-        for L, frames in data.items():
-            all_frames.update(frames.keys())
-        incomplete: dict = {}
-        for frame in sorted(all_frames):
-            missing = [L for L in required if frame not in data.get(L, {})]
-            if missing:
-                incomplete[frame] = missing
-        return incomplete
-
-    @staticmethod
-    def _build_dropped_incomplete_payload(data: dict, incomplete_frames: dict) -> dict:
-        """Build the JSON payload for the dropped-incomplete sidecar.
-
-        Each entry is ``{label: [x, y]}`` for the labels that *were*
-        present at the dropped frame (the missing ones are the
-        incompleteness). Frame keys are stringified for JSON compat.
-        """
-        payload: dict = {}
-        for frame in incomplete_frames:
-            present = {}
-            for L, frames in data.items():
-                if frame in frames:
-                    present[L] = [float(x) for x in frames[frame]]
-            payload[str(frame)] = present
-        return payload
-
-    @staticmethod
-    def _build_dropped_incomplete_sidecar_name(ann_fname, ts: str) -> str:
-        """``<fstem>.dustrack-dropped-incomplete-<ts>`` in the
-        annotation's directory.
-
-        Intentionally avoids `.json` so DUSTrack's annotation-discovery
-        glob (``{video_stem}*_annotations*.json`` in
-        :meth:`DLCProject.extract_frames`) does not re-ingest the
-        sidecar on a subsequent training run.
-        """
-        p = Path(ann_fname)
-        return str(p.parent / f"{p.stem}.dustrack-dropped-incomplete-{ts}")
-
-    @staticmethod
-    def _format_incomplete_breakdown(incomplete_frames: dict, max_rows: int = 200) -> str:
-        """Multi-line per-bodypart breakdown for the pre-flight modal's
-        detailed-text panel. Truncates very wide reports.
-        """
-        rows = []
-        total = len(incomplete_frames)
-        for i, (frame, missing) in enumerate(sorted(incomplete_frames.items())):
-            if i >= max_rows:
-                rows.append(f"... ({total - max_rows} more frames)")
-                break
-            rows.append(f"Frame {frame}: missing {', '.join(missing)}")
-        return "\n".join(rows)
+    # Pre-flight scan + diff + sidecar helpers — full implementations
+    # live in dustrack._preflight; these are class-level aliases so
+    # ``self._scan_*`` and ``cls._is_manual_*`` callsites keep working.
+    _scan_incomplete_frames = staticmethod(_preflight.scan_incomplete_frames)
+    _build_dropped_incomplete_payload = staticmethod(
+        _preflight.build_dropped_incomplete_payload
+    )
+    _build_dropped_incomplete_sidecar_name = staticmethod(
+        _preflight.build_dropped_incomplete_sidecar_name
+    )
+    _format_incomplete_breakdown = staticmethod(_preflight.format_incomplete_breakdown)
+    _normalize_layer_data = staticmethod(_preflight.normalize_layer_data)
+    _load_layer_disk_data = staticmethod(_preflight.load_layer_disk_data)
+    _diff_ann_vs_disk = staticmethod(_preflight.diff_ann_vs_disk)
+    _format_unsaved_summary = staticmethod(_preflight.format_unsaved_summary)
+    _format_pre_flight_summary = staticmethod(_preflight.format_pre_flight_summary)
+    _is_manual_layer_name = staticmethod(is_manual_layer_name)
+    _is_manual_annotation_layer = staticmethod(is_manual_annotation_layer)
 
     def _save_dropped_incomplete_sidecar(self, ann, incomplete_frames: dict):
         """Persist the dropped-frame contents next to the given layer.
-
-        Returns the sidecar path on success, ``None`` if the layer
-        has no on-disk filename (in-memory only).
+        See :func:`._preflight.save_dropped_incomplete_sidecar`.
         """
-        import datetime
-        import json
-        if ann.fname is None:
-            return None
-        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-        sidecar = self._build_dropped_incomplete_sidecar_name(ann.fname, ts)
-        payload = self._build_dropped_incomplete_payload(ann.data, incomplete_frames)
-        # Path.write_text rather than builtin open() because the
-        # module-level open() (workflow entry point) shadows
-        # builtins.open inside this file -- see _load_layer_disk_data.
-        Path(sidecar).write_text(json.dumps(payload, indent=2))
-        return sidecar
-
-    @staticmethod
-    def _is_manual_layer_name(
-        ann_name: str,
-        special_names: tuple = ("dlccorr", "buffer"),
-    ) -> bool:
-        """Name-only predicate for "is this a manual annotation layer?".
-
-        Pure string check on the layer name -- excludes ``dlccorr``
-        (terminal output of apply_manual_corrections), ``buffer``
-        (workspace scratch), and any layer whose name starts with
-        ``"dlc"`` (DLC trace + process_with_lk LK outputs). Symmetric
-        with the name-side of :meth:`_is_manual_annotation_layer`,
-        which adds an on-disk file-pattern check on top.
-
-        Lives separately so callers that care about incomplete-frame
-        scanning -- which only needs the in-memory ``ann.data`` --
-        can include layers that aren't yet saved to disk (``ann.fname
-        is None``). The Train pre-flight uses this for inclusion and
-        then guards the disk-diff portion on ``ann.fname`` being set;
-        save-on-close uses the stricter file-aware predicate because
-        a layer with no disk file has nothing to diff against.
-        """
-        if ann_name in special_names:
-            return False
-        if ann_name.startswith("dlc"):
-            return False
-        return True
-
-    @staticmethod
-    def _is_manual_annotation_layer(
-        video_fname,
-        ann_fname,
-        ann_name: str,
-        special_names: tuple = ("dlccorr", "buffer"),
-    ) -> bool:
-        """Identify a manual annotation ``.json`` layer that feeds
-        :meth:`DLCProject.extract_frames`.
-
-        Rule: ``.json`` file alongside the video, matching the
-        ``<video_stem>_annotations*.json`` pattern, AND the layer name
-        passes :meth:`_is_manual_layer_name`. Excludes ``dlccorr`` /
-        ``buffer`` / ``dlc*`` by name.
-
-        File-based detection -- doesn't rely on the
-        ``iteration-N`` naming convention, so a layer the user
-        renamed to ``iter1`` or seeded with experimenter initials
-        (e.g. ``pn``) is still picked up.
-        """
-        if ann_fname is None or video_fname is None:
-            return False
-        fname_path = Path(ann_fname)
-        if fname_path.suffix != ".json":
-            return False
-        video_path = Path(video_fname)
-        if fname_path.parent != video_path.parent:
-            return False
-        video_stem = video_path.stem
-        stem = fname_path.stem
-        if stem != f"{video_stem}_annotations" and not stem.startswith(
-            f"{video_stem}_annotations_"
-        ):
-            return False
-        return DUSTrack._is_manual_layer_name(ann_name, special_names)
-
-    @staticmethod
-    def _normalize_layer_data(data: dict) -> dict:
-        """Canonical form for diff comparison: int frame keys, float
-        ``[x, y]`` values, empty labels filtered.
-
-        Empty-label filtering exists for *diff* symmetry: a label
-        with no frames contributes no entries to added / removed /
-        modified regardless of whether it's present on one side
-        only. With dnav 1.4.0rc2's first-class-label schema, both
-        on-disk JSON and in-memory data may legitimately carry
-        ``"label": {}`` entries (whereas pre-rc2,
-        :meth:`VideoAnnotation.save` pruned them on the way out); the
-        diff still works correctly because both inputs are filtered
-        the same way here.
-        """
-        out: dict = {}
-        for label, frames in data.items():
-            if not frames:
-                continue
-            out[label] = {
-                int(frame): [float(x) for x in xy]
-                for frame, xy in frames.items()
-            }
-        return out
-
-    @staticmethod
-    def _load_layer_disk_data(ann_fname) -> dict:
-        """Read the on-disk JSON for a layer and return its data in
-        canonical form. Empty dict if the file does not exist or
-        cannot be parsed (treated as "fully unsaved").
-
-        Uses ``Path.read_text`` rather than builtin ``open()`` because
-        the module defines a top-level ``open`` (the workflow entry
-        point) that shadows ``builtins.open`` inside this file -- same
-        convention as ``DLCProject._read_trackermap``.
-        """
-        import json
-        if ann_fname is None:
-            return {}
-        p = Path(ann_fname)
-        if not p.exists():
-            return {}
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return DUSTrack._normalize_layer_data(raw)
-
-    @staticmethod
-    def _diff_ann_vs_disk(mem_data: dict, disk_data: dict) -> dict:
-        """Compare two canonical data dicts. Returns
-        ``{"added": [...], "removed": [...], "modified": [...]}``
-        where each list contains ``(label, frame)`` tuples in label-
-        then frame-sorted order.
-
-        Both inputs are assumed normalized via
-        :meth:`_normalize_layer_data`.
-        """
-        added: list = []
-        removed: list = []
-        modified: list = []
-        all_labels = set(mem_data) | set(disk_data)
-        for label in sorted(all_labels):
-            mem_frames = mem_data.get(label, {})
-            disk_frames = disk_data.get(label, {})
-            for frame in sorted(set(mem_frames) - set(disk_frames)):
-                added.append((label, frame))
-            for frame in sorted(set(disk_frames) - set(mem_frames)):
-                removed.append((label, frame))
-            for frame in sorted(set(mem_frames) & set(disk_frames)):
-                if mem_frames[frame] != disk_frames[frame]:
-                    modified.append((label, frame))
-        return {"added": added, "removed": removed, "modified": modified}
+        return _preflight.save_dropped_incomplete_sidecar(ann, incomplete_frames)
 
     def _scan_unsaved_layers(self) -> dict:
-        """Across every manual annotation layer, return
-        ``{layer_name: diff}`` for layers whose in-memory data differs
-        from disk. Sibling of :meth:`_scan_unsaved_and_incomplete`
-        scoped to the data-loss concern only -- the close-event guard
-        does not care about incomplete-frame quality (that surfaces
-        next time the user trains).
+        """Per-manual-layer in-memory-vs-disk diff for the active bundle.
+        See :func:`._preflight.scan_unsaved_layers`.
         """
-        unsaved: dict = {}
-        for ann in self.annotations:
-            if not self._is_manual_annotation_layer(
-                self.fname, ann.fname, ann.name
-            ):
-                continue
-            mem_data = self._normalize_layer_data(ann.data)
-            disk_data = self._load_layer_disk_data(ann.fname)
-            diff = self._diff_ann_vs_disk(mem_data, disk_data)
-            if any(diff.values()):
-                unsaved[ann.name] = diff
-        return unsaved
-
-    @staticmethod
-    def _format_unsaved_summary(unsaved: dict) -> str:
-        """Per-layer +added / -removed / ~modified counts for the
-        save-on-close modal's informative text.
-        """
-        lines = []
-        for layer_name, diff in unsaved.items():
-            a = len(diff.get("added", []))
-            r = len(diff.get("removed", []))
-            m = len(diff.get("modified", []))
-            pieces = []
-            if a:
-                pieces.append(f"+{a} added")
-            if r:
-                pieces.append(f"-{r} removed")
-            if m:
-                pieces.append(f"~{m} modified")
-            lines.append(f"  {layer_name!r}: " + ", ".join(pieces))
-        return "\n".join(lines)
+        return _preflight.scan_unsaved_layers(self.annotations, self.fname)
 
     def _scan_unsaved_and_incomplete(self) -> dict:
-        """Across every manual annotation layer in the session, find
-        in-memory-vs-disk diffs AND/OR incomplete frames. Returns
-        ``{layer_name: {"diff": ..., "incomplete": ...}}`` for
-        layers with at least one issue; layers with neither are
-        omitted.
-
-        Inclusion is name-based (see :meth:`_is_manual_layer_name`)
-        so layers that haven't been saved yet -- ``ann.fname is None``,
-        the state after a user opens a fresh video, annotates a
-        partial layer, and clicks Train without saving first -- are
-        still scanned for incompleteness. The disk-diff portion is
-        guarded on ``ann.fname`` being set AND matching the
-        ``<video_stem>_annotations*.json`` pattern; without a disk
-        file there's nothing to diff against. Pre-2026-05-21 the
-        inclusion check required a file match too, which silently
-        skipped unsaved-but-incomplete layers on first-time training.
-
-        Project-aware incomplete scan (1.2.0a2): when ``self._dlcproject``
-        is set, derives the required-label set from
-        ``config['bodyparts']`` (mapped through
-        :func:`_dlc_bodyparts_to_layer_labels`) and hands it to
-        :meth:`_scan_incomplete_frames` as ``target_labels``. Catches
-        the post-seeding case where the user has annotated, say, only
-        the ``"0"`` label but the project bodyparts demand both
-        ``"0"`` and ``"1"`` -- the legacy "active labels = labels
-        with any annotation" rule wrongly reported those frames as
-        complete.
+        """Combined unsaved-diff + incomplete-frame sweep.
+        See :func:`._preflight.scan_unsaved_and_incomplete`.
         """
-        target_labels: list[str] | None = None
-        if self._dlcproject is not None:
-            bodyparts = self._dlcproject.config.get("bodyparts") or []
-            if bodyparts:
-                target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
-
-        issues: dict = {}
-        for ann in self.annotations:
-            if not self._is_manual_layer_name(ann.name):
-                continue
-            incomplete = self._scan_incomplete_frames(
-                ann.data, target_labels=target_labels,
-            )
-            diff = {"added": [], "removed": [], "modified": []}
-            if self._is_manual_annotation_layer(
-                self.fname, ann.fname, ann.name
-            ):
-                mem_data = self._normalize_layer_data(ann.data)
-                disk_data = self._load_layer_disk_data(ann.fname)
-                diff = self._diff_ann_vs_disk(mem_data, disk_data)
-            if any(diff.values()) or incomplete:
-                issues[ann.name] = {"diff": diff, "incomplete": incomplete}
-        return issues
-
-    @staticmethod
-    def _format_pre_flight_summary(
-        issues: dict, max_incomplete_examples: int = 3
-    ) -> str:
-        """Per-layer breakdown for the unified pre-flight modal's
-        detailed-text panel.
-        """
-        blocks = []
-        for layer_name, info in issues.items():
-            lines = [f"Layer {layer_name!r}:"]
-            diff = info.get("diff", {})
-            a = len(diff.get("added", []))
-            r = len(diff.get("removed", []))
-            m = len(diff.get("modified", []))
-            if a or r or m:
-                pieces = []
-                if a:
-                    pieces.append(f"+{a} added")
-                if r:
-                    pieces.append(f"-{r} removed")
-                if m:
-                    pieces.append(f"~{m} modified")
-                lines.append("  Unsaved changes: " + ", ".join(pieces))
-            else:
-                lines.append("  (no unsaved changes)")
-            incomplete = info.get("incomplete", {})
-            if incomplete:
-                n = len(incomplete)
-                lines.append(f"  Incomplete frames: {n}")
-                for i, (frame, missing) in enumerate(sorted(incomplete.items())):
-                    if i >= max_incomplete_examples:
-                        lines.append(
-                            f"    ... ({n - max_incomplete_examples} more)"
-                        )
-                        break
-                    lines.append(
-                        f"    frame {frame}: missing {', '.join(missing)}"
-                    )
-            else:
-                lines.append("  (no incomplete frames)")
-            blocks.append("\n".join(lines))
-        return "\n\n".join(blocks)
+        return _preflight.scan_unsaved_and_incomplete(
+            self.annotations, self.fname, dlcproject=self._dlcproject,
+        )
 
     def _prompt_training_options(self, qt_window):
-        """Show the Training options modal and return kwargs ready to
-        splat into :meth:`DLCProject.train_iteration`.
-
-        Builds the initial state via
-        :func:`_default_training_options` from the live ``DLCProject``,
-        runs :class:`TrainingOptionsDialog` synchronously, and
-        translates the user's choices via
-        :func:`_training_options_to_train_iteration_kwargs`.
-
-        Returns:
-            dict | None: kwargs for ``train_iteration``, or ``None``
-            if the user clicked Cancel (caller returns without
-            kicking off training).
+        """Show the Training options modal; return ``train_iteration`` kwargs.
+        See :func:`._train_modal.prompt_training_options`.
         """
-        TrainingOptionsDialog = _make_training_options_class()
-        initial_state = _default_training_options(self._dlcproject)
-        options = TrainingOptionsDialog(
-            qt_window, initial_state=initial_state,
-        ).exec_()
-        if options is None:
-            return None
-        return _training_options_to_train_iteration_kwargs(options)
+        return _train_modal.prompt_training_options(qt_window, self._dlcproject)
 
     def _prompt_seed_bundle(self, qt_window) -> Optional[str]:
-        """Multi-step modal sequence that fires when ``Create DLC Project``
-        is clicked with an empty active manual layer.
-
-        Two entry points depending on whether a seed-bundles root has
-        been remembered:
-
-        - **Root set + non-empty**: opens a list-picker
-          (:class:`SeedBundlePickerDialog`) showing every valid bundle
-          under the root with its name + bodyparts + description.
-          Quick-select; no file-dialog navigation required.
-        - **No root set / empty root**: opens the legacy
-          :class:`ConfirmOverlay` -> ``QFileDialog`` -> confirm path.
-          After a successful pick, offers to remember the picked
-          bundle's parent as the bundles root so next session uses
-          the picker.
-
-        Returns the validated bundle folder path on Accept, or ``None``
-        on any Cancel / invalid bundle path. Caller (``create_dlc_project``)
-        treats ``None`` as "user bailed -- leave the UI alone".
+        """Multi-step seed-bundle pick / confirm modal sequence.
+        See :func:`._seed_bundle_modal.prompt_seed_bundle`.
         """
-        # Loop so the picker's "Change bundles root" action can
-        # re-open the dialog against the new root, and "Browse
-        # elsewhere" can fall through to the file-dialog branch.
-        while True:
-            root = get_seed_bundles_root()
-            if root is not None and root.is_dir():
-                bundles = list_seed_bundles(root)
-            else:
-                bundles = []
-
-            if bundles:
-                action = self._pick_from_seed_bundles(qt_window, root, bundles)
-                if action is None:
-                    return None
-                kind = action[0]
-                if kind == "use":
-                    info = action[1]
-                    bundle_path = str(info["path"])
-                    if self._confirm_seed_bundle(qt_window, bundle_path, info):
-                        return bundle_path
-                    return None
-                if kind == "set_root":
-                    set_seed_bundles_root(action[1])
-                    continue  # re-list against the new root
-                if kind == "browse":
-                    # Fall through to legacy Browse flow below, but
-                    # don't loop -- a Browse pick should either
-                    # accept and return, or cancel out.
-                    pass
-
-            # Legacy flow: explain + Browse + validate + confirm.
-            picked = self._browse_for_seed_bundle(qt_window)
-            if picked is None:
-                return None
-            # First-time-Browse polite ask: remember the parent as
-            # the root so the picker takes over next session. Skip
-            # if a root is already configured (user already declined
-            # or has a different setup in mind).
-            if get_seed_bundles_root() is None:
-                self._maybe_remember_seed_bundles_root(qt_window, picked)
-            return picked
+        return _seed_bundle_modal.prompt_seed_bundle(qt_window, self.ann.name)
 
     def _pick_from_seed_bundles(self, qt_window, root, bundles):
-        """Drive :class:`SeedBundlePickerDialog`. Returns the
-        dialog's raw result tuple (or ``None`` on cancel)."""
-        PickerDialog = _make_seed_bundle_picker_class()
-        return PickerDialog(qt_window, root=root, bundles=bundles).exec_()
+        """List-picker dialog. See :func:`._seed_bundle_modal.pick_from_seed_bundles`."""
+        return _seed_bundle_modal.pick_from_seed_bundles(qt_window, root, bundles)
 
     def _browse_for_seed_bundle(self, qt_window) -> Optional[str]:
-        """Legacy seed-bundle flow used when no bundles root is set
-        (or the picker user clicked Browse elsewhere): intent
-        overlay -> ``QFileDialog`` -> validate -> confirm. Returns
-        the validated bundle path on accept, ``None`` on any cancel
-        or invalid bundle."""
-        from qtpy.QtWidgets import QFileDialog
-
-        ConfirmOverlay = _make_confirm_overlay_class()
-
-        # Only show the intent overlay when there's no remembered
-        # root -- if the user got here via "Browse elsewhere" from
-        # the picker, they already understand the situation.
-        if get_seed_bundles_root() is None:
-            result = ConfirmOverlay(
-                qt_window,
-                title="No annotations in active layer",
-                message=(
-                    f"Active layer {self.ann.name!r} has no labels. "
-                    "To create a DLC project from this session, "
-                    "either annotate frames manually first, or seed "
-                    "iteration-0 from a pre-trained snapshot bundle "
-                    "(a folder containing snapshot-*.pt + "
-                    "pytorch_config.yaml + pose_cfg.yaml).\n\n"
-                    "Inference from the bundled snapshot will run on "
-                    "the current video and load as a dense reference "
-                    "overlay; your manual refinements then become "
-                    "iteration-1."
-                ),
-                buttons=[
-                    ("Browse for seed bundle…", "primary"),
-                    ("Cancel", "neutral"),
-                ],
-                default="Cancel",
-                severity="warning",
-            ).exec_()
-            if result != "Browse for seed bundle…":
-                return None
-
-        bundle_dir = QFileDialog.getExistingDirectory(
-            qt_window,
-            "Choose seed bundle folder",
-            "",
-            QFileDialog.ShowDirsOnly,
-        )
-        if not bundle_dir:
-            return None
-
-        try:
-            info = inspect_seed_bundle(bundle_dir)
-        except (FileNotFoundError, ValueError) as exc:
-            ConfirmOverlay(
-                qt_window,
-                title="Invalid seed bundle",
-                message=(
-                    f"The selected folder is not a usable seed bundle:\n\n"
-                    f"{exc}\n\n"
-                    "Re-click 'Create DLC Project' to try again."
-                ),
-                buttons=[("OK", "neutral")],
-                default="OK",
-                severity="error",
-            ).exec_()
-            return None
-
-        if self._confirm_seed_bundle(qt_window, bundle_dir, info):
-            return bundle_dir
-        return None
+        """File-dialog Browse flow. See :func:`._seed_bundle_modal.browse_for_seed_bundle`."""
+        return _seed_bundle_modal.browse_for_seed_bundle(qt_window, self.ann.name)
 
     def _confirm_seed_bundle(self, qt_window, bundle_path, info) -> bool:
-        """Final confirm-with-detected-info overlay shared by the
-        picker and Browse paths. Returns True iff the user clicked
-        ``Create and seed``.
-        """
-        ConfirmOverlay = _make_confirm_overlay_class()
-        description = info.get("description") or "(no description)"
-        result = ConfirmOverlay(
-            qt_window,
-            title="Confirm seed bundle",
-            message=(
-                f"Bundle: {bundle_path}\n"
-                f"Snapshot: {info['snapshot'].name}\n"
-                f"Bodyparts ({len(info['bodyparts'])}): {info['bodyparts']}\n"
-                f"Net type: {info.get('net_type') or '(unset)'}\n"
-                f"Description: {description}\n\n"
-                "Create the project, install this snapshot as iteration-0, "
-                "and run inference on the current video?"
-            ),
-            buttons=[
-                ("Create and seed", "primary"),
-                ("Cancel", "neutral"),
-            ],
-            default="Cancel",
-            severity="info",
-        ).exec_()
-        return result == "Create and seed"
+        """Final confirm overlay. See :func:`._seed_bundle_modal.confirm_seed_bundle`."""
+        return _seed_bundle_modal.confirm_seed_bundle(qt_window, bundle_path, info)
 
     def _maybe_remember_seed_bundles_root(self, qt_window, bundle_path) -> None:
-        """After the first successful Browse pick, ask the user if
-        they want to remember the bundle's parent folder as the
-        seed-bundles root so the next session opens the list-picker
-        directly. No-op if they say no (the next Browse will ask
-        again)."""
-        ConfirmOverlay = _make_confirm_overlay_class()
-        parent = Path(bundle_path).parent
-        result = ConfirmOverlay(
-            qt_window,
-            title="Remember bundles location?",
-            message=(
-                f"Use this folder as your seed-bundles root?\n\n"
-                f"{parent}\n\n"
-                "Next time you click Create DLC Project on an empty "
-                "layer, DUSTrack will list every bundle in this "
-                "folder so you don't have to browse."
-            ),
-            buttons=[
-                ("Remember it", "primary"),
-                ("Not now", "neutral"),
-            ],
-            default="Remember it",
-            severity="info",
-        ).exec_()
-        if result == "Remember it":
-            set_seed_bundles_root(parent)
+        """Optional remember-root prompt. See :func:`._seed_bundle_modal.maybe_remember_seed_bundles_root`."""
+        _seed_bundle_modal.maybe_remember_seed_bundles_root(qt_window, bundle_path)
 
     def _has_trainable_labels(self) -> bool:
-        """True if the project has *any* source of labels training
-        could consume: at least one non-empty manual annotation layer
-        in the session, or at least one ``.h5`` under the project's
-        ``labeled-data/`` folder (already-extracted labels from
-        prior iterations).
-
-        Pure predicate -- no side effects. Used by
-        :meth:`process_dlc_project` to decide between hard-blocking
-        the Train DLC click and falling through to the
-        "Continue training without new data?" confirm.
+        """True if the project has any source of labels training could consume.
+        See :func:`._preflight.has_trainable_labels`.
         """
-        for ann in self.annotations:
-            if not self._is_manual_layer_name(ann.name):
-                continue
-            if any(ann.data.values()):
-                return True
-        if self._dlcproject is not None:
-            labels_dir = Path(self._dlcproject.paths["labels"])
-            if labels_dir.is_dir():
-                for _ in labels_dir.rglob("*.h5"):
-                    return True
-        return False
+        return _preflight.has_trainable_labels(
+            self.annotations, dlcproject=self._dlcproject,
+        )
 
     def _prompt_no_trainable_labels(self, qt_window) -> None:
-        """Hard-block overlay for the Train DLC path when the active
-        manual layer is empty AND no other source of labels exists in
-        the project (no other non-empty manual layer, no
-        ``labeled-data/*.h5``). Distinct from
-        :meth:`_prompt_empty_layer_train_confirm` -- there's nothing
-        to confirm, the user has to add labels before training can do
-        anything.
-
-        Typical trigger: freshly-seeded project, user clicks Train
-        before annotating any iteration-1 frames.
+        """Hard-block overlay when no labels exist anywhere in the project.
+        See :func:`._preflight_modal.prompt_no_trainable_labels`.
         """
-        ConfirmOverlay = _make_confirm_overlay_class()
-        ConfirmOverlay(
-            qt_window,
-            title="No labels to train on",
-            message=(
-                f"Active layer {self.ann.name!r} has no labels, and no "
-                "other annotation layer or 'labeled-data/' file in this "
-                "project has any either. Training would have nothing "
-                "to consume.\n\n"
-                "Annotate some frames in the active layer first, or "
-                "use 'Apply manual corrections' to convert a DLC "
-                "prediction trace into a manual annotation layer."
-            ),
-            buttons=[("OK", "neutral")],
-            default="OK",
-            severity="error",
-        ).exec_()
+        _preflight_modal.prompt_no_trainable_labels(qt_window, self.ann.name)
 
     def _prompt_empty_layer_train_confirm(self, qt_window) -> bool:
-        """Modal that fires when Train DLC is clicked with an empty
-        active manual layer. Returns True iff the user confirmed
-        ``Continue training``.
-
-        "Empty active layer" means no label has any frames -- the
-        check at the call site is ``not any(self.ann.data.values())``,
-        the same predicate used by ``_rewire_to_in_project_paths``
-        to decide whether a layer needs an on-disk save. The empty
-        layer itself is *not* saved by this path -- the pre-flight
-        scan downstream only acts on layers with diffs or
-        incompleteness, and an empty layer has neither.
-
-        User intent in this state: "train for more iterations without
-        new labels." Training will reuse whatever labels already
-        exist in ``labeled-data/``; if none do (e.g. a freshly-seeded
-        iteration-1), DLC will fail downstream with its own error.
+        """Confirm modal for Train-with-empty-active-layer.
+        See :func:`._preflight_modal.prompt_empty_layer_train_confirm`.
         """
-        ConfirmOverlay = _make_confirm_overlay_class()
-        body = (
-            f"Active layer {self.ann.name!r} has no labels.\n\n"
-            "Training will reuse the labels already in "
-            "'labeled-data/' from previous iterations. The empty "
-            "active layer will not be saved.\n\n"
-            "Continue without adding new labels?"
+        return _preflight_modal.prompt_empty_layer_train_confirm(
+            qt_window, self.ann.name,
         )
-        result = ConfirmOverlay(
-            qt_window,
-            title="No annotations in active layer",
-            message=body,
-            buttons=[
-                ("Continue training", "primary"),
-                ("Cancel", "neutral"),
-            ],
-            default="Cancel",
-            severity="warning",
-        ).exec_()
-        return result == "Continue training"
 
     def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
-        """Single modal for the combined save-state + incompleteness
-        pre-flight. Returns True iff the user picked
-        *Save and clean*.
-
-        Routes through :class:`ConfirmOverlay` (rc2) so the modal
-        shares visual vocabulary with the new ``Discard unsaved`` /
-        ``Remove layer`` confirms; pre-rc2 used ``QMessageBox``. The
-        per-layer breakdown is shown inline rather than behind a
-        collapsed "Show Details..." toggle -- the breakdown is the
-        substance the user needs to decide on, not optional extra.
+        """Combined save-state + incompleteness modal.
+        See :func:`._preflight_modal.prompt_unified_pre_flight`.
         """
-        ConfirmOverlay = _make_confirm_overlay_class()
-        n = len(issues)
-        header = (
-            f"{n} manual annotation layer{'s' if n != 1 else ''} "
-            f"{'have' if n != 1 else 'has'} unsaved changes and/or "
-            "incomplete frames."
-        )
-        breakdown = self._format_pre_flight_summary(issues)
-        body = (
-            f"{header}\n\n"
-            f"{breakdown}\n\n"
-            "Save and clean will:\n"
-            " - save in-memory edits to disk for the listed layer(s),\n"
-            " - drop frames missing one or more bodyparts (per-layer "
-            "recovery sidecars written next to each annotation file),\n"
-            " - then start training.\n\n"
-            "Cancel returns to the UI without changes."
-        )
-        result = ConfirmOverlay(
-            qt_window,
-            title="Pre-flight issues",
-            message=body,
-            buttons=[
-                ("Save and clean", "primary"),
-                ("Cancel", "neutral"),
-            ],
-            default="Cancel",
-            severity="warning",
-        ).exec_()
-        return result == "Save and clean"
+        return _preflight_modal.prompt_unified_pre_flight(qt_window, issues)
 
     def _apply_pre_flight_remediations(self, issues: dict) -> None:
-        """For each layer with issues, drop incomplete frames (with
-        recovery sidecar) and save the (possibly trimmed) layer.
-
-        Layers whose ``ann.fname`` is ``None`` (in-session unsaved
-        layers, the first-time-training case) get a canonical fname
-        derived from the video stem + layer name before save:
-        ``<video_stem>_annotations_<layer_name>.json``. The recovery
-        sidecar needs the same path resolved.
+        """Drop incomplete frames + save each affected layer, then repaint.
+        See :func:`._preflight_modal.apply_pre_flight_remediations`.
         """
-        for layer_name, info in issues.items():
-            ann = self.annotations[layer_name]
-            if ann.fname is None:
-                ann.fname = str(make_annotation_file_name(
-                    Path(self.fname), annotation_suffix=ann.name
-                ))
-            incomplete = info.get("incomplete") or {}
-            if incomplete:
-                self._save_dropped_incomplete_sidecar(ann, incomplete)
-                # Drop the incomplete frames directly using the scan's
-                # output. The pre-fix pair (remove_empty_labels +
-                # keep_overlapping_frames) silently failed in the
-                # project-aware case: a required-but-empty label (the
-                # user touched only "0" in a ["point0", "point1"]
-                # project) got dropped by remove_empty_labels, and
-                # keep_overlapping_frames then preserved every
-                # incomplete frame because the now-single-label
-                # schema trivially "overlapped" with itself. Routing
-                # mutations through ``ann.remove(label, frame)`` keeps
-                # the revision counter consistent (see
-                # ``feedback_revision_counter_invalidation_pattern``)
-                # and works in both project-aware and legacy modes.
-                for frame in incomplete:
-                    for label in list(ann.data.keys()):
-                        if frame in ann.data[label]:
-                            ann.remove(label, frame)
-            ann.save()
+        _preflight_modal.apply_pre_flight_remediations(
+            self.annotations, self.fname, issues,
+        )
         self.update()
 
     def _prompt_save_on_close(self, qt_window, unsaved) -> str:
-        """Modal triggered by the save-on-close guard. Returns the user's
-        choice as one of ``"save"`` / ``"discard"`` / ``"cancel"``.
-
-        ``unsaved`` is either the legacy single-bundle shape
-        (``{layer_name: diff}``) or, in 1.2.0a3+ multi-video sessions,
-        the per-bundle shape ``{video_index: {"fname": Path,
-        "layers": {layer_name: diff}}}``. The modal renders each
-        bundle's layers in a separate block so users can see which
-        video each diff belongs to.
-
-        *Save* writes every layer with diffs and lets the window close;
-        *Discard* lets the window close without writing; *Cancel* keeps
-        the window open. ``Cancel`` is the default button so that
-        accidental Enter / Esc do not silently lose data. Routes
-        through :class:`ConfirmOverlay` (rc2); pre-rc2 used
-        ``QMessageBox``.
+        """Save / Discard / Cancel modal on window close.
+        See :func:`._close_guard.prompt_save_on_close`.
         """
-        ConfirmOverlay = _make_confirm_overlay_class()
-        if unsaved and "fname" in next(iter(unsaved.values()), {}):
-            # Multi-bundle shape -- one block per video.
-            blocks = []
-            total_layers = 0
-            for video_index, info in unsaved.items():
-                layers = info["layers"]
-                if not layers:
-                    continue
-                total_layers += len(layers)
-                blocks.append(
-                    f"  {Path(info['fname']).name} (video {video_index + 1}):\n"
-                    f"{self._format_unsaved_summary(layers)}"
-                )
-            breakdown = "\n\n".join(blocks)
-            n_videos = sum(1 for info in unsaved.values() if info.get("layers"))
-            header = (
-                f"{total_layers} annotation layer"
-                f"{'s' if total_layers != 1 else ''} across "
-                f"{n_videos} video{'s' if n_videos != 1 else ''} "
-                f"{'have' if total_layers != 1 else 'has'} unsaved changes."
-            )
-        else:
-            # Legacy single-bundle shape.
-            n = len(unsaved)
-            header = (
-                f"{n} annotation layer{'s' if n != 1 else ''} "
-                f"{'have' if n != 1 else 'has'} unsaved changes."
-            )
-            breakdown = self._format_unsaved_summary(unsaved)
-        body = (
-            f"{header}\n\n"
-            f"{breakdown}\n\n"
-            "Save all writes the in-memory edits to disk before closing.\n"
-            "Discard closes without writing -- changes are lost.\n"
-            "Cancel keeps the window open."
-        )
-        result = ConfirmOverlay(
-            qt_window,
-            title="Unsaved annotations",
-            message=body,
-            buttons=[
-                ("Save all", "primary"),
-                ("Discard", "destructive"),
-                ("Cancel", "neutral"),
-            ],
-            default="Cancel",
-            severity="destructive",
-        ).exec_()
-        if result == "Save all":
-            return "save"
-        if result == "Discard":
-            return "discard"
-        return "cancel"
+        return _close_guard.prompt_save_on_close(qt_window, unsaved)
 
     def _save_unsaved_layers(self, unsaved) -> None:
-        """Persist every layer with diffs. Called from the save-on-close
-        guard when the user picks *Save all*.
-
-        Accepts the legacy single-bundle shape
-        (``{layer_name: diff}`` -- saves against ``self.annotations``)
-        or the multi-bundle shape (``{video_index: {"fname": Path,
-        "layers": {layer_name: diff}}}`` -- saves against each
-        bundle's own ``annotations`` container).
+        """Persist every layer with diffs across the session's bundles.
+        See :func:`._close_guard.save_unsaved_layers`.
         """
+        # Multi-bundle shape (1.2.0a3+): every entry carries an ``fname``.
+        # Single-bundle legacy shape ({layer_name: diff}) is preserved
+        # for the old API; route through self.annotations directly.
         if unsaved and "fname" in next(iter(unsaved.values()), {}):
-            for video_index, info in unsaved.items():
-                bundle = self._bundles[video_index]
-                if bundle.annotations is None:
-                    continue
-                for layer_name in info["layers"]:
-                    if layer_name in bundle.annotations.names:
-                        bundle.annotations[layer_name].save()
+            _close_guard.save_unsaved_layers(unsaved, self._bundles)
             return
         for layer_name in unsaved:
-            ann = self.annotations[layer_name]
-            ann.save()
+            self.annotations[layer_name].save()
 
     def _scan_unsaved_layers_all_bundles(self) -> dict:
-        """Sweep every ``ready`` bundle for in-memory-vs-disk diffs.
-
-        Returns ``{video_index: {"fname": Path, "layers":
-        {layer_name: diff}}}`` for bundles with at least one unsaved
-        layer; empty when nothing is dirty. Pending / hydrating /
-        failed bundles are skipped (their data isn't in memory, so the
-        on-disk state IS the only state -- nothing to lose).
-
-        The active bundle's scan is identical to single-bundle
-        :meth:`_scan_unsaved_layers`, but reaches the same code path
-        by temporarily binding ``self.annotations`` to each bundle's
-        container during the scan. This avoids forking the diff logic.
+        """Sweep every ready bundle for unsaved diffs.
+        See :func:`._close_guard.scan_unsaved_layers_all_bundles`.
         """
-        result: dict = {}
-        if not self._bundles:
-            return result
-        saved_annotations = self.annotations
-        saved_fname = self.fname
-        try:
-            for bundle in self._bundles:
-                if not bundle.is_ready or bundle.annotations is None:
-                    continue
-                # Re-point shell attrs so the existing per-layer scan
-                # (which reads self.annotations + self.fname for the
-                # is-manual-layer predicate) sees this bundle's state.
-                self.annotations = bundle.annotations
-                self.fname = str(bundle.fname)
-                layers = self._scan_unsaved_layers()
-                if layers:
-                    result[bundle.video_index] = {
-                        "fname": bundle.fname,
-                        "layers": layers,
-                    }
-        finally:
-            self.annotations = saved_annotations
-            self.fname = saved_fname
-        return result
+        return _close_guard.scan_unsaved_layers_all_bundles(self._bundles)
 
     def _install_close_guard(self) -> None:
-        """Patch the QMainWindow ``closeEvent`` so window close triggers
-        the unsaved-diffs scan + modal.
-
-        Monkey-patch rather than subclass because the QMainWindow is
-        constructed inside matplotlib's Qt backend; intercepting it
-        without owning the type means patching the instance. The
-        original ``closeEvent`` is chained at the end so any
-        backend-internal cleanup still runs.
-
-        No-op on the mpl fallback path (no Qt window to hook).
+        """Install the QMainWindow closeEvent hook.
+        See :func:`._close_guard.install_close_guard`.
         """
-        qt_window = self._find_qt_window()
-        if qt_window is None:
-            return
-        if getattr(qt_window, "_dustrack_close_guard_installed", False):
-            return  # idempotent: a second __init__ pass (e.g. subclass) must not stack
-
-        original_close_event = qt_window.closeEvent
-        dustrack_self = self
-
-        def closeEvent(event):
-            # Seed-session short-circuit (1.2.0a3): the seed-modal
-            # launch path mounts the modal on a synthetic seed video
-            # and tears it down on dismiss / cancel. There are no
-            # user edits worth prompting about, and the seed asset
-            # path must not land in ``recent_sessions``. Skip every
-            # tail step that would survey state or write history.
-            if getattr(dustrack_self, "_is_seed_session", False):
-                original_close_event(event)
-                return
-            try:
-                # Multi-bundle (1.2.0a3): sweep every ready bundle's
-                # unsaved diffs, not just the active one. The
-                # single-bundle case (most users) ends up with a
-                # one-entry dict pointing at the active bundle, so
-                # the modal renders identically to the pre-1.2.0a3
-                # path.
-                unsaved = dustrack_self._scan_unsaved_layers_all_bundles()
-            except Exception:
-                # If the scan itself fails (e.g. annotation list mutated
-                # mid-shutdown), don't block the close -- the guard is a
-                # safety net, not a hard gate.
-                unsaved = {}
-            if unsaved:
-                choice = dustrack_self._prompt_save_on_close(qt_window, unsaved)
-                if choice == "cancel":
-                    event.ignore()
-                    return
-                if choice == "save":
-                    dustrack_self._save_unsaved_layers(unsaved)
-                # "discard" falls through to the original closeEvent
-            # History write happens after the unsaved-diff gate so a
-            # cancelled close does NOT pollute the recent list. Wrapped
-            # because a config-write failure (read-only home, disk full)
-            # must never strand the user with an un-closeable window.
-            try:
-                dustrack_self._record_session_in_history()
-            except Exception:
-                pass
-            original_close_event(event)
-
-        qt_window.closeEvent = closeEvent
-        qt_window._dustrack_close_guard_installed = True
+        _close_guard.install_close_guard(self)
 
     def _record_session_in_history(self) -> None:
-        """Write the current session's full bundle list to the unified
-        ``recent_sessions`` store.
-
-        Called from the close-guard. Single-video sessions write a
-        1-element entry; multi-video sessions write the full bundle
-        list in queue order (bundle 0 first, then the tail). The
-        active video is always the first element so a click-to-reopen
-        from the picker lands on the same video the user was on.
-
-        Skipped for seed sessions (the modal-host launch path sets
-        ``_is_seed_session = True`` on the temporary seed-tracker;
-        recording its synthetic asset path would pollute the recent
-        list with an entry that's never useful to reopen).
-
-        Robust to missing attributes (``fname`` is the only required
-        signal); the close-guard caller already wraps in try/except.
+        """Append this session's bundle list to the recent-sessions store.
+        See :func:`._close_guard.record_session_in_history`.
         """
-        if getattr(self, "_is_seed_session", False):
-            return
-        fname = getattr(self, "fname", None)
-        if not fname:
-            return
-        bundles = getattr(self, "_bundles", None) or []
-        if bundles:
-            paths = [b.fname for b in bundles]
-        else:
-            paths = [fname]
-        try:
-            _config.record_recent_session(paths)
-        except Exception:
-            # Best-effort -- if the JSON store is unwritable, drop
-            # the entry but don't fail the close.
-            pass
+        _close_guard.record_session_in_history(self)
 
     def _find_qt_window(self):
         """Return the QMainWindow hosting ``self.figure``, or ``None``
@@ -3788,633 +2688,94 @@ class DUSTrack(VideoBrowser):
     )
 
     def _init_bundles(self, project, video_paths: list) -> None:
-        """Populate :attr:`_bundles` from the just-constructed shell +
-        a list of queued video paths.
-
-        Called by :func:`dustrack.open` (and friends) after the
-        active-bundle ``DUSTrack`` is constructed. The just-built
-        annotations / VideoReader become bundle 0 (``ready`` from the
-        start); pending bundles are scaffolded for each path in
-        ``video_paths[1:]`` and hydrated by the background worker
-        (1.2.0a3 Slice 2). The user can start work on bundle 0
-        immediately; the tail loads in parallel so swap-to is fast
-        when the user reaches it.
-
-        Args:
-            project: The shared :class:`DLCProject` for all bundles, or
-                ``None`` for the (single-bundle) Phase 1 path.
-            video_paths: Ordered video paths. ``video_paths[0]`` must
-                match ``self.fname``; the rest become pending bundles.
+        """Populate ``_bundles`` from the shell + queued paths.
+        See :func:`._bundle_swap.init_bundles`.
         """
-        if len(video_paths) == 0:
-            raise ValueError("_init_bundles: video_paths cannot be empty")
-
-        # Bundle 0 -- snapshot the just-constructed shell into the
-        # ready bundle's heavy + lightweight fields.
-        active_bundle = _BundleState(
-            fname=Path(video_paths[0]),
-            video_index=0,
-            project=project,
-            reader=self.data,
-            annotations=self.annotations,
-            current_idx=self._current_idx,
-            ax_lims=dict(self._ax_lims),
-            image_view_state=self._get_image_view_state(),
-            frames_of_interest=list(self.frames_of_interest),
-            hydration_state=HYDRATION_READY,
-        )
-        active_bundle.selections = self._capture_statevar_selections()
-        self._bundles = [active_bundle]
-
-        # Pending bundles for the tail. All share the same project as
-        # bundle 0 (1.2.0a3 multi-video contract: same-project only).
-        for i, vp in enumerate(video_paths[1:], start=1):
-            self._bundles.append(_BundleState(
-                fname=Path(vp), video_index=i,
-                project=project,
-                hydration_state=HYDRATION_PENDING,
-            ))
-
-        self._active_index = 0
-        # Back-compat: ``_video_queue`` (set since 1.2.0a2 by
-        # :func:`dustrack.open`) remains as the tail-of-paths
-        # observability attribute. Kept in sync with the bundle list
-        # so legacy consumers / tests don't break.
-        self._video_queue = [b.fname for b in self._bundles[1:]]
-
-        self._hydration_worker = None
-        if project is not None and len(self._bundles) > 1:
-            self._hydration_worker = _BgHydrationWorker(
-                self, project, self._bundles[1:],
-            )
-            self._hydration_worker.start()
-
-        # Slice 3: broadcast statevar changes across every bundle.
-        # ``annotation_label`` / ``label_range`` / ``number_keys`` are
-        # the UI-mode-flavoured statevars that almost always carry
-        # across same-project videos -- when the user toggles them
-        # on bundle k via dropdown / key cycle, write the new value
-        # into every bundle's snapshot so swap-in restores it.
-        self._install_broadcast_statevar_hooks()
-
-        self._refresh_nav_buttons()
-
-        # Schedule a synchronous paint of the figure that fires AFTER
-        # the Qt event loop starts. Calling ``canvas.draw()`` inline
-        # here doesn't help -- ``dustrack.open()`` returns to
-        # ``dustrack/cli.py``, which then calls
-        # ``plt.show(block=True)`` to start the event loop. Any
-        # synchronous paint we do here renders into a buffer that
-        # the window hasn't yet been told to display, so the user
-        # sees a stale frame until they trigger a repaint manually
-        # (window resize, zoom tool, dropdown click, swap-and-back).
-        # ``QTimer.singleShot(0, ...)`` posts a deferred event onto
-        # the Qt main thread, which fires on the very first idle
-        # AFTER the event loop is running -- so the synchronous
-        # ``canvas.draw()`` lands after the window is on screen and
-        # the trace pane reflects the post-construction state on
-        # first open without needing a swap-and-back to "warm up"
-        # the canvas. Same root cause + fix shape as the tail of
-        # :meth:`swap_to`.
-        try:
-            from qtpy.QtCore import QTimer
-            QTimer.singleShot(0, self.figure.canvas.draw)
-        except Exception:  # noqa: BLE001
-            # mpl-fallback / no Qt: best-effort sync paint.
-            try:
-                self.figure.canvas.draw()
-            except Exception:  # noqa: BLE001
-                pass
+        _bundle_swap.init_bundles(self, project, video_paths)
 
     def _install_broadcast_statevar_hooks(self) -> None:
-        """Wire ``add_on_change`` callbacks on every broadcast
-        statevar so user-driven mutations propagate to every bundle's
-        ``selections`` dict (including pending bundles that haven't
-        hydrated yet -- they'll honour the value when their initial
-        selection is derived).
-
-        Idempotent guard via ``_broadcast_hooks_installed`` so a
-        subclass re-entering ``__init__`` doesn't stack callbacks.
+        """Wire cross-bundle broadcast for UI-mode statevars.
+        See :func:`._bundle_swap.install_broadcast_statevar_hooks`.
         """
-        if getattr(self, "_broadcast_hooks_installed", False):
-            return
-        for sv_name in self._BROADCAST_STATEVARS:
-            if sv_name not in self.statevariables.names:
-                continue
-            sv = self.statevariables[sv_name]
-            sv.add_on_change(
-                # Bind by default-arg so each closure captures its
-                # own name (Python late-binding gotcha).
-                lambda _name=sv_name: self._broadcast_statevar(_name),
-            )
-        self._broadcast_hooks_installed = True
+        _bundle_swap.install_broadcast_statevar_hooks(self)
 
     def _broadcast_statevar(self, sv_name: str) -> None:
-        """Write the shell's current value for ``sv_name`` into every
-        bundle's ``selections`` dict.
-
-        Called from the ``add_on_change`` hook installed by
-        :meth:`_install_broadcast_statevar_hooks`. Silent-restore in
-        :meth:`_restore_statevar_selections` bypasses the on_change
-        callback chain, so this fires only on genuine user mutations
-        (combo box pick, key cycle) -- not on swap-in restores. That
-        bidirectional split is what keeps swap-in from triggering a
-        broadcast that would then overwrite every bundle's
-        just-restored value with the active bundle's.
+        """Propagate a statevar change to every bundle.
+        See :func:`._bundle_swap.broadcast_statevar`.
         """
-        if sv_name not in self.statevariables.names:
-            return
-        new_value = self.statevariables[sv_name].current_state
-        for bundle in self._bundles:
-            bundle.selections[sv_name] = new_value
+        _bundle_swap.broadcast_statevar(self, sv_name)
 
     def _await_hydration(self, bundle: _BundleState) -> bool:
-        """Block (pumping the Qt event loop) until ``bundle`` reaches a
-        terminal state.
-
-        Returns ``True`` if the bundle is ready, ``False`` if it
-        failed. Used by :meth:`swap_to` when the user clicks ahead of
-        the background hydration worker.
-
-        Pumps :meth:`QCoreApplication.processEvents` so the UI stays
-        responsive while waiting -- the window can still receive
-        paints / wheel-zoom / close events. No overlay in Slice 2
-        (added in a follow-up if the wait becomes noticeable; per-
-        bundle hydration is ~2-3 s on typical pia02 videos and
-        usually finishes long before the user clicks anywhere).
+        """Block (pumping Qt) until ``bundle`` is terminal.
+        See :func:`._bundle_swap.await_hydration`.
         """
-        if bundle.is_terminal:
-            return bundle.is_ready
-        try:
-            from qtpy.QtCore import QCoreApplication
-            qt_pump = QCoreApplication.processEvents
-        except Exception:  # noqa: BLE001
-            qt_pump = None
-        import time as _time
-        deadline_per_tick = 0.02  # 50 Hz poll
-        while not bundle.is_terminal:
-            if qt_pump is not None:
-                qt_pump()
-            _time.sleep(deadline_per_tick)
-        return bundle.is_ready
+        return _bundle_swap.await_hydration(bundle)
 
     def _hydrate_bundle_data_only(
         self, bundle: _BundleState, project,
     ) -> dict:
-        """Off-thread half of bundle hydration. Returns a payload the
-        Qt-thread half (:meth:`_finalise_bundle_artists`) consumes.
-
-        Touches: filesystem (VideoReader open, JSON / h5 reads),
-        numpy / pandas (vectorised DLC trace decoding), VideoAnnotation
-        construction with EMPTY axis lists so the artist setup
-        downstream is a no-op. Does NOT touch Qt or matplotlib --
-        safe to call from a daemon thread.
-
-        State machine: PENDING -> HYDRATING (set on entry). Caller
-        flips to READY / FAILED based on the rest of the pipeline.
+        """Off-thread half of Phase 2 bundle hydration.
+        See :func:`._bundle.hydrate_bundle_data_only`.
         """
-        bundle.hydration_state = HYDRATION_HYDRATING
-        # Resolve this bundle's position in the project's video list
-        # (DLC keys by canonical path; stem fallback handles drive-
-        # letter / UNC drift).
-        video_index = _find_video_index(project, bundle.fname)
-        if video_index is None:
-            raise ValueError(
-                f"bundle video {bundle.fname} is not in DLC project "
-                f"{project.config_path}"
-            )
-        in_project_path = Path(project.video_list[video_index])
-
-        # Compute the next-iteration suffix exactly the way
-        # ``DLCProject.annotate`` does, so a Train DLC run cuts the
-        # same fresh layer regardless of which bundle was active when
-        # the user clicked Train.
-        if project.latest_iteration_is_trained():
-            new_iteration_num = project.latest_iteration + 1
-        else:
-            new_iteration_num = project.latest_iteration
-        new_annotation_suffix = f"iteration-{new_iteration_num}"
-
-        fm = VideoFileManager(project, video_index)
-        ann_name_to_fname = fm.get_all_annotation_layers(new_annotation_suffix)
-        ann_name_to_fname["buffer"] = fm.get_new_json("buffer")
-
-        # Open a dedicated VideoReader for this bundle. Each bundle
-        # owns its own reader -- one open file per video in the
-        # queue. Thread-safe to construct (each instance is
-        # independent).
-        with builtins_open(str(in_project_path), "rb") as f:
-            reader = VideoReader(f)
-
-        # Fresh VideoAnnotations container. ``parent=self`` lets
-        # downstream callers reach the shell. The container holds the
-        # per-layer artist handles after the Qt-thread half runs;
-        # for now the per-annotation ``plot_handles`` are empty.
-        # VideoAnnotation.__init__'s ``load()`` reads DLC .h5 files
-        # via pandas.read_hdf -> PyTables, which is NOT thread-safe.
-        # Serialise the entire VideoAnnotation construction loop
-        # behind the module-level HDF5 lock so concurrent bundle
-        # hydrations + main-thread h5 reads can't race.
-        container = VideoAnnotations(parent=self)
-        with _HDF5_LOCK:
-            for name, fname in ann_name_to_fname.items():
-                # EMPTY ax_list_scatter / ax_list_trace_x / ax_list_trace_y:
-                # VideoAnnotation.__init__ calls setup_display(), which
-                # iterates the (empty) ax lists and skips artist creation.
-                # The Qt-thread half attaches real axes + builds artists.
-                ann = container.add(
-                    name=name,
-                    fname=fname,
-                    vname=str(in_project_path),
-                    video=reader,
-                    ax_list_scatter=[],
-                    ax_list_trace_x=[],
-                    ax_list_trace_y=[],
-                    palette_name="Set2",
-                    n_labels=1,
-                )
-                ann.__class__ = VideoAnnotation
-
-        # Union of declared labels across the layers so every layer
-        # presents the same label rotation -- mirrors
-        # ``_DUSTrackBase.add_annotation_layers``. ``re_setup_display``
-        # at the tail is a no-op because the ax lists are empty.
-        all_labels = sorted(
-            {label for ann in container._list for label in ann.labels}
-        )
-        if not all_labels:
-            all_labels = ["0"]
-        for ann in container._list:
-            for label in all_labels:
-                if label not in ann.labels:
-                    ann.add_label(label)
-            ann.sort_labels()
-            ann.re_setup_display()
-
-        return {
-            "reader": reader,
-            "container": container,
-            "in_project_path": in_project_path,
-        }
+        return _bundle_helpers.hydrate_bundle_data_only(self, bundle, project)
 
     def _hydrate_phase1_bundle_data(
         self, bundle: _BundleState, *, layer_name: str = "iteration-0",
     ) -> dict:
-        """Off-thread half of Phase 1 (bare-video, no DLC project)
-        bundle hydration. Returns a payload the Qt-thread half
-        (:meth:`_finalise_bundle_artists`) consumes.
-
-        Mirrors :meth:`_hydrate_bundle_data_only`'s contract, except
-        the layer set is the canonical Phase 1 pair (``layer_name``
-        + ``buffer``) with paths derived from the bundle's video
-        stem -- no ``VideoFileManager`` / project lookup. Used by
-        :meth:`add_video` when appending a bare-video bundle to a
-        live tracker (notably the seed-modal flow).
-
-        Touches: filesystem (VideoReader open, JSON reads if the
-        layer .json sits next to the video), VideoAnnotation
-        construction with EMPTY axis lists so the artist setup
-        downstream is a no-op. Does NOT touch Qt or matplotlib --
-        safe to call from a daemon thread.
-
-        State machine: PENDING -> HYDRATING (set on entry). Caller
-        flips to READY / FAILED based on the rest of the pipeline.
+        """Off-thread half of Phase 1 hydration.
+        See :func:`._bundle.hydrate_phase1_bundle_data`.
         """
-        bundle.hydration_state = HYDRATION_HYDRATING
-
-        vname = str(bundle.fname)
-        # Phase 1 layer-fname derivation mirrors
-        # ``_DUSTrackBase._get_fname_annotations``: alongside the
-        # video, ``<stem>_annotations_<layer>.json``.
-        def _ann_path(name: str) -> str:
-            stem = bundle.fname.stem
-            suffix_part = f"_{name}" if name else ""
-            return str(bundle.fname.parent / f"{stem}_annotations{suffix_part}.json")
-
-        ann_name_to_fname = {
-            layer_name: _ann_path(layer_name),
-            "buffer": _ann_path("buffer"),
-        }
-
-        with builtins_open(vname, "rb") as f:
-            reader = VideoReader(f)
-
-        # Empty ax lists -- ``_finalise_bundle_artists`` wires real
-        # ax lists in the Qt-thread half. Same _HDF5_LOCK pattern as
-        # the Phase 2 path for symmetry; Phase 1 .json reads aren't
-        # HDF5-backed but the lock is cheap when uncontended and
-        # keeps the data-half contract consistent across phases.
-        container = VideoAnnotations(parent=self)
-        with _HDF5_LOCK:
-            for name, fname in ann_name_to_fname.items():
-                ann = container.add(
-                    name=name,
-                    fname=fname,
-                    vname=vname,
-                    video=reader,
-                    ax_list_scatter=[],
-                    ax_list_trace_x=[],
-                    ax_list_trace_y=[],
-                    palette_name="Set2",
-                    n_labels=1,
-                )
-                ann.__class__ = VideoAnnotation
-
-        # Union of declared labels across layers, mirroring
-        # ``_DUSTrackBase.add_annotation_layers``.
-        all_labels = sorted(
-            {label for ann in container._list for label in ann.labels}
+        return _bundle_helpers.hydrate_phase1_bundle_data(
+            self, bundle, layer_name=layer_name,
         )
-        if not all_labels:
-            all_labels = ["0"]
-        for ann in container._list:
-            for label in all_labels:
-                if label not in ann.labels:
-                    ann.add_label(label)
-            ann.sort_labels()
-            ann.re_setup_display()
-
-        return {
-            "reader": reader,
-            "container": container,
-            "in_project_path": bundle.fname,
-        }
 
     def _finalise_bundle_artists(
         self, bundle: _BundleState, payload: dict, project,
     ) -> None:
-        """Qt-thread half of bundle hydration. Wires each annotation's
-        artists into the shell's axes (per-layer marker group on the
-        image pane, shared trace axes), then hides every artist so the
-        bundle is parked invisible until the user swaps to it.
-
-        MUST run on the Qt thread: ``_image_pane.add_marker_group()``
-        modifies the QGraphicsScene, which is not thread-safe.
-
-        On success: bundle ``hydration_state`` flips to ``ready``,
-        ``selections`` seeded to the canonical fresh-load state, and
-        ``_refresh_nav_buttons`` is called so the position indicator
-        + arrow enable states update.
+        """Qt-thread half of bundle hydration.
+        See :func:`._bundle.finalise_bundle_artists`.
         """
-        container = payload["container"]
-        reader = payload["reader"]
-        # Wire artists for each annotation. Tier 2 builds a per-layer
-        # marker group on the image pane; Tier 1 reuses the shell's
-        # image axis directly. Call ``setup_display`` directly (NOT
-        # ``re_setup_display``) because the latter clears existing
-        # handles first, and the data-only init never populated any
-        # ``labels_in_ax*`` keys to clear (empty ax_list_scatter ->
-        # empty plot_handles -> KeyError inside clear_display when
-        # the new ax_list_scatter has length > 0).
-        for ann in container._list:
-            if self._fast_render:
-                ax_list_scatter = [self._image_pane.add_marker_group()]
-            else:
-                ax_list_scatter = [self._ax_image]
-            ann.setup_display(
-                ax_list_scatter=ax_list_scatter,
-                ax_list_trace_x=[self._ax_trace_x],
-                ax_list_trace_y=[self._ax_trace_y],
-            )
-            # Apply the per-annotation plot-type convention that the
-            # active bundle's construction path gets for free via
-            # ``DLCProject.annotate`` -> ``_normalize_dlc_layer_display``
-            # and ``_DUSTrackBase.__init__``'s ``buffer.plot_type =
-            # "line"`` line. Without this, every bundle-k+1 dense
-            # layer (DLC traces, lkmovavg outputs, dlccorr, buffer)
-            # defaults to ``setup_display``'s ``set_plot_type(self.plot_type)``
-            # tail which reads the constructor's ``_plot_type="dot"``
-            # default. Hits the user as "swap to bundle 2 -> traces
-            # are dots not lines, and Trace:line button doesn't help
-            # because it acts on the (empty) active layer".
-            if ann.name == "buffer" or _is_dense_layer_name(ann.name):
-                try:
-                    ann.set_plot_type("line", draw=False)
-                except Exception:  # noqa: BLE001
-                    pass
-            # Invalidate the trace cache so the first ``update_display_trace``
-            # against the freshly-bound handles repopulates ydata.
-            ann.invalidate_caches()
-            ann.hide(draw=False)
-
-        bundle.reader = reader
-        bundle.annotations = container
-        # Derive the canonical fresh-load selections (active = latest
-        # manual, overlay = latest dlc_*) for this bundle.
-        derived = self._derive_initial_bundle_selections(
-            container, project=project,
-        )
-        # If the user toggled a broadcast statevar
-        # (annotation_label / label_range / number_keys) while this
-        # bundle was pending, the broadcast wrote into
-        # ``bundle.selections`` BEFORE hydration completed. Preserve
-        # those user-driven values; only the per-video statevars
-        # (annotation_layer / annotation_overlay) come from the
-        # derived canonical defaults.
-        existing = bundle.selections or {}
-        for sv_name in self._BROADCAST_STATEVARS:
-            if sv_name in existing:
-                derived[sv_name] = existing[sv_name]
-        bundle.selections = derived
-        bundle.hydration_state = HYDRATION_READY
-        bundle.hydration_error = None
-        try:
-            self._refresh_nav_buttons()
-        except Exception:  # noqa: BLE001
-            pass
+        _bundle_helpers.finalise_bundle_artists(self, bundle, payload, project)
 
     def _derive_initial_bundle_selections(
         self, container: VideoAnnotations, project=None,
     ) -> dict:
-        """First-time statevar selections for a freshly-hydrated bundle.
-
-        Picks the canonical fresh-load state: latest manual layer as
-        active, latest ``dlc_*`` layer as overlay (or None), first
-        label / its label_range as the active bodypart, current
-        shell's ``number_keys`` mode (so the cross-bundle UI mode
-        carries from the start).
+        """First-time statevar selections for a hydrated bundle.
+        See :func:`._bundle.derive_initial_bundle_selections`.
         """
-        names = container.names
-        # Latest manual layer = active. Manual layers are everything
-        # except buffer / dense (dlc_* / dlccorr* / lkmovavg).
-        manuals = [
-            n for n in names
-            if n != "buffer" and not _is_dense_layer_name(n)
-        ]
-        # The new ``iteration-{N+1}`` layer (just created by
-        # ``get_all_annotation_layers``) lands at the tail of the
-        # manuals block -- match ``DLCProject.annotate``'s convention
-        # by picking the LAST manual as active.
-        active_layer = manuals[-1] if manuals else (names[0] if names else None)
-        dlc_layers = [n for n in names if n.startswith("dlc_")]
-        overlay = dlc_layers[-1] if dlc_layers else None
-        # Active label / label_range -- derive from the active layer.
-        ann = container[active_layer] if active_layer else None
-        if ann and ann.labels:
-            first_label = ann.labels[0]
-            try:
-                label_range_idx = int(first_label) // 10
-                label_range_value = f"{label_range_idx*10}-{label_range_idx*10+9}"
-            except (TypeError, ValueError):
-                label_range_value = None
-        else:
-            first_label = None
-            label_range_value = None
-        # number_keys carries the shell's current mode (broadcast
-        # default).
-        nk = None
-        if "number_keys" in self.statevariables.names:
-            nk = self.statevariables["number_keys"].current_state
-        return {
-            "annotation_layer": active_layer,
-            "annotation_overlay": overlay,
-            "annotation_label": first_label,
-            "label_range": label_range_value,
-            "number_keys": nk,
-        }
+        return _bundle_helpers.derive_initial_bundle_selections(
+            self, container, project=project,
+        )
 
     def _capture_statevar_selections(self) -> dict:
-        """Snapshot the shell's current statevar selections (5 names)
-        for the active bundle. Names absent from the container are
-        omitted (mpl-fallback path may skip some Qt-only statevars).
+        """Snapshot the shell's statevar selections for the active bundle.
+        See :func:`._bundle_swap.capture_statevar_selections`.
         """
-        out: dict = {}
-        for sv in self._ALL_TRACKED_STATEVARS:
-            if sv in self.statevariables.names:
-                out[sv] = self.statevariables[sv].current_state
-        return out
+        return _bundle_swap.capture_statevar_selections(self)
 
     def _restore_statevar_selections(
         self, selections: dict, layer_names: list,
     ) -> None:
-        """Rewrite each statevar's ``states`` list to the new bundle's
-        rotation, restore the snapshotted selection silently (bypass
-        on_change callbacks so the per-statevar cascade doesn't fire
-        during the restore), then refresh the Qt sidebar widgets in
-        one ``_text.update()`` call.
-
-        Silent restore matters because on_change callbacks include
-        :meth:`_refresh_workflow_button_state` and
-        :meth:`_on_active_label_change` -- firing them mid-restore
-        would re-read partially-rebuilt state and either thrash the
-        gates or trigger an erroneous label change. The pattern
-        (direct ``_current_state_idx = ...`` + manual
-        ``_text.update()``) mirrors :meth:`select_label_with_mouse`'s
-        existing bypass (see ``StateVariable`` callback note).
+        """Restore bundle selections + sync the Qt sidebar widgets.
+        See :func:`._bundle_swap.restore_statevar_selections`.
         """
-        # 1. Rewrite the rotations from the new bundle's layer list.
-        if "annotation_layer" in self.statevariables.names:
-            sv = self.statevariables["annotation_layer"]
-            sv.states = list(layer_names)
-        if "annotation_overlay" in self.statevariables.names:
-            sv = self.statevariables["annotation_overlay"]
-            sv.states = [None] + list(layer_names)
-
-        # 2. Restore each snapshotted selection. annotation_layer /
-        # annotation_overlay must come BEFORE annotation_label so the
-        # active layer is set when we re-derive the label rotation.
-        for sv_name in self._ALL_TRACKED_STATEVARS:
-            if sv_name not in self.statevariables.names:
-                continue
-            if sv_name not in selections:
-                continue
-            sv = self.statevariables[sv_name]
-            value = selections[sv_name]
-            try:
-                idx = sv.states.index(value)
-            except ValueError:
-                # Snapshot value isn't valid for this bundle (e.g.
-                # broadcast label that doesn't exist in this layer's
-                # rotation). Fall back to the first state.
-                idx = 0
-            sv._current_state_idx = idx
-            # For annotation_label specifically, also refresh the
-            # label rotation against the new active layer before
-            # locking in the selection. The base class
-            # ``update_annotation_label_states`` reads
-            # ``self.ann.labels`` -- which is now the new bundle's
-            # active layer.
-            if sv_name == "annotation_layer":
-                self.update_annotation_label_states()
-
-        # 3. Sync the Qt sidebar widgets (combo boxes / toggle button
-        # group) to the new states + selections.
-        try:
-            if self.statevariables._text is not None:
-                self.statevariables._text.update()
-        except Exception:  # noqa: BLE001 - mpl-fallback / pre-teardown
-            pass
+        _bundle_swap.restore_statevar_selections(self, selections, layer_names)
 
     # ------------------------------------------------------------------
     # Image-pane viewport snapshot / restore (Tier 1 + Tier 2 dispatch)
     # ------------------------------------------------------------------
 
     def _get_image_view_state(self):
-        """Snapshot the current image pane's zoom / pan state.
-
-        Returns an opaque blob the matching :meth:`_set_image_view_state`
-        understands. Tier 2 (Qt-native) wraps QGraphicsView's
-        transform + scrollbar positions; Tier 1 (matplotlib) wraps
-        the image axis's xlim / ylim. ``None`` = no viewport saved /
-        nothing rendered yet (caller restores to fit-frame).
+        """Snapshot the image pane's zoom / pan state.
+        See :func:`._view_state.get_image_view_state`.
         """
-        if self._fast_render:
-            pane = self._image_pane
-            getter = getattr(pane, "get_view_state", None)
-            if getter is None:
-                return None
-            try:
-                return getter()
-            except Exception:  # noqa: BLE001 - defensive
-                return None
-        # Tier 1: mpl Axes. Read xlim/ylim; treat axis-defaults as
-        # "no snapshot" so the next swap-in stays at fit-frame.
-        ax = self._ax_image
-        if ax is None:
-            return None
-        try:
-            xlim = tuple(ax.get_xlim())
-            ylim = tuple(ax.get_ylim())
-        except Exception:  # noqa: BLE001
-            return None
-        return {"kind": "mpl", "xlim": xlim, "ylim": ylim}
+        return _view_state.get_image_view_state(self)
 
     def _set_image_view_state(self, state) -> None:
-        """Restore a previously-snapshotted viewport. ``None`` falls
-        back to fit-frame on Tier 2 (pane's ``reset_view``) or a
-        no-op autoscale on Tier 1.
+        """Restore a snapshotted image-pane viewport.
+        See :func:`._view_state.set_image_view_state`.
         """
-        if self._fast_render:
-            pane = self._image_pane
-            setter = getattr(pane, "set_view_state", None)
-            if setter is not None:
-                try:
-                    setter(state)
-                except Exception:  # noqa: BLE001
-                    pass
-            elif state is None:
-                reset = getattr(pane, "reset_view", None)
-                if reset is not None:
-                    try:
-                        reset()
-                    except Exception:  # noqa: BLE001
-                        pass
-            return
-        ax = self._ax_image
-        if ax is None:
-            return
-        if state is None or state.get("kind") != "mpl":
-            try:
-                ax.relim()
-                ax.autoscale_view()
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        try:
-            ax.set_xlim(state["xlim"])
-            ax.set_ylim(state["ylim"])
-        except Exception:  # noqa: BLE001
-            pass
+        _view_state.set_image_view_state(self, state)
 
     # ------------------------------------------------------------------
     # Swap entry points
@@ -4422,113 +2783,9 @@ class DUSTrack(VideoBrowser):
 
     def swap_to(self, index: int) -> bool:
         """Switch the active video to ``self._bundles[index]``.
-
-        Implements the swap contract from ``specs/dustrack.md``
-        Roadmap *Next 1.2.0* item 3:
-
-        1. Snapshot the active bundle's per-video state (frame, axis
-           limits, image pane viewport, statevar selections, frames
-           of interest).
-        2. Park the leaving bundle's artists (``ann.hide(draw=False)``
-           on every annotation -- data + ``_revision`` survive
-           untouched in memory, so a swap back is instant).
-        3. Rebind shell attributes (``fname``, ``data``,
-           ``annotations``, ``_current_idx``, ``_ax_lims``,
-           ``frames_of_interest``) onto the arriving bundle.
-        4. Show the arriving bundle's artists.
-        5. Restore the arriving bundle's statevar selections (silent
-           callback bypass) and image pane viewport.
-        6. Repaint once via :meth:`update`.
-
-        Returns ``True`` on a successful swap (or no-op when
-        ``index`` is already active), ``False`` when the swap was
-        rejected (out-of-bounds, non-ready bundle, or a Cancel from
-        the future loading overlay).
+        See :func:`._bundle_swap.swap_to`.
         """
-        if not (0 <= index < len(self._bundles)):
-            return False
-        if index == self._active_index:
-            return True
-        target = self._bundles[index]
-        if target.hydration_state == HYDRATION_FAILED:
-            self._notify_bundle_failure(target)
-            return False
-        if not target.is_ready:
-            # Bundle is still being hydrated by the bg worker. Wait
-            # (pumping Qt events so the UI stays responsive) for it
-            # to reach a terminal state. _await_hydration returns
-            # True iff the bundle is now READY; FAILED returns False.
-            ready = self._await_hydration(target)
-            if not ready:
-                self._notify_bundle_failure(target)
-                return False
-
-        # 1. Snapshot leaving bundle.
-        self._snapshot_active_bundle()
-
-        # 2. Park leaving bundle's artists.
-        leaving = self._bundles[self._active_index]
-        self._park_bundle_artists(leaving)
-
-        # 3. Rebind shell onto arriving bundle.
-        self._attach_bundle(target)
-
-        # 4. Show arriving bundle's artists.
-        self._show_bundle_artists(target)
-
-        # 4b. Restore (or first-time-fit) the trace axes view. Same
-        # contract as the image pane viewport: if the arriving
-        # bundle has a captured ``trace_view_state`` (it's been
-        # swapped-out from before), restore the exact xlim/ylim the
-        # user left. If not (first visit to this bundle), apply a
-        # default fit (xlim = (0, n_frames), autoscale-y on) so the
-        # trace pane shows the new video's data at the right scale
-        # instead of inheriting bundle 0's axis range.
-        if not self._ax_lims["state"]:
-            if target.trace_view_state is not None:
-                self._set_trace_view_state(target.trace_view_state)
-                # The marker-cache keys on (current_label, per-ann
-                # revisions, FOI). After a restore, the per-ann
-                # revisions don't match the leaving bundle's cache,
-                # so the next paint recomputes anyway -- but clear
-                # defensively in case two bundles' revision tuples
-                # happened to collide.
-                self._frame_marker_cache = None
-            else:
-                # First visit -- ``setup_display_trace`` only claims
-                # ``set_xlim`` while autoscalex_on is True, and the
-                # leaving bundle's setup turned that off. Force-fit
-                # to the arriving bundle's frame count + re-enable
-                # autoscale-y so ``update_frame_marker`` refits ylim
-                # on the next paint.
-                n_frames = len(target.reader)
-                self._ax_trace_x.set_xlim(0, n_frames)
-                self._ax_trace_x.set_autoscalex_on(True)
-                self._ax_trace_x.set_autoscaley_on(True)
-                self._ax_trace_y.set_autoscaley_on(True)
-                self._frame_marker_cache = None
-
-        # 5. Restore statevars + image viewport + enhance state.
-        self._restore_statevar_selections(
-            target.selections, target.annotations.names,
-        )
-        self._set_image_view_state(target.image_view_state)
-        self._set_enhance_state(target.enhance_state)
-
-        # 6. Repaint. ``DUSTrack.update`` calls
-        # ``canvas.flush_events()`` after the base update so the
-        # deferred paint actually runs. Note the multi-video
-        # interactive-render limitation documented in
-        # ``DUSTrack.update``: the user may need to flip videos
-        # once after open for ``draw_idle`` to start firing.
-        self._active_index = index
-        self._refresh_nav_buttons()
-        try:
-            self._refresh_workflow_button_state()
-        except Exception:  # noqa: BLE001
-            pass
-        self.update()
-        return True
+        return _bundle_swap.swap_to(self, index)
 
     def swap_prev(self, event=None) -> bool:
         """Move to the previous bundle (no-op at index 0).
@@ -4556,716 +2813,132 @@ class DUSTrack(VideoBrowser):
         **dustrack_kwargs,
     ) -> list[int]:
         """Append one or more videos to this tracker's bundle list.
-
-        Validates and hydrates the picked path(s), appends the new
-        bundle(s) to :attr:`_bundles`, optionally swaps to the first
-        new bundle. Mirrors :func:`dustrack.open`'s validation: a
-        scalar path resolves to Phase 1 (bare video) or Phase 2
-        (video in a DLC project) by scanning for a ``config.yaml``
-        next to the file; a list of paths must all belong to the
-        same DLC project (Phase 2 multi only).
-
-        Args:
-            path_or_paths: A single video path (``str`` /
-                :class:`Path`), or a list/tuple of such paths.
-            layer_name: Annotation layer name for the new bundle.
-                Phase 1 default: ``'iteration-0'``. Phase 2: ignored
-                (the project's ``iteration-{N+1}`` convention wins).
-            set_active: If True, swap to the first new bundle after
-                hydration. Used by :meth:`replace_active_with`; the
-                public default is False so callers can add bundles
-                in the background without disturbing the user's
-                current view.
-            **dustrack_kwargs: Reserved for future per-bundle
-                construction options. Today only the
-                :func:`dustrack.open` kwarg set is forwarded, but
-                bundles built post-construction inherit the shell's
-                kwargs (``fast_render``, ``dark_mode``, etc.) so
-                this list is effectively empty.
-
-        Returns:
-            list[int]: Indices of the newly-appended bundles in
-            :attr:`_bundles`, in queue order.
-
-        Raises:
-            FileNotFoundError: A path doesn't exist.
-            ValueError: Empty sequence, multi-video list with
-                mixed / missing DLC projects, etc. -- same shape
-                as :func:`dustrack.open`'s validation errors.
-            ImportError: Phase 2 entry on a system without
-                ``deeplabcut`` installed.
+        See :func:`._bundle_swap.add_video`.
         """
-        # Normalise to (project, [paths]) -- same logic as
-        # :func:`dustrack.open` post-validation but split out so
-        # the existing top-level dispatch and add_video share it.
-        project, video_paths = self._validate_bundle_paths(path_or_paths)
-
-        # Hydrate the first new bundle synchronously so a swap-to
-        # immediately after add_video is a no-wait. The tail (for
-        # multi-video adds) goes PENDING and the bg worker takes
-        # over -- same shape as ``_init_bundles``.
-        base_index = len(self._bundles)
-        new_bundles: list[_BundleState] = []
-        first = _BundleState(
-            fname=Path(video_paths[0]),
-            video_index=base_index,
-            project=project,
-            hydration_state=HYDRATION_PENDING,
+        return _bundle_swap.add_video(
+            self, path_or_paths,
+            layer_name=layer_name, set_active=set_active,
+            **dustrack_kwargs,
         )
-        self._hydrate_bundle_sync(first)
-        if first.hydration_state == HYDRATION_FAILED:
-            raise RuntimeError(
-                f"add_video: hydration failed for {first.fname}: "
-                f"{first.hydration_error}"
-            )
-        new_bundles.append(first)
-        for i, vp in enumerate(video_paths[1:], start=1):
-            new_bundles.append(_BundleState(
-                fname=Path(vp), video_index=base_index + i,
-                project=project,
-                hydration_state=HYDRATION_PENDING,
-            ))
-        self._bundles.extend(new_bundles)
-        # Sync the legacy back-compat ``_video_queue`` attribute (set
-        # by :func:`dustrack.open` since 1.2.0a2) so observers see the
-        # extended queue.
-        self._video_queue = [b.fname for b in self._bundles[1:]]
-        # Kick off the bg worker for any PENDING tail bundles. Same
-        # contract as :meth:`_init_bundles`: same-project across the
-        # batch, daemon thread, Qt poller drains finalisations.
-        pending_tail = [b for b in new_bundles[1:] if b.hydration_state == HYDRATION_PENDING]
-        if pending_tail and project is not None:
-            worker = _BgHydrationWorker(self, project, pending_tail)
-            worker.start()
-            # Track most-recent worker for diagnostics; tests can poke it.
-            self._hydration_worker = worker
-        self._refresh_nav_buttons()
-        new_indices = [b.video_index for b in new_bundles]
-        if set_active:
-            self.swap_to(new_indices[0])
-        return new_indices
 
     def remove_video(self, index: int) -> bool:
         """Drop a bundle from the tracker's bundle list.
-
-        If ``index == self._active_index``, swaps to another bundle
-        first (prefers ``index + 1``, falls back to ``index - 1``).
-        Refuses to empty the bundle list -- a tracker without any
-        bundles is undefined; callers wanting "reset to empty" should
-        close the window instead.
-
-        Args:
-            index: 0-based bundle index in :attr:`_bundles`.
-
-        Returns:
-            bool: ``True`` on success, ``False`` if the index is
-            out of bounds or the removal was refused (would empty
-            the list).
-
-        Notes:
-            Renumbering: every surviving bundle's ``video_index`` is
-            re-assigned to its post-removal position, so external
-            consumers holding indices need to refresh.
+        See :func:`._bundle_swap.remove_video`.
         """
-        if not (0 <= index < len(self._bundles)):
-            return False
-        if len(self._bundles) <= 1:
-            return False
-        if index == self._active_index:
-            # Swap-first: prefer next; fall back to previous when at
-            # the tail. The fallback index uses the pre-removal layout,
-            # so a swap to ``index - 1`` lands on the bundle that will
-            # end up at ``index - 1`` post-removal.
-            if index + 1 < len(self._bundles):
-                target = index + 1
-            else:
-                target = index - 1
-            if not self.swap_to(target):
-                return False
-        # After the swap, ``self._active_index`` no longer equals
-        # ``index`` (or never did). Park the leaving bundle's artists.
-        leaving = self._bundles[index]
-        self._park_bundle_artists(leaving)
-        # Drop the bundle. If the removed bundle was below the active
-        # index, the active index shifts down by one.
-        del self._bundles[index]
-        if index < self._active_index:
-            self._active_index -= 1
-        # Renumber surviving bundles so ``video_index`` matches the
-        # new list position. Consumers that walk the bundle list
-        # (nav widget, bg worker batches) read ``video_index``.
-        for new_idx, bundle in enumerate(self._bundles):
-            bundle.video_index = new_idx
-        # Refresh observable attributes.
-        self._video_queue = [b.fname for b in self._bundles[1:]]
-        self._refresh_nav_buttons()
-        return True
+        return _bundle_swap.remove_video(self, index)
 
     def replace_active_with(
         self, path_or_paths, *, layer_name=None, **dustrack_kwargs,
     ) -> list[int]:
-        """Swap the active bundle for one (or more) newly-picked
-        video(s); drop the previously-active bundle.
-
-        The 1.2.0a3 seed-modal flow uses this to transition from the
-        synthetic seed video to whatever the user picked: it adds
-        the picked bundle(s), swaps to the first new bundle, then
-        removes the seed bundle. Generalizes to "I want a different
-        video / set of videos as my active session, keeping every
-        other bundle in place" -- the parked tail bundles survive
-        the replace.
-
-        Args:
-            path_or_paths: Same shape as :meth:`add_video`.
-            layer_name: Forwarded to :meth:`add_video`.
-            **dustrack_kwargs: Forwarded to :meth:`add_video`.
-
-        Returns:
-            list[int]: Final indices of the new bundles after the
-            old active bundle is removed.
-
-        Raises:
-            FileNotFoundError, ValueError, ImportError: Forwarded
-                from :meth:`add_video`'s validation.
-            RuntimeError: Hydration of the active picked bundle
-                failed; the tracker is left unchanged (the failed
-                bundle is rolled back).
+        """Swap the active bundle for newly-picked video(s).
+        See :func:`._bundle_swap.replace_active_with`.
         """
-        old_active_bundle = self._bundles[self._active_index]
-        try:
-            new_indices = self.add_video(
-                path_or_paths,
-                layer_name=layer_name,
-                set_active=True,
-                **dustrack_kwargs,
-            )
-        except Exception:
-            # Roll back any failed-bundle artifacts the hydration
-            # left in place. add_video raises before mutating
-            # _bundles on hydration failure, so this is a safety net
-            # for the validation-error path.
-            self._video_queue = [b.fname for b in self._bundles[1:]]
-            self._refresh_nav_buttons()
-            raise
-        # Find old_active_bundle's *current* index post-add (it may
-        # have shifted if swap_to renumbered something, though today
-        # it doesn't). Identity match by object identity, not __eq__,
-        # so dataclass field equality doesn't confuse the lookup.
-        old_idx = next(
-            (i for i, b in enumerate(self._bundles) if b is old_active_bundle),
-            None,
+        return _bundle_swap.replace_active_with(
+            self, path_or_paths,
+            layer_name=layer_name, **dustrack_kwargs,
         )
-        if old_idx is None:
-            # Defensive: shouldn't happen since add_video appends.
-            return new_indices
-        n_new = len(new_indices)
-        # Remove the now-non-active old bundle. remove_video renumbers
-        # everything below the removed position; after removal the new
-        # bundles sit at the tail of self._bundles.
-        self.remove_video(old_idx)
-        total = len(self._bundles)
-        return list(range(total - n_new, total))
 
     def _validate_bundle_paths(self, path_or_paths) -> tuple:
         """Resolve ``path_or_paths`` into ``(project_or_None, [Path...])``.
-
-        Mirrors the validation logic at the top of :func:`dustrack.open`
-        but extracted so :meth:`add_video` can reuse it without
-        re-running the full dispatch. The contract:
-
-        - Single path -> Phase 1 (project=None) if no ``config.yaml``
-          is found beside it, else Phase 2 (project resolved).
-        - List of paths -> Phase 2 multi (must all belong to one
-          shared DLC project). Bare-video entries raise.
-        - Project folder -> Phase 2 multi (queue every video in the
-          project).
-        - ``config.yaml`` -> Phase 2 single on the first project
-          video.
+        See :func:`._bundle_swap.validate_bundle_paths`.
         """
-        if isinstance(path_or_paths, (list, tuple)):
-            if len(path_or_paths) == 0:
-                raise ValueError("add_video: empty path sequence")
-            paths = [Path(p) for p in path_or_paths]
-            for p in paths:
-                if not p.exists():
-                    raise FileNotFoundError(
-                        f"add_video: path does not exist: {p}"
-                    )
-            if len(paths) == 1:
-                return self._validate_bundle_paths(paths[0])
-            return _resolve_multi_video_from_list(paths)
-
-        p = Path(path_or_paths)
-        if not p.exists():
-            raise FileNotFoundError(
-                f"add_video: path does not exist: {p}"
-            )
-        if _is_dlc_config_yaml(p):
-            # Mirror dustrack.open's config.yaml dispatch (1.2.0a3
-            # follow-up): queue every video in the project, in
-            # config['video_sets'] order. DLCProject.__init__ runs
-            # rebase_to_config so a renamed project folder self-
-            # heals before we enumerate.
-            if not HAS_DLC:
-                raise ImportError(
-                    f"add_video: {p} is a DLC config.yaml but "
-                    "deeplabcut is not installed."
-                )
-            project = DLCProject(str(p))
-            video_paths = [Path(v) for v in project.video_list]
-            if not video_paths:
-                raise ValueError(
-                    f"add_video: DLC project at {p.parent} has no videos."
-                )
-            return project, video_paths
-        if p.is_dir():
-            if not _is_dlc_project_root(p):
-                raise ValueError(
-                    f"add_video: {p!s} is a directory but doesn't look "
-                    "like a DLC project."
-                )
-            if not HAS_DLC:
-                raise ImportError(
-                    f"add_video: detected a DLC project at {p}, but "
-                    "deeplabcut is not installed."
-                )
-            project = DLCProject(str(p / "config.yaml"))
-            video_paths = [Path(v) for v in project.video_list]
-            if not video_paths:
-                raise ValueError(
-                    f"add_video: DLC project at {p} has no videos."
-                )
-            return project, video_paths
-
-        # File. Phase 1 vs Phase 2 split by config.yaml discovery.
-        config_path = _find_dlc_config(p)
-        if config_path is None:
-            return None, [p]
-        if not HAS_DLC:
-            raise ImportError(
-                f"add_video: detected a DLC project at {config_path.parent}, "
-                "but deeplabcut is not installed."
-            )
-        return DLCProject(str(config_path)), [p]
+        return _bundle_swap.validate_bundle_paths(path_or_paths)
 
     def _hydrate_bundle_sync(self, bundle: _BundleState, project=None) -> None:
-        """Populate ``bundle``'s heavy state synchronously, dispatching
-        on ``bundle.project`` (Phase 1 vs Phase 2).
-
-        Pre-1.2.0a3: the ``project`` arg was required and only Phase 2
-        was supported. The new signature is backwards-compatible
-        (``project`` defaults to None, falling back to
-        ``bundle.project``); callers that already pass a project keep
-        working, and new callers can rely on the bundle's own project
-        field.
-
-        Used by single-video / single-bundle entry paths and by the
-        worker's failure-path tests; the multi-video happy path goes
-        through the worker.
+        """Sync hydration (data half + artists) for one bundle.
+        See :func:`._bundle.hydrate_bundle_sync`.
         """
-        # Per-bundle project takes precedence over the legacy arg
-        # so cross-Phase batches stay coherent. ``project`` is kept
-        # for back-compat with the pre-1.2.0a3 call-site.
-        eff_project = bundle.project if bundle.project is not None else project
-        try:
-            if eff_project is None:
-                payload = self._hydrate_phase1_bundle_data(bundle)
-            else:
-                payload = self._hydrate_bundle_data_only(bundle, eff_project)
-        except Exception as exc:  # noqa: BLE001
-            bundle.hydration_state = HYDRATION_FAILED
-            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
-            sys.__stderr__.write(
-                f"[dustrack] bundle {bundle.video_index} "
-                f"({bundle.fname}) hydration failed:\n{traceback.format_exc()}\n"
-            )
-            return
-        try:
-            self._finalise_bundle_artists(bundle, payload, eff_project)
-        except Exception as exc:  # noqa: BLE001
-            bundle.hydration_state = HYDRATION_FAILED
-            bundle.hydration_error = f"{type(exc).__name__}: {exc}"
-            sys.__stderr__.write(
-                f"[dustrack] bundle {bundle.video_index} "
-                f"({bundle.fname}) artist setup failed:\n{traceback.format_exc()}\n"
-            )
+        _bundle_helpers.hydrate_bundle_sync(self, bundle, project=project)
 
     def _snapshot_active_bundle(self) -> None:
-        """Write the shell's current per-video UI state back to the
-        active bundle. Called at the top of every swap so the next
-        swap back lands the user where they were.
+        """Write the shell's UI state back to the active bundle.
+        See :func:`._bundle_swap.snapshot_active_bundle`.
         """
-        if not self._bundles:
-            return
-        active = self._bundles[self._active_index]
-        active.current_idx = self._current_idx
-        active.ax_lims = dict(self._ax_lims)
-        # Deep copies on the inner lists so subsequent shell mutations
-        # don't leak back into the snapshot.
-        for k in ("x", "y_trace_x", "y_trace_y"):
-            if k in active.ax_lims and isinstance(active.ax_lims[k], list):
-                active.ax_lims[k] = list(active.ax_lims[k])
-        active.image_view_state = self._get_image_view_state()
-        active.trace_view_state = self._get_trace_view_state()
-        active.enhance_state = self._get_enhance_state()
-        active.frames_of_interest = list(self.frames_of_interest)
-        active.selections = self._capture_statevar_selections()
+        _bundle_swap.snapshot_active_bundle(self)
 
     def _get_enhance_state(self) -> dict:
-        """Snapshot the shell's current CLAHE / gamma / brightness
-        values so a swap-out can preserve them per-bundle. The
-        EnhanceWidget sliders bind to these shell attributes; on
-        swap-in :meth:`_set_enhance_state` pushes the restored values
-        back into the widget so the sliders move to match.
+        """Snapshot CLAHE/gamma/brightness for per-bundle preservation.
+        See :func:`._view_state.get_enhance_state`.
         """
-        return {
-            "clahe_clip": float(self._clahe_clip),
-            "gamma": float(self._gamma),
-            "brightness": float(self._brightness),
-        }
+        return _view_state.get_enhance_state(self)
 
     def _set_enhance_state(self, state) -> None:
-        """Restore a previously-snapshotted enhance state, or reset to
-        construction-time defaults on a first-visit (``state is None``).
-
-        Pre-fix this method returned early on first-visit, which meant
-        the new bundle inherited the leaving bundle's slider positions
-        (e.g. set gamma=1.5 on V1, swap to V2 first-visit, V2's
-        sliders showed 1.5 instead of the construction default).
-        Restoring to ``_initial_enhance_state`` on first-visit gives
-        each bundle a clean baseline; user changes still persist via
-        the per-bundle snapshot taken on swap-out.
-
-        Pushes new slider positions into the EnhanceWidget if it's
-        mounted (Tier 2 / Qt path) so the visible slider knobs match
-        the restored values.
+        """Restore enhance sliders (or initial defaults on first visit).
+        See :func:`._view_state.set_enhance_state`.
         """
-        if state is None:
-            state = getattr(self, "_initial_enhance_state", None)
-        if state is None:
-            # Pre-construction fallback (subclass calling out of order
-            # / missing init snapshot). Hold the line.
-            return
-        self._clahe_clip = float(state["clahe_clip"])
-        self._gamma = float(state["gamma"])
-        self._brightness = float(state.get("brightness", 0))
-        widget = getattr(self, "_enhance_widget", None)
-        if widget is None:
-            return
-        # The EnhanceWidget exposes a sync helper that updates the
-        # slider knobs + numeric labels in one go without triggering
-        # the per-slider on-change cascade (so this restore doesn't
-        # re-write what we just wrote).
-        sync = getattr(widget, "sync_from_shell", None)
-        if sync is None:
-            return
-        try:
-            sync()
-        except Exception:  # noqa: BLE001
-            pass
+        _view_state.set_enhance_state(self, state)
 
     def _get_trace_view_state(self) -> dict:
-        """Snapshot the trace axes' current xlim / ylim so a swap-out
-        can preserve the user's pan/zoom on the trace pane the same
-        way :meth:`_get_image_view_state` does for the image pane.
-
-        Captures both trace axes (x and y) -- the marker, FOI ticks,
-        and the per-label trace lines all share these two axes, and
-        a returning swap should land back on the exact view the user
-        left.
+        """Snapshot the trace axes' xlim / ylim.
+        See :func:`._view_state.get_trace_view_state`.
         """
-        return {
-            "trace_x_xlim": tuple(self._ax_trace_x.get_xlim()),
-            "trace_x_ylim": tuple(self._ax_trace_x.get_ylim()),
-            "trace_y_ylim": tuple(self._ax_trace_y.get_ylim()),
-        }
+        return _view_state.get_trace_view_state(self)
 
     def _set_trace_view_state(self, state) -> None:
-        """Restore a previously-snapshotted trace axes view. ``None``
-        means "first visit to this bundle" -- caller applies the
-        default fit (xlim 0..n_frames, autoscale-y on) instead.
+        """Restore snapshotted trace-axes view (None = first visit).
+        See :func:`._view_state.set_trace_view_state`.
         """
-        if state is None:
-            return
-        try:
-            self._ax_trace_x.set_xlim(state["trace_x_xlim"])
-            self._ax_trace_x.set_ylim(state["trace_x_ylim"])
-            self._ax_trace_y.set_ylim(state["trace_y_ylim"])
-        except Exception:  # noqa: BLE001
-            pass
+        _view_state.set_trace_view_state(self, state)
 
     def _attach_bundle(self, bundle: _BundleState) -> None:
         """Rebind shell attributes onto ``bundle``'s heavy state.
-
-        Does not touch artists -- :meth:`_park_bundle_artists` and
-        :meth:`_show_bundle_artists` handle visibility; this method
-        just swaps the data pointers (fname, VideoReader, annotations
-        container, DLC project) and the lightweight UI snapshot
-        (frame, axis limits, frames of interest). Statevar /
-        image-pane restore happens after this in :meth:`swap_to`.
-
-        Cross-Phase contract (1.2.0a3 seed-modal cut): bundles can
-        carry different ``project`` values (``None`` for Phase 1
-        bare-video bundles, a ``DLCProject`` for Phase 2). The
-        rebind below pushes the arriving bundle's project onto the
-        shell so any Workflow-button gating or other project-aware
-        code reads the right value on the next paint. Statevar
-        rotation refresh (``annotation_layer`` / ``annotation_overlay``
-        dropdowns) is handled by
-        :meth:`_restore_statevar_selections` later in
-        :meth:`swap_to`; this method only handles the data-pointer
-        rebind.
+        See :func:`._bundle_swap.attach_bundle`.
         """
-        self.fname = str(bundle.fname)
-        self.data = bundle.reader
-        self.annotations = bundle.annotations
-        self._dlcproject = bundle.project
-        self._current_idx = bundle.current_idx
-        # Force a fresh dict so the shell's later mutations don't
-        # alias the bundle snapshot.
-        self._ax_lims = dict(bundle.ax_lims)
-        for k in ("x", "y_trace_x", "y_trace_y"):
-            if k in self._ax_lims and isinstance(self._ax_lims[k], list):
-                self._ax_lims[k] = list(self._ax_lims[k])
-        self.frames_of_interest = list(bundle.frames_of_interest)
+        _bundle_swap.attach_bundle(self, bundle)
 
     def _park_bundle_artists(self, bundle: _BundleState) -> None:
-        """Hide every annotation artist owned by ``bundle``."""
-        if bundle.annotations is None:
-            return
-        for ann in bundle.annotations._list:
-            try:
-                ann.hide(draw=False)
-            except Exception:  # noqa: BLE001
-                # Defensive: never strand the user mid-swap if one
-                # artist's hide() raises.
-                traceback.print_exc()
+        """Hide every annotation artist owned by ``bundle``.
+        See :func:`._bundle.park_bundle_artists`.
+        """
+        _bundle_helpers.park_bundle_artists(bundle)
 
     def _show_bundle_artists(self, bundle: _BundleState) -> None:
-        """Show every annotation artist owned by ``bundle``."""
-        if bundle.annotations is None:
-            return
-        for ann in bundle.annotations._list:
-            try:
-                ann.show(draw=False)
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
+        """Show every annotation artist owned by ``bundle``.
+        See :func:`._bundle.show_bundle_artists`.
+        """
+        _bundle_helpers.show_bundle_artists(bundle)
 
     def _notify_bundle_failure(self, bundle: _BundleState) -> None:
-        """Surface a hydration failure to the user.
-
-        Slice 2 will route through a proper error overlay; for Slice 1
-        we just print to stderr so the swap-failure case is at least
-        observable in the terminal.
+        """Surface a hydration failure to stderr.
+        See :func:`._bundle.notify_bundle_failure`.
         """
-        sys.__stderr__.write(
-            f"[dustrack] cannot swap to bundle {bundle.video_index} "
-            f"({bundle.fname}): {bundle.hydration_error}\n"
-        )
+        _bundle_helpers.notify_bundle_failure(bundle)
 
     # ------------------------------------------------------------------
     # Sidebar nav row + key bindings
     # ------------------------------------------------------------------
 
     def _add_nav_widget(self) -> None:
-        """Mount the ``◀ <video dropdown> ▶`` nav row at the TOP of the
-        rc2 left column dock.
-
-        The central widget is a :class:`QComboBox` listing every
-        bundle's video as ``"i. <stem>"`` (1-based); the user can
-        either click ◀ / ▶ (Alt+Left / Alt+Right) for sequential
-        navigation or select directly from the dropdown to jump to
-        an arbitrary video. Per-item tooltips carry the full path so
-        the user can confirm which file a stem refers to on hover.
-
-        Always rendered -- when ``N == 1`` (single-video session) the
-        arrows are disabled and the dropdown shows a single entry, but
-        the row stays visible so the affordance is discoverable when a
-        multi-video session is opened later. No-op on the mpl-fallback
-        path.
+        """Mount the multi-video nav row at the top of the dock.
+        See :func:`._nav_widget.add_nav_widget`.
         """
-        qt_window = self._find_qt_window()
-        if qt_window is None:
-            return
-        col = getattr(qt_window, "_dnav_left_column", None)
-        if col is None:
-            return
-        from qtpy.QtCore import Qt
-        from qtpy.QtGui import QColor
-        from qtpy.QtWidgets import (
-            QComboBox, QFrame, QHBoxLayout, QSizePolicy, QToolButton, QWidget,
-        )
-
-        row = QWidget(col.host)
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
-
-        prev_btn = QToolButton(row)
-        prev_btn.setText("◀")  # ◀
-        prev_btn.setFocusPolicy(Qt.NoFocus)
-        prev_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        prev_btn.clicked.connect(lambda _checked=False: self.swap_prev())
-
-        combo = QComboBox(row)
-        combo.setFocusPolicy(Qt.NoFocus)
-        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # ``activated[int]`` fires only on user interaction (click /
-        # keyboard selection) -- not on programmatic
-        # ``setCurrentIndex``, which the post-swap sync uses. That's
-        # the right signal here: a sync-after-swap would otherwise
-        # recurse into ``swap_to``.
-        combo.activated.connect(self._on_nav_combo_activated)
-
-        next_btn = QToolButton(row)
-        next_btn.setText("▶")  # ▶
-        next_btn.setFocusPolicy(Qt.NoFocus)
-        next_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        next_btn.clicked.connect(lambda _checked=False: self.swap_next())
-
-        layout.addWidget(prev_btn)
-        layout.addWidget(combo, stretch=1)
-        layout.addWidget(next_btn)
-
-        # Pale-blue palette echoing the Workflow group bg so the nav
-        # row reads as "header above the workflow column" rather than
-        # a stranded widget.
-        row.setAutoFillBackground(True)
-        pal = row.palette()
-        pal.setColor(row.backgroundRole(), QColor("#cfdef3"))
-        pal.setColor(row.foregroundRole(), QColor("#2c3e50"))
-        row.setPalette(pal)
-        # Hairline separator below so the row isn't visually fused
-        # with the Workflow buttons.
-        sep = QFrame(col.host)
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-
-        col.outer_layout.insertWidget(0, row)
-        col.outer_layout.insertWidget(1, sep)
-
-        self._nav_widget = row
-        self._nav_prev_btn = prev_btn
-        self._nav_next_btn = next_btn
-        self._nav_combo = combo
+        _nav_widget.add_nav_widget(self)
 
     def _on_nav_combo_activated(self, index: int) -> None:
-        """User-triggered dropdown selection -> swap to that bundle.
-
-        On a rejected swap (out-of-bounds, hydration-failed) we
-        re-sync the combo back to the still-active index so the
-        visible selection matches reality.
+        """Dropdown-selection -> swap_to.
+        See :func:`._nav_widget.on_nav_combo_activated`.
         """
-        if index == self._active_index:
-            return
-        ok = self.swap_to(index)
-        if not ok:
-            self._refresh_nav_buttons()
+        _nav_widget.on_nav_combo_activated(self, index)
 
     def _add_video_nav_key_bindings(self) -> None:
-        """Register ``Alt+Left`` / ``Alt+Right`` for previous / next
-        video. Verified unbound in dnav core key bindings -- bare
-        arrows are taken for frame nav.
+        """Bind Alt+Left / Alt+Right to prev / next video.
+        See :func:`._nav_widget.add_video_nav_key_bindings`.
         """
-        try:
-            self.add_key_binding(
-                "alt+left", self.swap_prev,
-                "Previous video", group="0. Video navigation",
-            )
-            self.add_key_binding(
-                "alt+right", self.swap_next,
-                "Next video", group="0. Video navigation",
-            )
-        except Exception:  # noqa: BLE001 - older dnav signature / no method
-            pass
+        _nav_widget.add_video_nav_key_bindings(self)
 
     def _refresh_nav_buttons(self) -> None:
-        """Sync the nav row's dropdown + enable states to
-        ``self._bundles`` + ``self._active_index``. Idempotent;
-        cheap; safe to call from any state-change site (swap, bundle
-        init, bg-hydration progress tick).
+        """Sync nav row to current bundles + active.
+        See :func:`._nav_widget.refresh_nav_buttons`.
         """
-        if self._nav_widget is None:
-            return
-        n = max(len(self._bundles), 1)
-        i = self._active_index
-        combo = getattr(self, "_nav_combo", None)
-        if combo is not None:
-            self._sync_nav_combo(combo, n=n, active=i)
-        if self._nav_prev_btn is not None:
-            self._nav_prev_btn.setEnabled(i > 0)
-        if self._nav_next_btn is not None:
-            self._nav_next_btn.setEnabled(i < n - 1)
+        _nav_widget.refresh_nav_buttons(self)
 
-    @staticmethod
-    def _format_nav_combo_item(bundle, idx: int) -> str:
-        """Format one dropdown row as ``"i. <stem>"`` with a trailing
-        marker for non-ready bundles. Exposed on the class (not as a
-        free function) so the corresponding swap_to tests can target
-        it directly without importing more module-level surface area.
-        """
-        stem = Path(bundle.fname).stem
-        label = f"{idx + 1}. {stem}"
-        state = bundle.hydration_state
-        if state == HYDRATION_HYDRATING or state == HYDRATION_PENDING:
-            return f"{label}  …"
-        if state == HYDRATION_FAILED:
-            return f"{label}  ✗"
-        return label
+    _format_nav_combo_item = staticmethod(_nav_widget.format_nav_combo_item)
 
     def _sync_nav_combo(self, combo, *, n: int, active: int) -> None:
-        """Bring the dropdown's items + selection + tooltips in line
-        with the current bundle list.
-
-        Programmatic mutations are wrapped in ``blockSignals`` so the
-        ``activated`` connection (user-only) is never re-entered from
-        this path. When the bundle identity list is unchanged, only
-        per-item suffixes + tooltips + the active selection are
-        touched -- a hot path during bg-hydration progress ticks.
+        """Sync the QComboBox items + selection to the bundle list.
+        See :func:`._nav_widget.sync_nav_combo`.
         """
-        try:
-            from qtpy.QtCore import Qt
-            tooltip_role = Qt.ToolTipRole
-        except Exception:  # noqa: BLE001 -- no qtpy in this env
-            tooltip_role = 3  # Qt::ToolTipRole
-
-        bundles = self._bundles
-        # Snapshot the fname list so a count-only check below is
-        # robust to in-place mutations of self._bundles.
-        fnames = [str(b.fname) for b in bundles]
-        signature = tuple(fnames)
-        prior_signature = getattr(self, "_nav_combo_signature", None)
-
-        combo.blockSignals(True)
-        try:
-            if signature != prior_signature:
-                combo.clear()
-                for j, b in enumerate(bundles):
-                    combo.addItem(self._format_nav_combo_item(b, j))
-                    combo.setItemData(j, fnames[j], tooltip_role)
-                if not bundles:
-                    # Placeholder for the (rare) zero-bundle stub
-                    # state so the widget isn't empty.
-                    combo.addItem("(no videos)")
-                self._nav_combo_signature = signature
-            else:
-                # Same bundles, possibly different hydration states.
-                for j, b in enumerate(bundles):
-                    text = self._format_nav_combo_item(b, j)
-                    if combo.itemText(j) != text:
-                        combo.setItemText(j, text)
-                    combo.setItemData(j, fnames[j], tooltip_role)
-            if bundles:
-                clamped = max(0, min(active, len(bundles) - 1))
-                if combo.currentIndex() != clamped:
-                    combo.setCurrentIndex(clamped)
-                # Combo's own hover tooltip: full path of the
-                # currently-displayed video.
-                combo.setToolTip(fnames[clamped])
-            else:
-                combo.setToolTip("")
-        finally:
-            combo.blockSignals(False)
+        _nav_widget.sync_nav_combo(self, combo, n=n, active=active)
 
     # ==================================================================
     # Methods absorbed from the former _DUSTrackBase parent class.
@@ -5910,15 +3583,8 @@ class DUSTrack(VideoBrowser):
     def _get_fname_annotations(
         self, annotation_name: str, suffix: str = ".json"
     ) -> str:
-        """Construct the filename corresponding to an  annotation layer named annotation_name."""
-        return os.path.join(
-            Path(self.fname).parent,
-            Path(self.fname).stem
-            + "_annotations"
-            + f'{"_" if annotation_name else ""}'
-            + annotation_name
-            + suffix,
-        )
+        """Construct the filename corresponding to an annotation layer named annotation_name."""
+        return get_fname_annotations(self.fname, annotation_name, suffix)
 
     def set_image_background_color(self, color: Any) -> None:
         """Set the background color of the image region.
@@ -6564,10 +4230,3 @@ class DUSTrack(VideoBrowser):
                 writer.grab_frame()
 
 
-# Bind ``builtins.open`` under a private alias inside this module so
-# the module-level ``def open(...)`` below doesn't shadow it for the
-# few sites that still need to open a file handle directly (notably
-# the per-bundle VideoReader construction in
-# :meth:`DUSTrack._hydrate_bundle_sync`).
-import builtins as _builtins
-builtins_open = _builtins.open

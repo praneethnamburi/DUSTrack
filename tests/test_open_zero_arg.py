@@ -121,9 +121,15 @@ def force_legacy_fallback(monkeypatch):
     """Make :func:`dustrack.open` skip the seed-modal path and hit the
     legacy ``_prompt_for_videos`` fallback. Used by the tests that
     pre-date the seed-modal cut to keep their direct-picker contract
-    intact under the new launch flow."""
+    intact under the new launch flow.
+
+    Targets ``dustrack._open`` (the call-site namespace) rather than
+    the ``dustrack.dlcinterface`` re-export -- ``_open.py`` imports
+    ``_open_seed_session`` as a local symbol, so the re-export path
+    doesn't intercept the call.
+    """
     monkeypatch.setattr(
-        "dustrack.dlcinterface._open_seed_session",
+        "dustrack._open._open_seed_session",
         lambda **_: None,
     )
 
@@ -133,7 +139,7 @@ class TestOpenNoArg:
         self, monkeypatch, fake_dustrack, force_legacy_fallback,
     ):
         monkeypatch.setattr(
-            "dustrack.dlcinterface._prompt_for_videos", lambda parent=None: None
+            "dustrack._open._prompt_for_videos", lambda parent=None: None
         )
         result = dustrack.open()
         assert result is None
@@ -146,7 +152,7 @@ class TestOpenNoArg:
         vid = tmp_path / "ok.mp4"
         vid.write_bytes(b"")
         monkeypatch.setattr(
-            "dustrack.dlcinterface._prompt_for_videos",
+            "dustrack._open._prompt_for_videos",
             lambda parent=None: [vid],
         )
 
@@ -176,7 +182,7 @@ class TestOpenNoArg:
         for v in (v0, v1, v2):
             v.write_bytes(b"")
         monkeypatch.setattr(
-            "dustrack.dlcinterface._prompt_for_videos",
+            "dustrack._open._prompt_for_videos",
             lambda parent=None: [v0, v1, v2],
         )
 
@@ -233,7 +239,7 @@ def _patch_overlay_factory(monkeypatch, *, picked):
         return _stub_init
 
     monkeypatch.setattr(
-        "dustrack.dlcinterface._make_open_video_overlay_class", _stub_factory
+        "dustrack._open._make_open_video_overlay_class", _stub_factory
     )
     return captured
 
@@ -262,7 +268,7 @@ def stub_seed_session(monkeypatch):
 
     seed = _SeedFake()
     monkeypatch.setattr(
-        "dustrack.dlcinterface._open_seed_session",
+        "dustrack._open._open_seed_session",
         lambda **_: seed,
     )
     # Stub ``plt.close`` so the test doesn't try to interact with

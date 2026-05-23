@@ -327,3 +327,383 @@ class _BgHydrationWorker:
         # Data half done; queue the payload for Qt-thread finalisation.
         self._finalisation_queue.put((bundle, payload))
 
+
+# ---------------------------------------------------------------------
+# Per-bundle hydration helpers
+# ---------------------------------------------------------------------
+#
+# Extracted from gui.DUSTrack in the 1.2.0rc1 follow-up. Two halves
+# per bundle:
+#
+# 1. **Data half** (off-thread safe) -- :func:`hydrate_bundle_data_only`
+#    for Phase 2 (DLC project) and :func:`hydrate_phase1_bundle_data`
+#    for Phase 1 (bare video). Opens the VideoReader, reads annotation
+#    sidecars + DLC h5 traces (under :data:`_HDF5_LOCK`), constructs
+#    VideoAnnotation objects with EMPTY axis lists, returns a payload
+#    dict.
+#
+# 2. **Qt-thread half** -- :func:`finalise_bundle_artists`. Wires
+#    the per-annotation artists into the shell's axes (per-layer
+#    marker group on the image pane, shared trace axes), then hides
+#    every artist so the bundle is parked invisible until the user
+#    swaps to it.
+#
+# :func:`hydrate_bundle_sync` runs both halves on the calling thread
+# (used by single-video entry paths + tests). The multi-video happy
+# path goes through :class:`_BgHydrationWorker`.
+
+import os
+from typing import Any  # noqa: F401 -- re-exported in some signatures
+
+
+def _ann_path_alongside_video(bundle: "_BundleState", layer_name: str) -> str:
+    """Phase 1 per-layer fname: ``<stem>_annotations_<layer>.json``
+    in the same folder as the video. Mirrors
+    :func:`._layer_names.get_fname_annotations` but specialised for
+    a bundle object.
+    """
+    stem = bundle.fname.stem
+    suffix_part = f"_{layer_name}" if layer_name else ""
+    return str(bundle.fname.parent / f"{stem}_annotations{suffix_part}.json")
+
+
+def hydrate_bundle_data_only(dustrack, bundle: "_BundleState", project) -> dict:
+    """Off-thread half of Phase 2 bundle hydration.
+
+    Touches filesystem (VideoReader open, JSON / h5 reads), numpy /
+    pandas (vectorised DLC trace decoding), and VideoAnnotation
+    construction with EMPTY axis lists so the artist setup downstream
+    is a no-op. Does NOT touch Qt or matplotlib -- safe to call from
+    a daemon thread.
+
+    Sets ``bundle.hydration_state`` to ``HYDRATING`` on entry; the
+    caller flips it to ``READY`` / ``FAILED`` based on the rest of
+    the pipeline. Returns a payload dict for :func:`finalise_bundle_artists`.
+    """
+    from .annotations import VideoAnnotation, VideoAnnotations
+    from .dlcinterface import _find_video_index
+    from ._file_management import VideoFileManager
+    from datanavigator import VideoReader
+
+    bundle.hydration_state = HYDRATION_HYDRATING
+
+    video_index = _find_video_index(project, bundle.fname)
+    if video_index is None:
+        raise ValueError(
+            f"bundle video {bundle.fname} is not in DLC project "
+            f"{project.config_path}"
+        )
+    in_project_path = Path(project.video_list[video_index])
+
+    # Compute the next-iteration suffix the way DLCProject.annotate
+    # does, so a Train DLC run cuts the same fresh layer regardless
+    # of which bundle was active when the user clicked Train.
+    if project.latest_iteration_is_trained():
+        new_iteration_num = project.latest_iteration + 1
+    else:
+        new_iteration_num = project.latest_iteration
+    new_annotation_suffix = f"iteration-{new_iteration_num}"
+
+    fm = VideoFileManager(project, video_index)
+    ann_name_to_fname = fm.get_all_annotation_layers(new_annotation_suffix)
+    ann_name_to_fname["buffer"] = fm.get_new_json("buffer")
+
+    # Each bundle owns its own VideoReader (one open file per video).
+    with open(str(in_project_path), "rb") as f:
+        reader = VideoReader(f)
+
+    # VideoAnnotation.__init__ -> load() reads DLC .h5 via PyTables,
+    # which is NOT thread-safe. Serialise behind _HDF5_LOCK so
+    # concurrent bundle hydrations + main-thread reads can't race.
+    container = VideoAnnotations(parent=dustrack)
+    with _HDF5_LOCK:
+        for name, fname in ann_name_to_fname.items():
+            # EMPTY ax lists -- finalise_bundle_artists attaches real
+            # axes + builds artists on the Qt thread.
+            ann = container.add(
+                name=name,
+                fname=fname,
+                vname=str(in_project_path),
+                video=reader,
+                ax_list_scatter=[],
+                ax_list_trace_x=[],
+                ax_list_trace_y=[],
+                palette_name="Set2",
+                n_labels=1,
+            )
+            ann.__class__ = VideoAnnotation
+
+    _union_labels_across_layers(container)
+
+    return {
+        "reader": reader,
+        "container": container,
+        "in_project_path": in_project_path,
+    }
+
+
+def hydrate_phase1_bundle_data(
+    dustrack, bundle: "_BundleState", *, layer_name: str = "iteration-0",
+) -> dict:
+    """Off-thread half of Phase 1 (bare-video, no DLC project) hydration.
+
+    Mirrors :func:`hydrate_bundle_data_only`'s contract, except the
+    layer set is the canonical Phase 1 pair (``layer_name`` +
+    ``buffer``) with paths derived from the bundle's video stem --
+    no VideoFileManager / project lookup. Used by ``add_video``
+    when appending a bare-video bundle (notably the seed-modal flow).
+    """
+    from .annotations import VideoAnnotation, VideoAnnotations
+    from datanavigator import VideoReader
+
+    bundle.hydration_state = HYDRATION_HYDRATING
+
+    vname = str(bundle.fname)
+    ann_name_to_fname = {
+        layer_name: _ann_path_alongside_video(bundle, layer_name),
+        "buffer": _ann_path_alongside_video(bundle, "buffer"),
+    }
+
+    with open(vname, "rb") as f:
+        reader = VideoReader(f)
+
+    # Same _HDF5_LOCK pattern as the Phase 2 path; Phase 1 .json reads
+    # aren't HDF5-backed but the lock is cheap when uncontended.
+    container = VideoAnnotations(parent=dustrack)
+    with _HDF5_LOCK:
+        for name, fname in ann_name_to_fname.items():
+            ann = container.add(
+                name=name,
+                fname=fname,
+                vname=vname,
+                video=reader,
+                ax_list_scatter=[],
+                ax_list_trace_x=[],
+                ax_list_trace_y=[],
+                palette_name="Set2",
+                n_labels=1,
+            )
+            ann.__class__ = VideoAnnotation
+
+    _union_labels_across_layers(container)
+
+    return {
+        "reader": reader,
+        "container": container,
+        "in_project_path": bundle.fname,
+    }
+
+
+def _union_labels_across_layers(container) -> None:
+    """Union of declared labels across every layer in the container so
+    each layer presents the same label rotation. Mirrors
+    ``_DUSTrackBase.add_annotation_layers``.
+    """
+    all_labels = sorted(
+        {label for ann in container._list for label in ann.labels}
+    )
+    if not all_labels:
+        all_labels = ["0"]
+    for ann in container._list:
+        for label in all_labels:
+            if label not in ann.labels:
+                ann.add_label(label)
+        ann.sort_labels()
+        ann.re_setup_display()
+
+
+def finalise_bundle_artists(
+    dustrack, bundle: "_BundleState", payload: dict, project,
+) -> None:
+    """Qt-thread half of bundle hydration.
+
+    Wires each annotation's artists into the shell's axes (per-layer
+    marker group on the image pane, shared trace axes), applies the
+    plot-type convention (dense layers + buffer render as lines),
+    then hides every artist so the bundle is parked invisible until
+    the user swaps to it.
+
+    MUST run on the Qt thread: ``_image_pane.add_marker_group()``
+    modifies the QGraphicsScene, which is not thread-safe.
+
+    On success: bundle ``hydration_state`` flips to ``READY``,
+    ``selections`` seeded to the canonical fresh-load state, and
+    ``_refresh_nav_buttons`` is called so the position indicator +
+    arrow enable states update.
+    """
+    from ._layer_names import _is_dense_layer_name
+
+    container = payload["container"]
+    reader = payload["reader"]
+    # Wire artists. Tier 2 builds a per-layer marker group on the
+    # image pane; Tier 1 reuses the shell's image axis directly.
+    for ann in container._list:
+        if dustrack._fast_render:
+            ax_list_scatter = [dustrack._image_pane.add_marker_group()]
+        else:
+            ax_list_scatter = [dustrack._ax_image]
+        ann.setup_display(
+            ax_list_scatter=ax_list_scatter,
+            ax_list_trace_x=[dustrack._ax_trace_x],
+            ax_list_trace_y=[dustrack._ax_trace_y],
+        )
+        # Apply per-annotation plot-type convention that the active
+        # bundle gets via __init__'s buffer.plot_type = "line" line +
+        # _normalize_dlc_layer_display. Without this every bundle-k+1
+        # dense layer defaults to "dot" and the trace pane shows dots
+        # instead of lines after swap.
+        if ann.name == "buffer" or _is_dense_layer_name(ann.name):
+            try:
+                ann.set_plot_type("line", draw=False)
+            except Exception:  # noqa: BLE001
+                pass
+        # Invalidate the trace cache so the first update_display_trace
+        # against the freshly-bound handles repopulates ydata.
+        ann.invalidate_caches()
+        ann.hide(draw=False)
+
+    bundle.reader = reader
+    bundle.annotations = container
+    # Derive the canonical fresh-load selections for this bundle.
+    derived = derive_initial_bundle_selections(
+        dustrack, container, project=project,
+    )
+    # If the user toggled a broadcast statevar (annotation_label /
+    # label_range / number_keys) while this bundle was pending, the
+    # broadcast wrote into bundle.selections BEFORE hydration
+    # completed. Preserve those; only per-video statevars
+    # (annotation_layer / annotation_overlay) come from the canonical
+    # defaults.
+    existing = bundle.selections or {}
+    for sv_name in dustrack._BROADCAST_STATEVARS:
+        if sv_name in existing:
+            derived[sv_name] = existing[sv_name]
+    bundle.selections = derived
+    bundle.hydration_state = HYDRATION_READY
+    bundle.hydration_error = None
+    try:
+        dustrack._refresh_nav_buttons()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def derive_initial_bundle_selections(dustrack, container, project=None) -> dict:
+    """First-time statevar selections for a freshly-hydrated bundle.
+
+    Picks the canonical fresh-load state: latest manual layer as
+    active, latest ``dlc_*`` layer as overlay (or None), first label
+    / its label_range as the active bodypart, current shell's
+    ``number_keys`` mode (so the cross-bundle UI mode carries from
+    the start).
+    """
+    from ._layer_names import _is_dense_layer_name
+
+    names = container.names
+    # Latest manual layer = active. Manual layers are everything
+    # except buffer / dense (dlc_* / dlccorr* / lkmovavg).
+    manuals = [
+        n for n in names
+        if n != "buffer" and not _is_dense_layer_name(n)
+    ]
+    # The new iteration-{N+1} layer (just created by
+    # get_all_annotation_layers) lands at the tail of the manuals
+    # block -- match DLCProject.annotate's convention by picking the
+    # LAST manual as active.
+    active_layer = manuals[-1] if manuals else (names[0] if names else None)
+    dlc_layers = [n for n in names if n.startswith("dlc_")]
+    overlay = dlc_layers[-1] if dlc_layers else None
+    # Active label / label_range -- derive from the active layer.
+    ann = container[active_layer] if active_layer else None
+    if ann and ann.labels:
+        first_label = ann.labels[0]
+        try:
+            label_range_idx = int(first_label) // 10
+            label_range_value = f"{label_range_idx*10}-{label_range_idx*10+9}"
+        except (TypeError, ValueError):
+            label_range_value = None
+    else:
+        first_label = None
+        label_range_value = None
+    # number_keys carries the shell's current mode (broadcast default).
+    nk = None
+    if "number_keys" in dustrack.statevariables.names:
+        nk = dustrack.statevariables["number_keys"].current_state
+    return {
+        "annotation_layer": active_layer,
+        "annotation_overlay": overlay,
+        "annotation_label": first_label,
+        "label_range": label_range_value,
+        "number_keys": nk,
+    }
+
+
+def hydrate_bundle_sync(dustrack, bundle: "_BundleState", project=None) -> None:
+    """Populate ``bundle``'s heavy state synchronously, dispatching
+    on ``bundle.project`` (Phase 1 vs Phase 2).
+
+    Used by single-video / single-bundle entry paths and by the
+    worker's failure-path tests; the multi-video happy path goes
+    through :class:`_BgHydrationWorker`.
+    """
+    # Per-bundle project takes precedence over the legacy arg so
+    # cross-Phase batches stay coherent. ``project`` is kept for
+    # back-compat with the pre-1.2.0a3 call-site.
+    eff_project = bundle.project if bundle.project is not None else project
+    try:
+        if eff_project is None:
+            payload = hydrate_phase1_bundle_data(dustrack, bundle)
+        else:
+            payload = hydrate_bundle_data_only(dustrack, bundle, eff_project)
+    except Exception as exc:  # noqa: BLE001
+        bundle.hydration_state = HYDRATION_FAILED
+        bundle.hydration_error = f"{type(exc).__name__}: {exc}"
+        sys.__stderr__.write(
+            f"[dustrack] bundle {bundle.video_index} "
+            f"({bundle.fname}) hydration failed:\n{traceback.format_exc()}\n"
+        )
+        return
+    try:
+        finalise_bundle_artists(dustrack, bundle, payload, eff_project)
+    except Exception as exc:  # noqa: BLE001
+        bundle.hydration_state = HYDRATION_FAILED
+        bundle.hydration_error = f"{type(exc).__name__}: {exc}"
+        sys.__stderr__.write(
+            f"[dustrack] bundle {bundle.video_index} "
+            f"({bundle.fname}) artist setup failed:\n{traceback.format_exc()}\n"
+        )
+
+
+def park_bundle_artists(bundle: "_BundleState") -> None:
+    """Hide every annotation artist owned by ``bundle``."""
+    if bundle.annotations is None:
+        return
+    for ann in bundle.annotations._list:
+        try:
+            ann.hide(draw=False)
+        except Exception:  # noqa: BLE001
+            # Defensive: never strand the user mid-swap if one
+            # artist's hide() raises.
+            traceback.print_exc()
+
+
+def show_bundle_artists(bundle: "_BundleState") -> None:
+    """Show every annotation artist owned by ``bundle``."""
+    if bundle.annotations is None:
+        return
+    for ann in bundle.annotations._list:
+        try:
+            ann.show(draw=False)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
+def notify_bundle_failure(bundle: "_BundleState") -> None:
+    """Surface a hydration failure to the user via stderr.
+
+    Slice 2 will route through a proper error overlay; for now we
+    just log so the swap-failure case is observable in the terminal.
+    """
+    sys.__stderr__.write(
+        f"[dustrack] cannot swap to bundle {bundle.video_index} "
+        f"({bundle.fname}): {bundle.hydration_error}\n"
+    )
