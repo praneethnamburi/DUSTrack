@@ -1,6 +1,111 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-05-23
+
+First minor release on top of 1.1.0. Three months of development
+land as a single PyPI cut, consolidating the locally-tagged
+`v1.2.0a1` / `v1.2.0a2` / `v1.2.0a3` checkpoints (none published)
+plus the `1.2.0rc1` structural refactor band plus a tail of polish.
+
+Per-arc detail is preserved verbatim in the `[1.2.0aN]` /
+`1.2.0rc1` narrative sections below; the bullets here are the
+executive summary of what changed *visibly* between 1.1.0 and 1.2.0.
+
+### Headline arcs (chronological)
+
+- **`1.2.0a1` (2026-05-20) — datanavigator boundary refactor**: the
+  point-tracking UI (`VideoPointAnnotator`), annotation containers
+  (`VideoAnnotation`, `VideoAnnotations`, `_TrackedFrameDict`), and
+  Lucas-Kanade helpers (`lucas_kanade`, `lucas_kanade_rstc`)
+  relocated from `datanavigator` to `dustrack` via `git filter-repo`
+  with full history preserved. DUSTrack now owns its labeling UI +
+  DLC workflow end-to-end. dnav floor raises to `>=1.5.0`.
+- **`1.2.0a2` (2026-05-21) — pia02 workflow features part 1**:
+  cold-open performance (2.69× cumulative on the
+  `interosseous_pn24-x` 12-bundle session: vectorised DLC-trace
+  conversion + shared `VideoReader` across annotation layers); LK
+  performance (decode-once RSTC 5.44×, parallel `lk_moving_average_filter`
+  with bounded-inflight executor + sum-and-count `save_raw=False`
+  mode 10-12× peak memory cut); DLC training UI controls
+  (`DLCProject.train_iteration` explicit-args sibling of
+  `process()`, three `refine_mode` paths, training options modal);
+  seed-from-snapshot-bundle flow (`dustrack.import_seed_bundle_into_project`
+  + `dustrack.extract_snapshot_for_seeding` etc., Create-DLC-project
+  modal seeding when active manual layer is empty); zero-arg launch
+  (`dustrack` console script + Qt picker + cross-session recent-videos /
+  recent-folders history); lazy `import deeplabcut` cuts
+  `import dustrack` 8.45 → 2.83 s (~3×).
+- **`1.2.0a3` (2026-05-22) — pia02 workflow features part 2**:
+  in-session multi-video navigation (`Alt+Left` / `Alt+Right` arrow
+  swap between every video in a DLC project, per-bundle state
+  persistence across swaps, hybrid sync/async hydration with a
+  `_HDF5_LOCK`-serialised data half + Qt-thread artist-setup
+  poller, 14 ms round-trip swap on 12 hydrated bundles); seed-window
+  welcome modal at no-arg launch (`dustrack.open()` with no path
+  pops a `OpenVideoOverlay` mounted on a tiny seed-mode DUSTrack
+  that swaps in-place to the user's pick via `replace_active_with`);
+  rendering / paint trade-off (`flush_events()`-only in
+  `DUSTrack.update` + `_show_first_paint_notice` modal at multi-video
+  init whose OK-click drains the paint queue, 22.25 ms / 45 fps
+  steady-state on the multi-video bench).
+- **`1.2.0rc1` (2026-05-22 → 2026-05-23) — structural refactor**:
+  `dlcinterface.py` split from ~9700 LOC into focused modules
+  (Phase 0 leaf renames: `opticalflow` → `lk_opticalflow`,
+  `postprocess` → `lk_filter`, `convert` → `batch`, `_dlc_patch`
+  → `dlcpatch`; Phases A-E + follow-ups: extract `_layer_names`,
+  `_image_enhance`, `_workflow_gates`, `_view_state`, `_qt_styling`,
+  `_close_guard`, `_nav_widget`, `_preflight` + `_preflight_modal`,
+  `_seed_bundle_modal`, `_train_modal`, `_overlays`,
+  `_file_management`, `_bundle`, `gui`, `_open`, `annotations`,
+  `_dlc_paths`; `_DUSTrackBase` collapsed into `DUSTrack`;
+  `dlcinterface.py` shrunk to ~1700 LOC, holds only `DLCProject`
+  + `DLCData` + the lazy-DLC `__getattr__` proxy + the
+  `_RELOCATED_NAMES` shim for back-compat). Import sweep + black +
+  `__all__` declaration on the public surface; three latent
+  undefined-name bugs fixed (missing `plt` import in `_open`
+  seed-modal paths, missing `import_seed_bundle_into_project`
+  in seeding flow, missing `DLCProject` type ref in
+  `_file_management`).
+- **Tail polish (2026-05-23)**: frame-level **Decimate annotations**
+  feature (prune incomplete frames in the selected interval then
+  drop every other complete frame; `x` keybinding + Niche-group
+  button; starter form of the general-model workflow's
+  decimation-modal feature pending DINOv3 image-similarity
+  infrastructure). Sidebar regroup from five task-flow groups
+  (Workflow / Display / Niche / Utilities / Swap) to four
+  (Workflow / Display / Niche / Swap): Refresh UI + Keyboard
+  shortcuts move into Display (visual controls + UI utilities);
+  Decimate + Discard unsaved + Replace existing + Remove layer
+  form the Niche cluster (all layer-mutating affordances).
+
+### Dependency floor
+
+`datanavigator>=1.5.0a1` → `>=1.5.0`. dnav 1.5.0 shipped to PyPI
+2026-05-23 with the relocated `pointtracking` / `opticalflow`
+modules removed; in-process upgrades from a 1.4.0-based env should
+upgrade dnav first.
+
+### Public API removals (no shim)
+
+The Phase 0 renames removed the old module names with no
+back-compat aliases:
+
+- `dustrack.opticalflow` → import `dustrack.lk_opticalflow`
+- `dustrack.postprocess` → import `dustrack.lk_filter`
+- `dustrack.convert` → import `dustrack.batch`
+- `dustrack._dlc_patch` → import `dustrack.dlcpatch`
+- `dustrack.pointtracking` (1.2.0a1 destination) → contents in
+  `dustrack.annotations` after Phase E; the parent class
+  `VideoPointAnnotator` collapsed into `dustrack.DUSTrack`.
+
+The portfolio sweep at refactor time confirmed every external
+caller uses the top-level `dustrack.X` surface (no `from
+dustrack.opticalflow import ...` sites in `pn-projects/`,
+`immersionToolbox/`, or `datanavigator/tests/`), so the API
+break is invisible to in-tree consumers. External users of the
+old paths re-pickle / update import sites.
+
 ## [1.2.0a3] - unreleased
 
 In-session multi-video navigation (Roadmap *Next 1.2.0* item 3). A
