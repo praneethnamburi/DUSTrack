@@ -62,7 +62,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable, Union
+from typing import Callable, Iterable, Optional, Union
 
 import datanavigator as dnav
 
@@ -172,6 +172,9 @@ def convert_to_mono(
     ffmpeg_bin: str | None = None,
     ffprobe_bin: str | None = None,
     verbose: bool = True,
+    show_progress: bool = False,
+    progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> list[Path]:
     """Re-encode each source as h265 monochrome alongside the original.
 
@@ -199,6 +202,20 @@ def convert_to_mono(
             ``C:/ffmpeg/bin/ffmpeg.exe``.
         ffprobe_bin: Override ffprobe path; same lookup rules as ffmpeg.
         verbose: Print one status line per source.
+        show_progress: If True, wrap the per-file loop in a tqdm bar
+            (per-file status lines are routed through ``tqdm.write`` so
+            the bar stays clean). Matches the ``show_progress`` kwarg on
+            :func:`build_toc`. Off by default to preserve the historical
+            print-only behaviour for shell users.
+        progress_callback: Optional ``fn(idx, total, src_path, status)``
+            invoked after each source. ``status`` is one of ``"ok"``,
+            ``"skip_missing"``, ``"skip_overwrite"``, ``"skip_existing"``,
+            ``"skip_already_mono"``, or ``"failed"``. Used by the Qt
+            batch-process modal to drive its own progress UI without
+            relying on tqdm.
+        cancel_check: Optional zero-arg callable polled at the top of
+            each source. If it returns truthy, the loop exits early.
+            Used by the Qt batch-process modal's Cancel button.
 
     Returns:
         List of output paths actually written (skipped sources omitted).
@@ -212,74 +229,150 @@ def convert_to_mono(
             print("convert_to_mono: no source files found.")
         return []
 
-    written: list[Path] = []
-    for src in paths:
-        if not src.is_file():
-            if verbose:
-                print(f"  skip (missing): {src}")
-            continue
-        dst = src.with_name(f"{src.stem}{suffix}.mp4")
-        if dst == src:
-            # User chose suffix="" and source is already .mp4; refuse to
-            # overwrite in-place.
-            if verbose:
-                print(f"  skip (would overwrite source): {src.name}")
-            continue
-        if skip_existing and dst.exists():
-            if verbose:
-                print(f"  skip (output exists): {dst.name}")
-            continue
-        if skip_already_mono:
-            source_fmt = _probe_source_pix_fmt(ffprobe, src)
-            if source_fmt in _MONO_PIX_FMTS:
-                if verbose:
-                    print(f"  skip (already mono, pix_fmt={source_fmt}): {src.name}")
-                continue
+    bar = None
+    if show_progress:
+        try:
+            from tqdm import tqdm
 
-        if verbose:
-            print(f"  encoding {src.name} -> {dst.name} (crf={crf}, preset={preset})")
-        cmd = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-i",
-            str(src),
-            "-c:v",
-            "libx265",
-            "-pix_fmt",
-            "gray",
-            "-crf",
-            str(crf),
-            "-preset",
-            preset,
-            "-fps_mode",
-            "passthrough",
-            "-an",
-            "-y",
-            str(dst),
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            if verbose:
-                print(
+            bar = tqdm(total=len(paths), desc="Converting to mono", unit="video")
+        except ImportError:
+            bar = None
+
+    def _say(msg: str) -> None:
+        if not verbose:
+            return
+        if bar is not None:
+            bar.write(msg)
+        else:
+            print(msg)
+
+    written: list[Path] = []
+    total = len(paths)
+    try:
+        for idx, src in enumerate(paths):
+            if cancel_check is not None and cancel_check():
+                _say("convert_to_mono: cancelled.")
+                break
+            if not src.is_file():
+                _say(f"  skip (missing): {src}")
+                if progress_callback is not None:
+                    progress_callback(idx, total, src, "skip_missing")
+                if bar is not None:
+                    bar.update(1)
+                continue
+            dst = src.with_name(f"{src.stem}{suffix}.mp4")
+            if dst == src:
+                # User chose suffix="" and source is already .mp4; refuse to
+                # overwrite in-place.
+                _say(f"  skip (would overwrite source): {src.name}")
+                if progress_callback is not None:
+                    progress_callback(idx, total, src, "skip_overwrite")
+                if bar is not None:
+                    bar.update(1)
+                continue
+            if skip_existing and dst.exists():
+                _say(f"  skip (output exists): {dst.name}")
+                if progress_callback is not None:
+                    progress_callback(idx, total, src, "skip_existing")
+                if bar is not None:
+                    bar.update(1)
+                continue
+            if skip_already_mono:
+                source_fmt = _probe_source_pix_fmt(ffprobe, src)
+                if source_fmt in _MONO_PIX_FMTS:
+                    _say(f"  skip (already mono, pix_fmt={source_fmt}): {src.name}")
+                    if progress_callback is not None:
+                        progress_callback(idx, total, src, "skip_already_mono")
+                    if bar is not None:
+                        bar.update(1)
+                    continue
+
+            _say(f"  encoding {src.name} -> {dst.name} (crf={crf}, preset={preset})")
+            cmd = [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-i",
+                str(src),
+                "-c:v",
+                "libx265",
+                "-pix_fmt",
+                "gray",
+                "-crf",
+                str(crf),
+                "-preset",
+                preset,
+                "-fps_mode",
+                "passthrough",
+                "-an",
+                "-y",
+                str(dst),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                _say(
                     f"  FAILED: {src.name}\n"
                     f"  ffmpeg stderr (tail):\n  {res.stderr[-400:]}"
                 )
-            # Clean up a partial output if any.
-            if dst.exists() and dst.stat().st_size == 0:
-                dst.unlink()
-            continue
-        if verbose:
-            src_mb = src.stat().st_size / 1e6
-            dst_mb = dst.stat().st_size / 1e6
-            ratio = dst_mb / src_mb if src_mb else 0.0
-            print(f"  OK: {dst.name}  ({dst_mb:.1f} MB, {ratio*100:.0f}% of source)")
-        written.append(dst)
+                # Clean up a partial output if any.
+                if dst.exists() and dst.stat().st_size == 0:
+                    dst.unlink()
+                if progress_callback is not None:
+                    progress_callback(idx, total, src, "failed")
+                if bar is not None:
+                    bar.update(1)
+                continue
+            if verbose:
+                src_mb = src.stat().st_size / 1e6
+                dst_mb = dst.stat().st_size / 1e6
+                ratio = dst_mb / src_mb if src_mb else 0.0
+                _say(f"  OK: {dst.name}  ({dst_mb:.1f} MB, {ratio*100:.0f}% of source)")
+            written.append(dst)
+            if progress_callback is not None:
+                progress_callback(idx, total, src, "ok")
+            if bar is not None:
+                bar.update(1)
+    finally:
+        if bar is not None:
+            bar.close()
     return written
 
 
 # ---------- TOC pre-build ----------
+
+
+def _iter_video_files(
+    sources: Union[str, Path, Iterable[Union[str, Path]]],
+    *,
+    extensions: Iterable[str] = dnav.DEFAULT_VIDEO_EXTENSIONS,
+    recursive: bool = True,
+) -> list[Path]:
+    """Walk ``sources`` into a sorted list of video paths.
+
+    Mirrors :func:`datanavigator.precompute_toc_folder`'s expansion rules
+    (each entry may be a directory walked for ``extensions``, or a file
+    kept as-is) but returns the path list explicitly so callers like the
+    batch-process modal can drive their own per-file loop with progress
+    + cancel hooks. Files whose suffix doesn't match ``extensions`` are
+    dropped silently; non-existent explicit entries are surfaced upstream
+    by the caller.
+    """
+    exts = {("." + e.lstrip(".")).lower() for e in extensions}
+    if isinstance(sources, (str, Path)):
+        entries: list[Path] = [Path(sources)]
+    else:
+        entries = [Path(s) for s in sources]
+    out: list[Path] = []
+    for entry in entries:
+        if entry.is_dir():
+            walker = entry.rglob("*") if recursive else entry.iterdir()
+            for fp in walker:
+                if fp.is_file() and fp.suffix.lower() in exts:
+                    out.append(fp)
+        elif entry.is_file() and entry.suffix.lower() in exts:
+            out.append(entry)
+    return sorted(set(out))
 
 
 def build_toc(
@@ -289,6 +382,8 @@ def build_toc(
     recursive: bool = True,
     force: bool = False,
     show_progress: bool = True,
+    progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """Pre-build the PyAV+TOC sidecar for every video under ``sources``.
 
@@ -312,19 +407,55 @@ def build_toc(
             upgrading pre-1.3 sidecars to schema v2 with per-frame
             timestamps.
         show_progress: If True (default), wrap iteration in a tqdm bar.
+            Ignored when ``progress_callback`` is set (the caller is
+            driving the per-file loop and owns its own progress UI).
+        progress_callback: Optional ``fn(idx, total, video_path, status)``
+            invoked after each video. ``status`` is the per-file result
+            string from :func:`datanavigator.precompute_toc` (``"hit"``,
+            ``"built"``, ``"built (uncached)"``, ``"error: ..."``). When
+            set, this function bypasses ``dnav.precompute_toc_folder``
+            and drives a per-file loop so progress + cancel hooks fire
+            at file granularity.
+        cancel_check: Optional zero-arg callable polled at the top of
+            each file. If truthy, the loop exits early. Only honoured
+            when ``progress_callback`` is set (the callback-driven path).
 
     Returns:
         ``{path: status}`` per :func:`datanavigator.precompute_toc`, plus
         an ``"error: missing"`` entry for any explicitly-named path that
         doesn't exist.
     """
-    return dnav.precompute_toc_folder(
-        sources,
-        extensions=extensions,
-        recursive=recursive,
-        force=force,
-        show_progress=show_progress,
-    )
+    if progress_callback is None:
+        # Fast path: full delegation to dnav for tqdm + CLI use.
+        return dnav.precompute_toc_folder(
+            sources,
+            extensions=extensions,
+            recursive=recursive,
+            force=force,
+            show_progress=show_progress,
+        )
+    # Driven path: iterate explicit + walked files ourselves so the
+    # callback fires after each video, and cancel_check can break the
+    # loop between files.
+    if isinstance(sources, (str, Path)):
+        explicit = [Path(sources)]
+    else:
+        explicit = [Path(s) for s in sources]
+    missing = {str(p): "error: missing" for p in explicit if not p.exists()}
+    files = _iter_video_files(sources, extensions=extensions, recursive=recursive)
+    results: dict[str, str] = {}
+    total = len(files)
+    for idx, fp in enumerate(files):
+        if cancel_check is not None and cancel_check():
+            break
+        single = dnav.precompute_toc([fp], force=force, show_progress=False)
+        # single is {str(fp): status}
+        for path_str, status in single.items():
+            results[path_str] = status
+            progress_callback(idx, total, fp, status)
+    for path_str, status in missing.items():
+        results.setdefault(path_str, status)
+    return results
 
 
 def _resolve_dlc_videos_dir(project_or_config: Union[str, Path]) -> Path:
@@ -357,6 +488,8 @@ def propagate_toc_to_dlc_project(
     extensions: Iterable[str] = dnav.DEFAULT_VIDEO_EXTENSIONS,
     force: bool = False,
     show_progress: bool = True,
+    progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """Pre-build TOC sidecars for every video in a DLC project's ``videos/``.
 
@@ -391,4 +524,6 @@ def propagate_toc_to_dlc_project(
         recursive=True,
         force=force,
         show_progress=show_progress,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )

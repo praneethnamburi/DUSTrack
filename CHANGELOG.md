@@ -28,6 +28,41 @@ All notable changes to this project will be documented in this file.
   `dustrack.batch` submodule is now part of the public surface alongside
   `dustrack.convert_to_mono`. 18 new tests in
   `tests/test_batch_toc.py`.
+- **`convert_to_mono(show_progress=False)`** — optional tqdm bar over
+  the per-file loop, matching `build_toc`'s `show_progress` kwarg.
+  Per-file status lines route through `tqdm.write` when the bar is
+  active so it stays clean. Off by default to preserve the historical
+  print-only behaviour for shell users. 3 new tests in
+  `tests/test_convert_to_mono.py`.
+- **`convert_to_mono` / `build_toc` / `propagate_toc_to_dlc_project`
+  gain `progress_callback` and `cancel_check` kwargs** — per-file
+  callback (`(idx, total, path, status)`) and a between-files cancel
+  hook. These power the new batch-process modal without forcing CLI
+  users to install tqdm or wire up signals. On `build_toc` /
+  `propagate_toc_to_dlc_project` the kwargs trigger a per-file loop
+  (one `dnav.precompute_toc([fp])` call per video) instead of the
+  bulk `precompute_toc_folder` delegation so progress + cancel fire at
+  file granularity.
+- **Batch-process modal (Qt overlay)** — clickable surface for
+  `convert_to_mono` + `build_toc` + `propagate_toc_to_dlc_project`.
+  Folder picker OR DLC-project picker (the modal auto-detects which
+  and disables `Convert to mono` for DLC projects, where re-encoding
+  the in-project copies would diverge from `config['video_sets']`).
+  Two operation checkboxes; Run + Cancel; progress bar + last-N status
+  feed; QThread worker with a between-files cancel via
+  `threading.Event`. Same backdrop + parented-QFrame scaffolding as
+  the welcome / confirm overlays. Reachable two ways:
+  - **"Batch process..." button on the welcome modal** — secondary
+    action below Open/Load. The welcome modal exits with the sentinel
+    string `"batch_process"`, the dispatcher in `dustrack._open`
+    opens the batch modal on the same seed window, then re-mounts
+    the welcome modal when the batch modal closes.
+  - **Tools menu on the main DUSTrack window** — `Tools → Batch
+    process...`. Lets users with a real session open warm a sibling
+    folder without relaunching `dustrack.open()`. No-op when the host
+    isn't a QMainWindow (mpl fallback / headless).
+  Dispatcher logic extracted into `dustrack._batch_modal.run_batch_jobs`
+  for unit-testability; 10 new tests in `tests/test_batch_modal.py`.
 
 ## [1.2.0] - 2026-05-23
 

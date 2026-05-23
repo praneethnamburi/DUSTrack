@@ -1397,6 +1397,12 @@ def _make_open_video_overlay_class():
               Open click commits immediately (no second click).
             * Recent row selected -> "Load" -- commits the selected
               row.
+        - Secondary "Batch process..." button below the action button:
+          opens the batch-process modal (convert-to-mono / build-TOC)
+          on the same seed window without committing the welcome modal.
+          Returns the sentinel string ``"batch_process"`` from
+          :meth:`exec_` so the dispatcher in :mod:`dustrack._open` can
+          loop the welcome modal back up after the batch run.
         - Recent-sessions list (max 20, most-recent first; hidden when
           empty). Single-click toggles a row's selection; clicking the
           same row again deselects. Double-click / Enter commits
@@ -1475,6 +1481,23 @@ def _make_open_video_overlay_class():
             self._action_btn.clicked.connect(self._on_action_clicked)
             btn_row.addWidget(self._action_btn)
             layout.addLayout(btn_row)
+
+            # Secondary batch-process entry. Visually subordinate to the
+            # primary Open / Load action (smaller text, neutral chrome).
+            layout.addSpacing(8)
+            batch_row = QHBoxLayout()
+            batch_row.setAlignment(Qt.AlignCenter)
+            self._batch_btn = QPushButton("Batch process...")
+            self._batch_btn.setStyleSheet(
+                "QPushButton { background-color: transparent; "
+                "  color: #cccccc; border: 1px solid #444; "
+                "  padding: 4px 16px; font-size: 10pt; }"
+                "QPushButton:hover { color: white; border-color: #888; }"
+                "QPushButton:pressed { color: #3a86ff; }"
+            )
+            self._batch_btn.clicked.connect(self._on_batch_clicked)
+            batch_row.addWidget(self._batch_btn)
+            layout.addLayout(batch_row)
 
             # Recent-sessions list. Hidden entirely when empty so a
             # fresh-install launch shows just the title + button.
@@ -1606,6 +1629,16 @@ def _make_open_video_overlay_class():
                 return
             self._commit_picked(picked)
 
+        def _on_batch_clicked(self):
+            """Route to the batch-process modal. Commits the sentinel
+            string ``"batch_process"`` and exits the welcome modal's
+            loop; the dispatcher in :mod:`dustrack._open` recognises
+            the sentinel, opens the batch modal, and re-shows the
+            welcome modal afterwards."""
+            self._result = "batch_process"
+            self._dismiss()
+            self._loop.quit()
+
         def _on_recent_clicked(self, item):
             """Single-click on a recent row: toggle selection. Clicking
             an unselected row selects it; clicking the same selected
@@ -1654,8 +1687,15 @@ def _make_open_video_overlay_class():
             self._frame.deleteLater()
 
         def exec_(self):
-            """Block until the user picks (returns ``list[Path]``) or
-            dismisses via the main-window close (returns ``None``)."""
+            """Block until the user picks, hits Batch process, or
+            dismisses.
+
+            Returns:
+                ``list[Path]`` if the user picked a video / recent
+                session; ``"batch_process"`` (sentinel string) if the
+                user clicked the secondary Batch button; ``None`` if
+                the main-window close button was used.
+            """
             self._loop.exec_()
             return self._result
 

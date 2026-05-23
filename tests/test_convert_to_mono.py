@@ -118,3 +118,64 @@ def test_empty_suffix_refuses_overwrite(tmp_path):
     assert out == []
     # Source unchanged.
     assert src.is_file()
+
+
+def test_progress_callback_fires_per_file(tmp_path):
+    """``progress_callback`` is invoked once per source with its
+    per-file status (``"ok"`` / ``"skip_*"`` / ``"failed"``)."""
+    s1 = _make_color_clip(tmp_path / "v1.mp4")
+    s2 = _make_color_clip(tmp_path / "v2.mp4")
+    # Pre-encode v2's mono output so it triggers the skip-existing path.
+    convert_to_mono(s2, verbose=False)
+
+    calls: list[tuple] = []
+
+    def cb(idx, total, src, status):
+        calls.append((idx, total, src.name, status))
+
+    convert_to_mono([s1, s2], verbose=False, progress_callback=cb)
+    # One call per source, in order.
+    assert [c[0] for c in calls] == [0, 1]
+    assert all(c[1] == 2 for c in calls)
+    statuses = [c[3] for c in calls]
+    assert "ok" in statuses
+    assert "skip_existing" in statuses
+
+
+def test_cancel_check_aborts_between_files(tmp_path):
+    """A ``cancel_check`` returning True at file N halts the loop
+    before file N runs."""
+    s1 = _make_color_clip(tmp_path / "v1.mp4")
+    s2 = _make_color_clip(tmp_path / "v2.mp4")
+    s3 = _make_color_clip(tmp_path / "v3.mp4")
+
+    seen: list[str] = []
+
+    def cb(idx, total, src, status):
+        seen.append(src.name)
+
+    # Cancel after the first file is processed.
+    state = {"calls": 0}
+
+    def cancel_check():
+        # Returns True starting on the *second* invocation (top of file 2).
+        state["calls"] += 1
+        return state["calls"] >= 2
+
+    out = convert_to_mono(
+        [s1, s2, s3],
+        verbose=False,
+        progress_callback=cb,
+        cancel_check=cancel_check,
+    )
+    # v1 processed; v2, v3 short-circuited.
+    assert len(out) == 1
+    assert seen == ["v1.mp4"]
+
+
+def test_show_progress_does_not_crash(tmp_path):
+    """``show_progress=True`` uses tqdm internally and must not crash
+    even when tqdm output is captured."""
+    s1 = _make_color_clip(tmp_path / "v1.mp4")
+    out = convert_to_mono(s1, verbose=False, show_progress=True)
+    assert len(out) == 1

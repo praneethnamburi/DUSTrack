@@ -605,6 +605,10 @@ class DUSTrack(VideoBrowser):
         self._add_video_nav_key_bindings()
         self._refresh_nav_buttons()
 
+        # Tools menu (Batch process...). Safe no-op on mpl fallback;
+        # the helper bails when ``_find_qt_window()`` returns None.
+        self._install_tools_menu()
+
         if self.__class__.__name__ == "DUSTrack":
             plt.show(block=False)
             self.update()
@@ -1483,6 +1487,51 @@ class DUSTrack(VideoBrowser):
             return find_qt_window(self.figure)
         except Exception:
             return None
+
+    def _install_tools_menu(self) -> None:
+        """Install a Tools menu on the host QMainWindow with a "Batch
+        process..." entry that opens the batch-process modal.
+
+        Mirror of the welcome-modal's secondary Batch button, so users
+        with a real session open can warm a sibling folder without
+        relaunching ``dustrack.open()``. No-op when ``_find_qt_window``
+        can't locate a QMainWindow (mpl fallback, headless, etc.).
+        """
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            return
+        try:
+            from qtpy.QtWidgets import QAction
+        except ImportError:
+            try:
+                from qtpy.QtGui import QAction  # Qt6 home
+            except ImportError:
+                return
+        try:
+            mb = qt_window.menuBar()
+        except Exception:  # noqa: BLE001
+            return
+        # Reuse an existing Tools menu if a re-install path ever appears;
+        # otherwise create one. ``mb.actions()`` returns each top-level
+        # menu's QAction, whose ``.menu()`` is the QMenu itself.
+        tools_menu = None
+        for action in mb.actions():
+            if action.text() == "Tools":
+                tools_menu = action.menu()
+                break
+        if tools_menu is None:
+            tools_menu = mb.addMenu("Tools")
+        batch_action = QAction("Batch process...", qt_window)
+
+        def _on_batch():
+            # Lazy import to keep qtpy off the import path when only
+            # the library API is used.
+            from ._batch_modal import open_batch_modal
+
+            open_batch_modal(qt_window)
+
+        batch_action.triggered.connect(_on_batch)
+        tools_menu.addAction(batch_action)
 
     def _run_with_overlay(
         self,

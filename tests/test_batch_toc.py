@@ -112,6 +112,52 @@ def test_build_toc_custom_extensions(tmp_path):
     assert str(other) not in results
 
 
+def test_build_toc_progress_callback_fires_per_file(tmp_path):
+    """The driven path (``progress_callback`` set) iterates per file
+    and emits the same statuses dnav reports."""
+    folder = tmp_path / "vids"
+    folder.mkdir()
+    a = _make_clip(folder / "a.mp4")
+    b = _make_clip(folder / "b.mp4", duration=0.5)
+
+    calls: list[tuple] = []
+
+    def cb(idx, total, path, status):
+        calls.append((idx, total, path.name, status))
+
+    results = build_toc(folder, progress_callback=cb)
+    # Both files reported.
+    assert len(calls) == 2
+    assert {c[2] for c in calls} == {"a.mp4", "b.mp4"}
+    # Status is "built" on the fresh run.
+    assert all(c[3] == "built" for c in calls)
+    assert results[str(a)] == "built"
+    assert results[str(b)] == "built"
+
+
+def test_build_toc_cancel_check_aborts(tmp_path):
+    folder = tmp_path / "vids"
+    folder.mkdir()
+    _make_clip(folder / "a.mp4")
+    _make_clip(folder / "b.mp4", duration=0.5)
+    _make_clip(folder / "c.mp4", duration=0.5)
+
+    seen: list[str] = []
+
+    def cb(idx, total, path, status):
+        seen.append(path.name)
+
+    state = {"calls": 0}
+
+    def cancel_check():
+        state["calls"] += 1
+        return state["calls"] >= 2  # True on the second file's top-check
+
+    build_toc(folder, progress_callback=cb, cancel_check=cancel_check)
+    # Only the first file is processed.
+    assert len(seen) == 1
+
+
 # ---------- _resolve_dlc_videos_dir ----------
 
 

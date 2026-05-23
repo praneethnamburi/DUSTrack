@@ -234,11 +234,28 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
             _ensure_dlc_loaded_async()
             qt_window = seed_tracker._find_qt_window()
             OpenVideoOverlay = _make_open_video_overlay_class()
-            recent = _config.get_recent_sessions()
-            picked = OpenVideoOverlay(
-                qt_window,
-                recent_sessions=recent,
-            ).exec_()
+            # Loop the welcome modal: clicking the secondary "Batch
+            # process..." button returns the sentinel string
+            # ``"batch_process"``, opens the batch modal on the same
+            # seed window, and re-mounts the welcome modal when the
+            # batch modal closes. Any other exit (picked / None)
+            # falls through to the normal dispatch below.
+            picked = None
+            while True:
+                recent = _config.get_recent_sessions()
+                result = OpenVideoOverlay(
+                    qt_window,
+                    recent_sessions=recent,
+                ).exec_()
+                if result == "batch_process":
+                    # Lazy import to keep the qtpy dep contained to
+                    # the modal path.
+                    from ._batch_modal import open_batch_modal
+
+                    open_batch_modal(qt_window)
+                    continue
+                picked = result
+                break
             if picked is None:
                 # Window X / dismiss -> close the seed tracker and
                 # exit cleanly. The close-guard short-circuits the
