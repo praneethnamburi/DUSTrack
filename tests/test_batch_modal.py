@@ -1,10 +1,10 @@
 """Tests for the Qt-free pieces of ``dustrack._batch_modal``.
 
-Covers :class:`BatchJobSpec` classification (folder vs DLC project) and
-:func:`run_batch_jobs` dispatch (which underlying batch op is called for
-which source type, and how the cancel hook short-circuits between
-phases). The Qt overlay itself is exercised by hand; the dispatcher is
-the load-bearing logic and stays unit-testable without qtpy.
+Covers :func:`run_batch_jobs` dispatch (which underlying batch op is
+called for which checkbox combo, and how the cancel hook short-circuits
+between phases). The Qt overlay itself is exercised by hand; the
+dispatcher is the load-bearing logic and stays unit-testable without
+qtpy.
 """
 from __future__ import annotations
 
@@ -12,25 +12,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dustrack._batch_modal import BatchJobSpec, BatchRunResults, run_batch_jobs
-
-
-def test_spec_detects_dlc_project_root(tmp_path):
-    (tmp_path / "config.yaml").write_text("Task: x\n", encoding="utf-8")
-    spec = BatchJobSpec(source=tmp_path)
-    assert spec.is_dlc_project()
-
-
-def test_spec_detects_dlc_config_yaml(tmp_path):
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("Task: x\n", encoding="utf-8")
-    spec = BatchJobSpec(source=cfg)
-    assert spec.is_dlc_project()
-
-
-def test_spec_plain_folder_is_not_dlc(tmp_path):
-    (tmp_path / "v1.mp4").write_bytes(b"\x00")
-    spec = BatchJobSpec(source=tmp_path)
-    assert not spec.is_dlc_project()
 
 
 def test_dispatch_folder_calls_both_phases(tmp_path):
@@ -63,23 +44,6 @@ def test_dispatch_folder_skips_convert_when_unchecked(tmp_path):
 
     mock_conv.assert_not_called()
     mock_toc.assert_called_once()
-
-
-def test_dispatch_dlc_project_uses_propagate_only(tmp_path):
-    (tmp_path / "config.yaml").write_text("Task: x\n", encoding="utf-8")
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=True, build_toc=True)
-
-    with patch("dustrack._batch_modal._batch.convert_to_mono") as mock_conv, patch(
-        "dustrack._batch_modal._batch.propagate_toc_to_dlc_project"
-    ) as mock_prop, patch("dustrack._batch_modal._batch.build_toc") as mock_toc:
-        mock_prop.return_value = {}
-        run_batch_jobs(spec)
-
-    # DLC path uses propagate_to_dlc_project; mono is meaningless on
-    # in-project copies and convert_to_mono / build_toc are not called.
-    mock_conv.assert_not_called()
-    mock_toc.assert_not_called()
-    mock_prop.assert_called_once()
 
 
 def test_cancel_between_phases_skips_toc(tmp_path):

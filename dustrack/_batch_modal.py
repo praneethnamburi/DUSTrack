@@ -50,21 +50,17 @@ _STATUS_LABELS = {
 class BatchJobSpec:
     """What the user picked in the modal's setup view.
 
-    ``source`` is either a folder of videos, a single video file, or a
-    DLC project root / ``config.yaml``. The dispatcher classifies it.
+    ``source`` is a folder of videos or a single video file -- the same
+    shapes :func:`dustrack.convert_to_mono` and :func:`dustrack.build_toc`
+    accept. DLC projects are not a special case: point the picker at
+    ``<project>/videos`` to TOC the in-project copies (use
+    ``recursive=False`` semantics implicitly by picking the leaf
+    folder).
     """
 
     source: Path
     convert_to_mono: bool = True
     build_toc: bool = True
-
-    def is_dlc_project(self) -> bool:
-        p = self.source
-        if p.is_file() and p.name == "config.yaml":
-            return True
-        if p.is_dir() and (p / "config.yaml").is_file():
-            return True
-        return False
 
 
 @dataclass
@@ -103,26 +99,9 @@ def run_batch_jobs(
             phase, idx, total, path, status
         )
 
-    if spec.is_dlc_project():
-        # DLC project: convert_to_mono is meaningless on the in-project
-        # video copies; only build_toc is offered.
-        if spec.build_toc:
-            try:
-                results.toc_results = _batch.propagate_toc_to_dlc_project(
-                    spec.source,
-                    show_progress=False,
-                    progress_callback=_phase_cb("toc"),
-                    cancel_check=cancel_check,
-                )
-            except Exception as e:  # noqa: BLE001
-                results.error = f"build_toc failed: {e}"
-        if cancel_check is not None and cancel_check():
-            results.cancelled = True
-        return results
-
-    # Folder / file / iterable: convert first (so TOC builds on the new
-    # mono outputs), then build TOC for both the mono outputs and any
-    # videos that didn't need converting.
+    # Convert first (so TOC builds on the new mono outputs), then build
+    # TOC for both the mono outputs and any videos that didn't need
+    # converting.
     if spec.convert_to_mono:
         try:
             results.converted = _batch.convert_to_mono(
@@ -323,12 +302,7 @@ def _make_batch_modal_class():
             self._pick_folder_btn = QPushButton("Pick folder of videos...")
             self._pick_folder_btn.setStyleSheet(_SECONDARY_QSS)
             self._pick_folder_btn.clicked.connect(self._on_pick_folder)
-            self._pick_dlc_btn = QPushButton("Pick DLC project...")
-            self._pick_dlc_btn.setStyleSheet(_SECONDARY_QSS)
-            self._pick_dlc_btn.clicked.connect(self._on_pick_dlc)
             picker_row.addWidget(self._pick_folder_btn)
-            picker_row.addSpacing(8)
-            picker_row.addWidget(self._pick_dlc_btn)
             layout.addLayout(picker_row)
 
             layout.addSpacing(14)
@@ -418,9 +392,6 @@ def _make_batch_modal_class():
                 convert_to_mono=self._mono_cb.isChecked(),
                 build_toc=self._toc_cb.isChecked(),
             )
-            if spec.is_dlc_project():
-                # Force mono off for DLC projects (rendered uncheckable).
-                spec.convert_to_mono = False
             return spec
 
         def _refresh_run_state(self):
@@ -428,12 +399,6 @@ def _make_batch_modal_class():
             if spec is None:
                 self._run_btn.setEnabled(False)
                 return
-            # DLC projects: mono is meaningless; disable the checkbox.
-            if spec.is_dlc_project():
-                self._mono_cb.setEnabled(False)
-                self._mono_cb.setChecked(False)
-            else:
-                self._mono_cb.setEnabled(True)
             self._run_btn.setEnabled(
                 self._mono_cb.isChecked() or self._toc_cb.isChecked()
             )
@@ -452,29 +417,6 @@ def _make_batch_modal_class():
             self._source_lbl.setText(self._source_label_text())
             self._refresh_run_state()
 
-        def _on_pick_dlc(self):
-            # DLC project root (folder containing config.yaml) OR the
-            # config.yaml itself. Two-step: try folder picker first;
-            # if the user cancels we fall through to the file picker.
-            picked = QFileDialog.getExistingDirectory(
-                self._frame,
-                "Pick a DLC project root (folder containing config.yaml)",
-                str(self._spec_source) if self._spec_source else "",
-            )
-            if not picked:
-                paths, _ = QFileDialog.getOpenFileNames(
-                    self._frame,
-                    "Pick a DLC config.yaml",
-                    str(self._spec_source) if self._spec_source else "",
-                    "DLC config (config.yaml);;All files (*.*)",
-                )
-                if not paths:
-                    return
-                picked = paths[0]
-            self._spec_source = Path(picked)
-            self._source_lbl.setText(self._source_label_text())
-            self._refresh_run_state()
-
         # --- run / cancel ---
 
         def _on_run(self):
@@ -483,7 +425,6 @@ def _make_batch_modal_class():
                 return
             # Switch to running view.
             self._pick_folder_btn.setEnabled(False)
-            self._pick_dlc_btn.setEnabled(False)
             self._mono_cb.setEnabled(False)
             self._toc_cb.setEnabled(False)
             self._run_btn.setText("Cancel")

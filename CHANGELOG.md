@@ -15,43 +15,30 @@ All notable changes to this project will be documented in this file.
   returns essentially instantly afterward. Use case: warming the pia02
   master corpus at `M:/us_videos_for_tracking2/` (1627 mp4s) before an
   annotation session.
-- **`dustrack.batch.propagate_toc_to_dlc_project(project_or_config, *,
-  extensions, force, show_progress)`** — pre-build TOC sidecars for every
-  video in a DLC project's `videos/` subfolder. Accepts the project root
-  (folder containing `config.yaml`) or the `config.yaml` itself.
-  Rebuilds TOC fresh for each in-project copy (the source-side sidecar
-  doesn't validate against the copy because dnav's cache key includes
-  mtime + path-local SHA probes). Walks `videos/` recursively so a hand-
-  organized project with subfolders works too.
 - Both functions also re-exported at the package root
-  (`dustrack.build_toc`, `dustrack.propagate_toc_to_dlc_project`); the
-  `dustrack.batch` submodule is now part of the public surface alongside
-  `dustrack.convert_to_mono`. 18 new tests in
-  `tests/test_batch_toc.py`.
+  (`dustrack.build_toc`, `dustrack.convert_to_mono`); the
+  `dustrack.batch` submodule is now part of the public surface. New
+  tests in `tests/test_batch_toc.py`.
 - **`convert_to_mono(show_progress=False)`** — optional tqdm bar over
   the per-file loop, matching `build_toc`'s `show_progress` kwarg.
   Per-file status lines route through `tqdm.write` when the bar is
   active so it stays clean. Off by default to preserve the historical
   print-only behaviour for shell users. 3 new tests in
   `tests/test_convert_to_mono.py`.
-- **`convert_to_mono` / `build_toc` / `propagate_toc_to_dlc_project`
-  gain `progress_callback` and `cancel_check` kwargs** — per-file
-  callback (`(idx, total, path, status)`) and a between-files cancel
-  hook. These power the new batch-process modal without forcing CLI
-  users to install tqdm or wire up signals. On `build_toc` /
-  `propagate_toc_to_dlc_project` the kwargs trigger a per-file loop
+- **`convert_to_mono` / `build_toc` gain `progress_callback` and
+  `cancel_check` kwargs** — per-file callback (`(idx, total, path,
+  status)`) and a between-files cancel hook. These power the new
+  batch-process modal without forcing CLI users to install tqdm or
+  wire up signals. On `build_toc` the kwargs trigger a per-file loop
   (one `dnav.precompute_toc([fp])` call per video) instead of the
   bulk `precompute_toc_folder` delegation so progress + cancel fire at
   file granularity.
 - **Batch-process modal (Qt overlay)** — clickable surface for
-  `convert_to_mono` + `build_toc` + `propagate_toc_to_dlc_project`.
-  Folder picker OR DLC-project picker (the modal auto-detects which
-  and disables `Convert to mono` for DLC projects, where re-encoding
-  the in-project copies would diverge from `config['video_sets']`).
-  Two operation checkboxes; Run + Cancel; progress bar + last-N status
-  feed; QThread worker with a between-files cancel via
-  `threading.Event`. Same backdrop + parented-QFrame scaffolding as
-  the welcome / confirm overlays. Reachable two ways:
+  `convert_to_mono` + `build_toc`. Folder picker, two operation
+  checkboxes, Run + Cancel, progress bar + last-N status feed,
+  QThread worker with a between-files cancel via `threading.Event`.
+  Same backdrop + parented-QFrame scaffolding as the welcome / confirm
+  overlays. Reachable two ways:
   - **"Batch process..." button on the welcome modal** — secondary
     action below Open/Load. The welcome modal exits with the sentinel
     string `"batch_process"`, the dispatcher in `dustrack._open`
@@ -62,7 +49,11 @@ All notable changes to this project will be documented in this file.
     folder without relaunching `dustrack.open()`. No-op when the host
     isn't a QMainWindow (mpl fallback / headless).
   Dispatcher logic extracted into `dustrack._batch_modal.run_batch_jobs`
-  for unit-testability; 10 new tests in `tests/test_batch_modal.py`.
+  for unit-testability; new tests in `tests/test_batch_modal.py`.
+  DLC projects: no special-case wiring. Point the folder picker at
+  `<project>/videos` to TOC the in-project copies; nested per-session
+  subfolders under `videos/` are not walked (DLC's `copy_videos=True`
+  produces a flat layout).
 
 ## [1.2.0] - 2026-05-23
 

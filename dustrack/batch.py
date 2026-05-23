@@ -6,14 +6,14 @@ Two workflows live here:
   (drops chroma noise; unlocks dnav's ``pix_fmt='gray'`` auto-detect for
   ~6x sequential-decode speedup). See the original module header below.
 
-* :func:`build_toc` / :func:`propagate_toc_to_dlc_project` — pre-build
-  the PyAV+TOC sidecar (``<video>.dnav-toc``) for every video in a folder
-  / DLC-project ``videos/`` subfolder. First DUSTrack open of a video
-  pays the per-file TOC build cost (a full sequential demux to record
-  per-packet offsets + per-frame timestamps); pre-building means
-  ``dustrack.open(...)`` returns essentially instantly on warm folders.
-  Delegates to :func:`datanavigator.precompute_toc_folder` so other
-  portfolio consumers can hit the same code path.
+* :func:`build_toc` — pre-build the PyAV+TOC sidecar
+  (``<video>.dnav-toc``) for every video in a folder. First DUSTrack
+  open of a video pays the per-file TOC build cost (a full sequential
+  demux to record per-packet offsets + per-frame timestamps); pre-
+  building means ``dustrack.open(...)`` returns essentially instantly
+  on warm folders. Delegates to :func:`datanavigator.precompute_toc_folder`
+  so other portfolio consumers can hit the same code path. For DLC
+  projects, point this at ``<project>/videos`` with ``recursive=False``.
 
 Original convert_to_mono docstring follows:
 
@@ -458,72 +458,3 @@ def build_toc(
     return results
 
 
-def _resolve_dlc_videos_dir(project_or_config: Union[str, Path]) -> Path:
-    """Return ``<project_root>/videos`` from a project root or config.yaml path.
-
-    Accepts either the DLC project root (the folder containing
-    ``config.yaml``) or the ``config.yaml`` itself.
-    """
-    p = Path(project_or_config)
-    if p.is_file() and p.name == "config.yaml":
-        project_root = p.parent
-    elif p.is_dir() and (p / "config.yaml").is_file():
-        project_root = p
-    else:
-        raise FileNotFoundError(
-            f"Not a DLC project root or config.yaml: {p} "
-            f"(expected a folder containing config.yaml, or the config.yaml itself)"
-        )
-    videos_dir = project_root / "videos"
-    if not videos_dir.is_dir():
-        raise FileNotFoundError(
-            f"DLC project at {project_root} has no videos/ subfolder."
-        )
-    return videos_dir
-
-
-def propagate_toc_to_dlc_project(
-    project_or_config: Union[str, Path],
-    *,
-    extensions: Iterable[str] = dnav.DEFAULT_VIDEO_EXTENSIONS,
-    force: bool = False,
-    show_progress: bool = True,
-    progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> dict:
-    """Pre-build TOC sidecars for every video in a DLC project's ``videos/``.
-
-    DLC copies project videos into ``<project_root>/videos/`` at scaffold
-    time (byte-identical copies via ``copy_videos=True``). Even when the
-    source folder already has TOC sidecars, the in-project copies need
-    their own — the sidecar cache key includes mtime + path-local SHA
-    probes, so the source sidecar would not validate against the copy.
-    Rebuilding here is the same per-file cost as the source build was.
-
-    Args:
-        project_or_config: DLC project root (folder containing
-            ``config.yaml``), or the ``config.yaml`` file itself.
-        extensions: See :func:`build_toc`.
-        force: See :func:`build_toc`.
-        show_progress: See :func:`build_toc`.
-
-    Returns:
-        Same ``{path: status}`` shape as :func:`build_toc`.
-
-    Raises:
-        FileNotFoundError: If ``project_or_config`` doesn't resolve to a
-            DLC project root, or the project has no ``videos/`` folder.
-    """
-    videos_dir = _resolve_dlc_videos_dir(project_or_config)
-    # videos/ is typically flat (DLC's copy_videos doesn't recurse), but
-    # walk recursively anyway so a hand-organized project with subfolders
-    # is still handled.
-    return build_toc(
-        videos_dir,
-        extensions=extensions,
-        recursive=True,
-        force=force,
-        show_progress=show_progress,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
-    )

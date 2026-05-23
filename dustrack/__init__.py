@@ -97,7 +97,7 @@ from .dlcinterface import DLCProject
 from .gui import DUSTrack
 from ._open import open
 from . import batch as batch  # noqa: F401 — public submodule
-from .batch import build_toc, convert_to_mono, propagate_toc_to_dlc_project
+from .batch import build_toc, convert_to_mono
 from .seed import (
     extract_snapshot_for_seeding,
     get_seed_bundles_root,
@@ -116,7 +116,6 @@ __all__ = [
     "batch",
     "build_toc",
     "convert_to_mono",
-    "propagate_toc_to_dlc_project",
     "dlcpatch",
     "extract_snapshot_for_seeding",
     "get_seed_bundles_root",
