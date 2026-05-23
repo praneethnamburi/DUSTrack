@@ -22,6 +22,7 @@ companion :class:`DLCProject` (DLC project lifecycle) stays in
 :meth:`DLCProject.annotate` lazy-imports ``DUSTrack`` to avoid an
 import cycle.
 """
+
 from __future__ import annotations
 
 import os
@@ -85,26 +86,28 @@ from ._overlays import (
 )
 from ._file_management import VideoFileManager, make_annotation_file_name
 from .dlcinterface import DLCProject, _find_video_index
+from .seed import import_seed_bundle_into_project
+
 
 class DUSTrack(VideoBrowser):
     """
     Interactive video point annotator with DeepLabCut integration.
-    
+
     DUSTrack provides a GUI for manual annotation of points in videos, with integrated
     support for creating DeepLabCut projects, training models, and post-processing
     results using optical flow algorithms.
-    
+
     Features:
         - Manual point annotation with event marking
         - Real-time trajectory visualization
         - DeepLabCut project creation and training
         - Optical flow-based jitter reduction
         - Multiple annotation layer management
-    
+
     Attributes:
         _dlcproject (DLCProject): Associated DeepLabCut project instance.
         _ax_lims (dict): Stores axis limits when plot axes are frozen.
-    
+
     Example:
         >>> # Most users should call :func:`dustrack.open` instead of
         >>> # constructing DUSTrack directly -- it dispatches to either
@@ -136,14 +139,22 @@ class DUSTrack(VideoBrowser):
     # source.
     CORRECTIONS_LAYER_NAME = "dlccorr"
 
-    def __init__(self, vid_name, annotation_names="iteration-0", *args,
-                 clahe_clip=1.0, clahe_grid=8, gamma=1.0, brightness=0,
-                 dark_mode=False,
-                 n_labels: int = 1,
-                 titlefunc: Optional[Callable] = None,
-                 height_ratios: tuple = (10, 1, 1),
-                 fast_render: bool = True,
-                 **kwargs):
+    def __init__(
+        self,
+        vid_name,
+        annotation_names="iteration-0",
+        *args,
+        clahe_clip=1.0,
+        clahe_grid=8,
+        gamma=1.0,
+        brightness=0,
+        dark_mode=False,
+        n_labels: int = 1,
+        titlefunc: Optional[Callable] = None,
+        height_ratios: tuple = (10, 1, 1),
+        fast_render: bool = True,
+        **kwargs,
+    ):
         # Store enhancement settings. Defaults now correspond to "no
         # enhancement" so the EnhanceWidget sliders start at their
         # leftmost position and DUSTrack opens with the raw frame;
@@ -193,8 +204,11 @@ class DUSTrack(VideoBrowser):
                 out = _apply_gamma_only(im, self._gamma)
             else:
                 out = enhance_ultrasound_image(
-                    im, self._clahe_clip, self._clahe_grid,
-                    self._gamma, self._brightness
+                    im,
+                    self._clahe_clip,
+                    self._clahe_grid,
+                    self._gamma,
+                    self._brightness,
                 )
             # dnav 1.5.0a2 auto-detects monochrome sources and returns
             # (H, W) gray frames. Coerce to 3-channel RGB here so the
@@ -235,7 +249,11 @@ class DUSTrack(VideoBrowser):
             figure_handle = plt.figure(constrained_layout=False, figsize=(12, 3))
             gs = figure_handle.add_gridspec(2, 1, hspace=0.05)
             figure_handle.subplots_adjust(
-                left=0.06, right=0.99, top=0.97, bottom=0.12, hspace=0.05,
+                left=0.06,
+                right=0.99,
+                top=0.97,
+                bottom=0.12,
+                hspace=0.05,
             )
             self._ax_image = None  # set after super().__init__ to the Qt pane
             self._ax_trace_x = figure_handle.add_subplot(gs[0, 0])
@@ -247,9 +265,7 @@ class DUSTrack(VideoBrowser):
             # its dedicated left column. Image now spans full width.
             # mpl fallback (non-Qt backend, e.g. Agg in tests) gets the
             # state-variables text overlay floating on the figure.
-            gs = figure_handle.add_gridspec(
-                3, 1, height_ratios=list(height_ratios)
-            )
+            gs = figure_handle.add_gridspec(3, 1, height_ratios=list(height_ratios))
             self._ax_image = figure_handle.add_subplot(gs[0, 0])
             self._ax_trace_x = figure_handle.add_subplot(gs[1, 0])
             self._ax_trace_y = figure_handle.add_subplot(gs[2, 0])
@@ -264,7 +280,10 @@ class DUSTrack(VideoBrowser):
         # VideoBrowser can build the Qt image pane on it.
         ax_or_fig = figure_handle if fast_render else self._ax_image
         super().__init__(
-            vid_name, titlefunc, ax_or_fig, image_processor,
+            vid_name,
+            titlefunc,
+            ax_or_fig,
+            image_processor,
             fast_render=fast_render,
         )
         if fast_render:
@@ -295,14 +314,19 @@ class DUSTrack(VideoBrowser):
         # render QComboBox / QButtonGroup / QLabel. Hint is ignored on
         # non-Qt backends (Agg falls back to TextView).
         self.statevariables.add(
-            "annotation_layer", self.annotations.names, widget="dropdown",
-        )
-        self.statevariables.add(
-            "annotation_overlay", [None] + self.annotations.names,
+            "annotation_layer",
+            self.annotations.names,
             widget="dropdown",
         )
         self.statevariables.add(
-            "annotation_label", self.ann.labels, widget="dropdown",
+            "annotation_overlay",
+            [None] + self.annotations.names,
+            widget="dropdown",
+        )
+        self.statevariables.add(
+            "annotation_label",
+            self.ann.labels,
+            widget="dropdown",
         )
         self.statevariables.add(
             "label_range",
@@ -328,9 +352,7 @@ class DUSTrack(VideoBrowser):
         self.statevariables["annotation_label"].add_on_change(
             self._on_active_label_change
         )
-        self.statevariables["label_range"].add_on_change(
-            self._on_active_label_change
-        )
+        self.statevariables["label_range"].add_on_change(self._on_active_label_change)
         # rc2: single show() call regardless of fast_render. Inside,
         # StateVariables.show() tries the Qt-native dock widget first
         # (mounts under the buttons column for both tiers) and falls
@@ -361,7 +383,9 @@ class DUSTrack(VideoBrowser):
             )
         else:
             self.cid.append(
-                self.figure.canvas.mpl_connect("pick_event", self.select_label_with_mouse)
+                self.figure.canvas.mpl_connect(
+                    "pick_event", self.select_label_with_mouse
+                )
             )
             self.cid.append(
                 self.figure.canvas.mpl_connect(
@@ -378,7 +402,12 @@ class DUSTrack(VideoBrowser):
             ann.__class__ = VideoAnnotation
 
         self._dlcproject = None
-        self._ax_lims = {'state': False, 'x': [None, None], 'y_trace_x': [None, None], 'y_trace_y': [None, None]}
+        self._ax_lims = {
+            "state": False,
+            "x": [None, None],
+            "y_trace_x": [None, None],
+            "y_trace_y": [None, None],
+        }
 
         # Apply dark theme if enabled
         if dark_mode:
@@ -405,33 +434,81 @@ class DUSTrack(VideoBrowser):
 
         # --- Workflow group: end-to-end annotation pipeline -------------
         if HAS_DLC:
-            self.buttons.add(text="Create DLC Project", action_func=self.create_dlc_project, style_tag="workflow")
-            self.buttons.add(text="Train DLC model", action_func=self.process_dlc_project, style_tag="workflow")
-            self.buttons.add(text="Apply manual corrections", action_func=self.apply_manual_corrections, style_tag="workflow")
-            self.buttons.add(text="Reduce jitter", action_func=self.process_with_lk, style_tag="workflow")
-        self.buttons.add(text="Save annotation as...", action_func=self.save_annotation_as, style_tag="workflow")
+            self.buttons.add(
+                text="Create DLC Project",
+                action_func=self.create_dlc_project,
+                style_tag="workflow",
+            )
+            self.buttons.add(
+                text="Train DLC model",
+                action_func=self.process_dlc_project,
+                style_tag="workflow",
+            )
+            self.buttons.add(
+                text="Apply manual corrections",
+                action_func=self.apply_manual_corrections,
+                style_tag="workflow",
+            )
+            self.buttons.add(
+                text="Reduce jitter",
+                action_func=self.process_with_lk,
+                style_tag="workflow",
+            )
+        self.buttons.add(
+            text="Save annotation as...",
+            action_func=self.save_annotation_as,
+            style_tag="workflow",
+        )
         self.buttons.add_separator(style="double")
 
         # --- Display / trace controls -----------------------------------
         # Image enhancement is driven by the EnhanceWidget sliders
         # (mounted below statevars by _add_enhance_widget). Sliders at
         # min = bypass; no separate Toggle enhance button.
-        self.buttons.add(text="Discard unsaved annotations", action_func=self.discard_unsaved_annotations, style_tag="display")
-        self.buttons.add_multi(
-            dict(text="Trace: line", action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self), style_tag="display"),
-            dict(text="Trace: dot",  action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self), style_tag="display"),
+        self.buttons.add(
+            text="Discard unsaved annotations",
+            action_func=self.discard_unsaved_annotations,
+            style_tag="display",
         )
         self.buttons.add_multi(
-            dict(text="Freeze plot axes",   action_func=self.freeze_plot_axes, style_tag="display"),
-            dict(text="Unfreeze plot axes", action_func=self.unfreeze_plot_axes, style_tag="display"),
+            dict(
+                text="Trace: line",
+                action_func=(lambda s, ev: s.ann.set_plot_type("line")).__get__(self),
+                style_tag="display",
+            ),
+            dict(
+                text="Trace: dot",
+                action_func=(lambda s, ev: s.ann.set_plot_type("dot")).__get__(self),
+                style_tag="display",
+            ),
+        )
+        self.buttons.add_multi(
+            dict(
+                text="Freeze plot axes",
+                action_func=self.freeze_plot_axes,
+                style_tag="display",
+            ),
+            dict(
+                text="Unfreeze plot axes",
+                action_func=self.unfreeze_plot_axes,
+                style_tag="display",
+            ),
         )
         self.buttons.add_separator(style="double")
 
         # Niche operation; flagged for a future decision -- should this
         # button be replaced by a keyboard-only shortcut to reclaim the
         # vertical slot? Track usage before removing.
-        self.buttons.add(text="Replace existing from overlay", action_func=self.copy_existing_annotations_from_overlay, style_tag="niche")
-        self.buttons.add(text="Remove layer", action_func=self.remove_current_layer, style_tag="niche")
+        self.buttons.add(
+            text="Replace existing from overlay",
+            action_func=self.copy_existing_annotations_from_overlay,
+            style_tag="niche",
+        )
+        self.buttons.add(
+            text="Remove layer",
+            action_func=self.remove_current_layer,
+            style_tag="niche",
+        )
         self.buttons.add_separator(style="double")
 
         # --- Utilities + Swap layers -----------------------------------
@@ -439,11 +516,21 @@ class DUSTrack(VideoBrowser):
         # pair just above Swap layers. (Pre-1.2.0rc1 the parent
         # class installed it via a default-buttons hook; the hook is
         # gone after the _DUSTrackBase merge.)
-        self.buttons.add(text="Refresh UI", action_func=self.refresh, style_tag="utilities")
-        self.buttons.add(text="Keyboard shortcuts", action_func=(lambda s, ev: s.show_key_bindings()).__get__(self), style_tag="utilities")
+        self.buttons.add(
+            text="Refresh UI", action_func=self.refresh, style_tag="utilities"
+        )
+        self.buttons.add(
+            text="Keyboard shortcuts",
+            action_func=(lambda s, ev: s.show_key_bindings()).__get__(self),
+            style_tag="utilities",
+        )
         self.buttons.add_separator(style="double")
 
-        self.buttons.add(text="Swap annotation layers", action_func=self.swap_active_and_overlay, style_tag="swap")
+        self.buttons.add(
+            text="Swap annotation layers",
+            action_func=self.swap_active_and_overlay,
+            style_tag="swap",
+        )
 
         # Statevars widget palette -- can't ride the Buttons styling
         # path because QSS on a QWidget parent flattens child
@@ -534,24 +621,39 @@ class DUSTrack(VideoBrowser):
     _SIDEBAR_TEXT_COLOR = "#2c3e50"
     _SIDEBAR_PALETTE = {
         "workflow": {  # powder blue -- primary pipeline, coolest end
-            "bg": "#cfdef3", "fg": "#2c3e50",
-            "border": "#a8c0dd", "hover": "#bccfea", "pressed": "#a8c0dd",
+            "bg": "#cfdef3",
+            "fg": "#2c3e50",
+            "border": "#a8c0dd",
+            "hover": "#bccfea",
+            "pressed": "#a8c0dd",
         },
-        "display": {   # pale mint -- cool green, analogous step from blue
-            "bg": "#d4ebd4", "fg": "#2c3e50",
-            "border": "#aed4ae", "hover": "#c1dfc1", "pressed": "#aed4ae",
+        "display": {  # pale mint -- cool green, analogous step from blue
+            "bg": "#d4ebd4",
+            "fg": "#2c3e50",
+            "border": "#aed4ae",
+            "hover": "#c1dfc1",
+            "pressed": "#aed4ae",
         },
-        "niche": {     # pale apricot -- warm shift, "use sparingly"
-            "bg": "#f5d9c0", "fg": "#2c3e50",
-            "border": "#d9b88a", "hover": "#eaca9f", "pressed": "#d9b88a",
+        "niche": {  # pale apricot -- warm shift, "use sparingly"
+            "bg": "#f5d9c0",
+            "fg": "#2c3e50",
+            "border": "#d9b88a",
+            "hover": "#eaca9f",
+            "pressed": "#d9b88a",
         },
         "utilities": {  # pale sand -- neutral warm
-            "bg": "#ece6d5", "fg": "#2c3e50",
-            "border": "#d4cdb8", "hover": "#e0d9c5", "pressed": "#d4cdb8",
+            "bg": "#ece6d5",
+            "fg": "#2c3e50",
+            "border": "#d4cdb8",
+            "hover": "#e0d9c5",
+            "pressed": "#d4cdb8",
         },
-        "swap": {      # pale silver -- matches statevars
-            "bg": "#e0e4e8", "fg": "#2c3e50",
-            "border": "#c0c5cb", "hover": "#d0d4d9", "pressed": "#c0c5cb",
+        "swap": {  # pale silver -- matches statevars
+            "bg": "#e0e4e8",
+            "fg": "#2c3e50",
+            "border": "#c0c5cb",
+            "hover": "#d0d4d9",
+            "pressed": "#c0c5cb",
         },
     }
 
@@ -575,7 +677,11 @@ class DUSTrack(VideoBrowser):
         # statevars slot is at col.statevars_slot_index; insert right
         # after it (or right after the buttons widget if statevars
         # never got built).
-        insert_at = (col.statevars_slot_index + 1) if col.statevars_widget is not None else col.statevars_slot_index
+        insert_at = (
+            (col.statevars_slot_index + 1)
+            if col.statevars_widget is not None
+            else col.statevars_slot_index
+        )
         col.outer_layout.insertWidget(insert_at, widget)
         self._enhance_widget = widget
 
@@ -598,6 +704,7 @@ class DUSTrack(VideoBrowser):
         if col is None or col.statevars_widget is None:
             return
         from qtpy.QtGui import QColor
+
         sv = col.statevars_widget
         pal = sv.palette()
         pal.setColor(sv.backgroundRole(), QColor(self._SIDEBAR_STATEVARS_BG))
@@ -629,9 +736,9 @@ class DUSTrack(VideoBrowser):
 
     def _apply_dark_theme(self):
         """Apply dark theme to the GUI for better ultrasound visibility."""
-        bg_color = '#1a1a1a'
-        ax_color = '#2a2a2a'
-        text_color = 'white'
+        bg_color = "#1a1a1a"
+        ax_color = "#2a2a2a"
+        text_color = "white"
 
         # Figure background
         self.figure.patch.set_facecolor(bg_color)
@@ -750,36 +857,40 @@ class DUSTrack(VideoBrowser):
     def freeze_plot_axes(self, event=None):
         """
         Lock the axis limits of trajectory plots to current view.
-        
+
         Useful for comparing tracking quality across different frames without
         automatic axis rescaling distracting from the comparison.
-        
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
         """
-        self._ax_lims['state'] = True
-        self._ax_lims['x'] = self._ax_trace_x.get_xlim()
-        self._ax_lims['y_trace_x'] = self._ax_trace_x.get_ylim()
-        self._ax_lims['y_trace_y'] = self._ax_trace_y.get_ylim()
+        self._ax_lims["state"] = True
+        self._ax_lims["x"] = self._ax_trace_x.get_xlim()
+        self._ax_lims["y_trace_x"] = self._ax_trace_x.get_ylim()
+        self._ax_lims["y_trace_y"] = self._ax_trace_y.get_ylim()
         self.update()
 
     def unfreeze_plot_axes(self, event=None):
         """
         Restore automatic axis scaling for trajectory plots.
-        
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
         """
-        self._ax_lims['state'] = False
-        self._ax_lims['x'] = [None, None]
-        self._ax_lims['y_trace_x'] = [None, None]
-        self._ax_lims['y_trace_y'] = [None, None]
+        self._ax_lims["state"] = False
+        self._ax_lims["x"] = [None, None]
+        self._ax_lims["y_trace_x"] = [None, None]
+        self._ax_lims["y_trace_y"] = [None, None]
         self.update()
 
-
-    def create_dlc_project(self, event=None, name=None, path=None,
-                           experimenter=_config.EXPERIMENTER,
-                           seed_bundle_path=None) -> DLCProject:
+    def create_dlc_project(
+        self,
+        event=None,
+        name=None,
+        path=None,
+        experimenter=_config.EXPERIMENTER,
+        seed_bundle_path=None,
+    ) -> DLCProject:
         """
         Create a new DeepLabCut project using current annotations as training labels.
 
@@ -823,7 +934,7 @@ class DUSTrack(VideoBrowser):
             Project names must contain an underscore for proper DLC configuration handling.
         """
         if not HAS_DLC:
-            raise ImportError('deeplabcut is not installed. Cannot create DLC project.')
+            raise ImportError("deeplabcut is not installed. Cannot create DLC project.")
 
         qt_window = self._find_qt_window()
         active_layer_empty = not any(self.ann.data.values())
@@ -832,11 +943,7 @@ class DUSTrack(VideoBrowser):
         # the seeding modal sequence. The user can still cancel out
         # at every step (intent -> folder pick -> confirm). Cancel
         # leaves the UI intact (returns None).
-        if (
-            active_layer_empty
-            and seed_bundle_path is None
-            and qt_window is not None
-        ):
+        if active_layer_empty and seed_bundle_path is None and qt_window is not None:
             seed_bundle_path = self._prompt_seed_bundle(qt_window)
             if seed_bundle_path is None:
                 return None  # user cancelled at some step
@@ -876,7 +983,8 @@ class DUSTrack(VideoBrowser):
                 import_seed_bundle_into_project(project, seed_bundle_path)
                 print("Running analyze_videos on iteration-0 ...")
                 project.analyze_videos(
-                    iteration_num=0, create_video=False,
+                    iteration_num=0,
+                    create_video=False,
                 )
                 return project
 
@@ -1105,9 +1213,13 @@ class DUSTrack(VideoBrowser):
             ValueError: If no DLCProject has been created yet.
         """
         if not HAS_DLC:
-            raise ImportError('deeplabcut is not installed. Cannot process DLC project.')
+            raise ImportError(
+                "deeplabcut is not installed. Cannot process DLC project."
+            )
         if self._dlcproject is None:
-            raise ValueError('DLCProject not created. Use create_dlc_project() to create it.')
+            raise ValueError(
+                "DLCProject not created. Use create_dlc_project() to create it."
+            )
 
         qt_window = self._find_qt_window()
         if qt_window is None:
@@ -1115,7 +1227,7 @@ class DUSTrack(VideoBrowser):
             # route through ``DLCProject.process()`` (auto-infer + sane
             # defaults). The Qt path uses ``train_iteration`` below with
             # explicit args supplied by the modal.
-            kwargs.setdefault('create_video', False)
+            kwargs.setdefault("create_video", False)
             plt.close(self.figure)
             self._dlcproject.process(*args, **kwargs)
             return self._dlcproject.annotate()
@@ -1246,7 +1358,9 @@ class DUSTrack(VideoBrowser):
         See :func:`._preflight.scan_unsaved_and_incomplete`.
         """
         return _preflight.scan_unsaved_and_incomplete(
-            self.annotations, self.fname, dlcproject=self._dlcproject,
+            self.annotations,
+            self.fname,
+            dlcproject=self._dlcproject,
         )
 
     def _prompt_training_options(self, qt_window):
@@ -1282,7 +1396,8 @@ class DUSTrack(VideoBrowser):
         See :func:`._preflight.has_trainable_labels`.
         """
         return _preflight.has_trainable_labels(
-            self.annotations, dlcproject=self._dlcproject,
+            self.annotations,
+            dlcproject=self._dlcproject,
         )
 
     def _prompt_no_trainable_labels(self, qt_window) -> None:
@@ -1296,7 +1411,8 @@ class DUSTrack(VideoBrowser):
         See :func:`._preflight_modal.prompt_empty_layer_train_confirm`.
         """
         return _preflight_modal.prompt_empty_layer_train_confirm(
-            qt_window, self.ann.name,
+            qt_window,
+            self.ann.name,
         )
 
     def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
@@ -1310,7 +1426,9 @@ class DUSTrack(VideoBrowser):
         See :func:`._preflight_modal.apply_pre_flight_remediations`.
         """
         _preflight_modal.apply_pre_flight_remediations(
-            self.annotations, self.fname, issues,
+            self.annotations,
+            self.fname,
+            issues,
         )
         self.update()
 
@@ -1359,6 +1477,7 @@ class DUSTrack(VideoBrowser):
         """
         try:
             from datanavigator._qt import find_qt_window
+
             return find_qt_window(self.figure)
         except Exception:
             return None
@@ -1433,7 +1552,9 @@ class DUSTrack(VideoBrowser):
                 result_state["done"] = True
 
         thread = threading.Thread(
-            target=_worker, name="dustrack-overlay-worker", daemon=True,
+            target=_worker,
+            name="dustrack-overlay-worker",
+            daemon=True,
         )
 
         timer = QTimer(qt_window)
@@ -1511,7 +1632,9 @@ class DUSTrack(VideoBrowser):
                 # already streamed into the overlay log on the worker
                 # side.
                 exc_str = str(exc) or repr(exc)
-                sys.__stderr__.write(f"{title} failed: {type(exc).__name__}: {exc_str}\n")
+                sys.__stderr__.write(
+                    f"{title} failed: {type(exc).__name__}: {exc_str}\n"
+                )
                 overlay.mark_done(
                     success=False,
                     summary=f"{type(exc).__name__}: {exc_str}",
@@ -1684,7 +1807,9 @@ class DUSTrack(VideoBrowser):
                 continue
             try:
                 self._add_new_dlc_layers_to_bundle(
-                    bundle, project, new_suffix,
+                    bundle,
+                    project,
+                    new_suffix,
                 )
             except Exception:  # noqa: BLE001 - never abort the post-train UX
                 sys.__stderr__.write(
@@ -1694,7 +1819,10 @@ class DUSTrack(VideoBrowser):
                 )
 
     def _add_new_dlc_layers_to_bundle(
-        self, bundle: _BundleState, project, new_suffix: str,
+        self,
+        bundle: _BundleState,
+        project,
+        new_suffix: str,
     ) -> None:
         """For a ready non-active bundle, discover + add every layer
         not already in its annotations container.
@@ -1722,8 +1850,7 @@ class DUSTrack(VideoBrowser):
 
         existing = set(bundle.annotations.names)
         new_layers = {
-            name: path for name, path in all_layers.items()
-            if name not in existing
+            name: path for name, path in all_layers.items() if name not in existing
         }
         if not new_layers:
             return
@@ -2165,7 +2292,7 @@ class DUSTrack(VideoBrowser):
             ),
         )
         return None
-    
+
     def remove_current_layer(self, event=None):
         """Remove the active annotation layer from the DUSTrack session.
 
@@ -2193,9 +2320,7 @@ class DUSTrack(VideoBrowser):
             # primary, but guard anyway.
             return
 
-        removable = [
-            n for n in self.annotations.names if n != "buffer"
-        ]
+        removable = [n for n in self.annotations.names if n != "buffer"]
         if len(removable) <= 1:
             if qt_window is None:
                 return
@@ -2280,35 +2405,39 @@ class DUSTrack(VideoBrowser):
     def copy_existing_annotations_from_overlay(self, event=None):
         """
         Copy overlay annotation points to the current annotation layer for selected frames.
-        
+
         Useful when DLC predictions are more accurate than manual labels.
         Typically used with manual annotations in the primary annotation layer,
         and the model predictions in the overlay layer. Data is copied only for
         frames that exist in the primary annotation layer. Perform this action
         within a specified frame range by selecting an interval.
-        
+
         Args:
             event: Mouse/keyboard event (unused, for button compatibility).
-        
+
         Raises:
             ValueError: If no annotation overlay is currently selected.
-        
+
         Note:
             Only affects the current label. Other labels remain unchanged.
         """
         overlay_name = self._current_overlay
         if overlay_name is None:
-            raise ValueError('No annotation overlay selected.')
+            raise ValueError("No annotation overlay selected.")
         overlay_ann = self.annotations[overlay_name]
         current_label = self._current_label
         if (self._current_layer, current_label) in self.events[0].to_dict():
-            event_start, event_end = self.events[0].to_dict()[(self._current_layer, current_label)][0]
+            event_start, event_end = self.events[0].to_dict()[
+                (self._current_layer, current_label)
+            ][0]
         else:
             event_start, event_end = 0, self.ann.n_frames - 1
         # if an event is specified, nudge data only in the selected interval
         for frame_num in self.ann.frames:
             if event_start <= frame_num <= event_end:
-                self.ann.add(overlay_ann.data[current_label][frame_num], current_label, frame_num)
+                self.ann.add(
+                    overlay_ann.data[current_label][frame_num], current_label, frame_num
+                )
         self.update()
 
     @staticmethod
@@ -2510,7 +2639,11 @@ class DUSTrack(VideoBrowser):
         ann.save(new_fname)
         ann.fname = new_fname
         ann.name = new_name
-        if old_fname is not None and Path(old_fname).exists() and str(old_fname) != str(new_fname):
+        if (
+            old_fname is not None
+            and Path(old_fname).exists()
+            and str(old_fname) != str(new_fname)
+        ):
             try:
                 Path(old_fname).unlink()
             except OSError as exc:
@@ -2548,9 +2681,7 @@ class DUSTrack(VideoBrowser):
         layer = self.ann
         suggested_dir = str(Path(self.fname).parent)
         layer_name = self._current_layer or ""
-        suggested_name = Path(
-            make_annotation_file_name(self.fname, layer_name)
-        ).name
+        suggested_name = Path(make_annotation_file_name(self.fname, layer_name)).name
         suggested_path = str(Path(suggested_dir) / suggested_name)
 
         qt_window = self._find_qt_window()
@@ -2601,14 +2732,14 @@ class DUSTrack(VideoBrowser):
         self.update_frame_marker(draw=False)
         ret = super().update()
         plt.draw()
-        if self._ax_lims['state']:
-            if self._ax_lims['x'][0] is not None:
-                self._ax_trace_x.set_xlim(self._ax_lims['x'])
-                self._ax_trace_y.set_xlim(self._ax_lims['x'])
-            if self._ax_lims['y_trace_x'][0] is not None:
-                self._ax_trace_x.set_ylim(self._ax_lims['y_trace_x'])
-            if self._ax_lims['y_trace_y'][0] is not None:
-                self._ax_trace_y.set_ylim(self._ax_lims['y_trace_y'])
+        if self._ax_lims["state"]:
+            if self._ax_lims["x"][0] is not None:
+                self._ax_trace_x.set_xlim(self._ax_lims["x"])
+                self._ax_trace_y.set_xlim(self._ax_lims["x"])
+            if self._ax_lims["y_trace_x"][0] is not None:
+                self._ax_trace_x.set_ylim(self._ax_lims["y_trace_x"])
+            if self._ax_lims["y_trace_y"][0] is not None:
+                self._ax_trace_y.set_ylim(self._ax_lims["y_trace_y"])
         # Two-step paint trigger for multi-video reliability:
         #
         # (1) ``QWidget.update()`` on the canvas posts a Qt-level
@@ -2712,7 +2843,9 @@ class DUSTrack(VideoBrowser):
         return _bundle_swap.await_hydration(bundle)
 
     def _hydrate_bundle_data_only(
-        self, bundle: _BundleState, project,
+        self,
+        bundle: _BundleState,
+        project,
     ) -> dict:
         """Off-thread half of Phase 2 bundle hydration.
         See :func:`._bundle.hydrate_bundle_data_only`.
@@ -2720,17 +2853,25 @@ class DUSTrack(VideoBrowser):
         return _bundle_helpers.hydrate_bundle_data_only(self, bundle, project)
 
     def _hydrate_phase1_bundle_data(
-        self, bundle: _BundleState, *, layer_name: str = "iteration-0",
+        self,
+        bundle: _BundleState,
+        *,
+        layer_name: str = "iteration-0",
     ) -> dict:
         """Off-thread half of Phase 1 hydration.
         See :func:`._bundle.hydrate_phase1_bundle_data`.
         """
         return _bundle_helpers.hydrate_phase1_bundle_data(
-            self, bundle, layer_name=layer_name,
+            self,
+            bundle,
+            layer_name=layer_name,
         )
 
     def _finalise_bundle_artists(
-        self, bundle: _BundleState, payload: dict, project,
+        self,
+        bundle: _BundleState,
+        payload: dict,
+        project,
     ) -> None:
         """Qt-thread half of bundle hydration.
         See :func:`._bundle.finalise_bundle_artists`.
@@ -2738,13 +2879,17 @@ class DUSTrack(VideoBrowser):
         _bundle_helpers.finalise_bundle_artists(self, bundle, payload, project)
 
     def _derive_initial_bundle_selections(
-        self, container: VideoAnnotations, project=None,
+        self,
+        container: VideoAnnotations,
+        project=None,
     ) -> dict:
         """First-time statevar selections for a hydrated bundle.
         See :func:`._bundle.derive_initial_bundle_selections`.
         """
         return _bundle_helpers.derive_initial_bundle_selections(
-            self, container, project=project,
+            self,
+            container,
+            project=project,
         )
 
     def _capture_statevar_selections(self) -> dict:
@@ -2754,7 +2899,9 @@ class DUSTrack(VideoBrowser):
         return _bundle_swap.capture_statevar_selections(self)
 
     def _restore_statevar_selections(
-        self, selections: dict, layer_names: list,
+        self,
+        selections: dict,
+        layer_names: list,
     ) -> None:
         """Restore bundle selections + sync the Qt sidebar widgets.
         See :func:`._bundle_swap.restore_statevar_selections`.
@@ -2809,15 +2956,21 @@ class DUSTrack(VideoBrowser):
     # ------------------------------------------------------------------
 
     def add_video(
-        self, path_or_paths, *, layer_name=None, set_active=False,
+        self,
+        path_or_paths,
+        *,
+        layer_name=None,
+        set_active=False,
         **dustrack_kwargs,
     ) -> list[int]:
         """Append one or more videos to this tracker's bundle list.
         See :func:`._bundle_swap.add_video`.
         """
         return _bundle_swap.add_video(
-            self, path_or_paths,
-            layer_name=layer_name, set_active=set_active,
+            self,
+            path_or_paths,
+            layer_name=layer_name,
+            set_active=set_active,
             **dustrack_kwargs,
         )
 
@@ -2828,14 +2981,20 @@ class DUSTrack(VideoBrowser):
         return _bundle_swap.remove_video(self, index)
 
     def replace_active_with(
-        self, path_or_paths, *, layer_name=None, **dustrack_kwargs,
+        self,
+        path_or_paths,
+        *,
+        layer_name=None,
+        **dustrack_kwargs,
     ) -> list[int]:
         """Swap the active bundle for newly-picked video(s).
         See :func:`._bundle_swap.replace_active_with`.
         """
         return _bundle_swap.replace_active_with(
-            self, path_or_paths,
-            layer_name=layer_name, **dustrack_kwargs,
+            self,
+            path_or_paths,
+            layer_name=layer_name,
+            **dustrack_kwargs,
         )
 
     def _validate_bundle_paths(self, path_or_paths) -> tuple:
@@ -2961,7 +3120,7 @@ class DUSTrack(VideoBrowser):
     def add_annotation_layers(
         self,
         annotation_names: "list[str] | dict[str, Path] | list[VideoAnnotation]",
-        n_labels: int = 1
+        n_labels: int = 1,
     ) -> None:
         """Load data from annotation files if they exist, otherwise initialize annotation layers."""
         if isinstance(annotation_names, (str, VideoAnnotation)):
@@ -3084,9 +3243,9 @@ class DUSTrack(VideoBrowser):
         treats every named layer the same. Consumers (DUSTrack)
         enforce buffer-exclusion at the UI layer.
         """
-        assert name in self.annotations.names, (
-            f"layer {name!r} not in {self.annotations.names!r}"
-        )
+        assert (
+            name in self.annotations.names
+        ), f"layer {name!r} not in {self.annotations.names!r}"
         if len(self.annotations) <= 1:
             raise ValueError(
                 f"refusing to remove the only remaining annotation layer "
@@ -3152,52 +3311,112 @@ class DUSTrack(VideoBrowser):
         self._section_order = (sec1, sec2, sec3, sec4, sec5a, sec5b, sec5c)
 
         # 1. Select annotation layer
-        self.add_key_binding("=", self.next_annotation_layer,
-            "Next annotation layer (primary)", group=sec1)
-        self.add_key_binding("-", self.previous_annotation_layer,
-            "Previous annotation layer (primary)", group=sec1)
-        self.add_key_binding("]", self.next_annotation_overlay,
-            "Next annotation layer (overlay)", group=sec1)
-        self.add_key_binding("[", self.previous_annotation_overlay,
-            "Previous annotation layer (overlay)", group=sec1)
+        self.add_key_binding(
+            "=",
+            self.next_annotation_layer,
+            "Next annotation layer (primary)",
+            group=sec1,
+        )
+        self.add_key_binding(
+            "-",
+            self.previous_annotation_layer,
+            "Previous annotation layer (primary)",
+            group=sec1,
+        )
+        self.add_key_binding(
+            "]",
+            self.next_annotation_overlay,
+            "Next annotation layer (overlay)",
+            group=sec1,
+        )
+        self.add_key_binding(
+            "[",
+            self.previous_annotation_overlay,
+            "Previous annotation layer (overlay)",
+            group=sec1,
+        )
 
         # 2. Select annotation number (#)
-        self.add_key_binding("'", self.next_annotation_label,
-            "Next annotation label (#)", group=sec2)
-        self.add_key_binding(";", self.previous_annotation_label,
-            "Previous annotation label (#)", group=sec2)
-        self.add_key_binding("w", self.increment_label_range,
-            "Next annotation # range", group=sec2)
-        self.add_key_binding("q", self.decrement_label_range,
-            "Previous annotation # range", group=sec2)
+        self.add_key_binding(
+            "'", self.next_annotation_label, "Next annotation label (#)", group=sec2
+        )
+        self.add_key_binding(
+            ";",
+            self.previous_annotation_label,
+            "Previous annotation label (#)",
+            group=sec2,
+        )
+        self.add_key_binding(
+            "w", self.increment_label_range, "Next annotation # range", group=sec2
+        )
+        self.add_key_binding(
+            "q", self.decrement_label_range, "Previous annotation # range", group=sec2
+        )
 
         # 3. Navigate to the desired video frame
-        self.add_key_binding("g", self.increment,
-            "Next video frame", group=sec3)
-        self.add_key_binding("f", self.increment_if_unannotated,
-            "Next video frame if unannotated", group=sec3)
-        self.add_key_binding("d", self.decrement_if_unannotated,
-            "Previous video frame if unannotated", group=sec3)
-        self.add_key_binding(",", self.previous_frame_with_any_label,
-            "Previous frame with any annotation", group=sec3)
-        self.add_key_binding(".", self.next_frame_with_any_label,
-            "Next frame with any annotation", group=sec3)
-        self.add_key_binding("alt+,", self.previous_frame_of_interest,
-            "Previous frame of interest", group=sec3)
-        self.add_key_binding("alt+.", self.next_frame_of_interest,
-            "Next frame of interest", group=sec3)
-        self.add_key_binding("n", self.next_frame_with_current_label,
-            "Next frame with current annotation", group=sec3)
-        self.add_key_binding("p", self.previous_frame_with_current_label,
-            "Previous frame with current annotation", group=sec3)
-        self.add_key_binding("b", self.previous_frame_with_current_label,
-            "Previous frame with current annotation (alias of p)", group=sec3)
+        self.add_key_binding("g", self.increment, "Next video frame", group=sec3)
+        self.add_key_binding(
+            "f",
+            self.increment_if_unannotated,
+            "Next video frame if unannotated",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "d",
+            self.decrement_if_unannotated,
+            "Previous video frame if unannotated",
+            group=sec3,
+        )
+        self.add_key_binding(
+            ",",
+            self.previous_frame_with_any_label,
+            "Previous frame with any annotation",
+            group=sec3,
+        )
+        self.add_key_binding(
+            ".",
+            self.next_frame_with_any_label,
+            "Next frame with any annotation",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "alt+,",
+            self.previous_frame_of_interest,
+            "Previous frame of interest",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "alt+.", self.next_frame_of_interest, "Next frame of interest", group=sec3
+        )
+        self.add_key_binding(
+            "n",
+            self.next_frame_with_current_label,
+            "Next frame with current annotation",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "p",
+            self.previous_frame_with_current_label,
+            "Previous frame with current annotation",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "b",
+            self.previous_frame_with_current_label,
+            "Previous frame with current annotation (alias of p)",
+            group=sec3,
+        )
 
         # 4. Edit annotation
-        self.add_key_binding("t", self.add_annotation,
-            "Add annotation (hover on image)", group=sec4)
-        self.add_key_binding("y", self.remove_annotation,
-            "Remove annotation (hover near it on image)", group=sec4)
+        self.add_key_binding(
+            "t", self.add_annotation, "Add annotation (hover on image)", group=sec4
+        )
+        self.add_key_binding(
+            "y",
+            self.remove_annotation,
+            "Remove annotation (hover near it on image)",
+            group=sec4,
+        )
 
         # 5a. LK-RSTC based label augmentation
         # Sequence: v, alt+v, ctrl+alt+v, alt+b, ctrl+b
@@ -3248,12 +3467,14 @@ class DUSTrack(VideoBrowser):
         if z_binding is not None:
             self.remove_key_binding("z")
             self.add_key_binding(
-                "z", z_binding.callback,
+                "z",
+                z_binding.callback,
                 "Select interval (press once at start, once at end)",
                 group=sec5b,
             )
         self.add_key_binding(
-            "a", self.interpolate_with_lk,
+            "a",
+            self.interpolate_with_lk,
             "Interpolate current label with LK-RSTC (primary layer)",
             group=sec5b,
         )
@@ -3264,7 +3485,8 @@ class DUSTrack(VideoBrowser):
             group=sec5b,
         )
         self.add_key_binding(
-            "alt+a", self.remove_labels_in_interval,
+            "alt+a",
+            self.remove_labels_in_interval,
             "Clear current label in selected interval (primary layer)",
             group=sec5b,
         )
@@ -3283,27 +3505,47 @@ class DUSTrack(VideoBrowser):
 
         # 5c. Copy annotations between layers
         # Sequence: m, alt+c, c, ctrl+alt+c
-        self.add_key_binding("m", self.toggle_frame_of_interest,
+        self.add_key_binding(
+            "m",
+            self.toggle_frame_of_interest,
             "Toggle (mark / unmark) current frame as a frame of interest",
-            group=sec5c)
-        self.add_key_binding("alt+c", self.copy_frames_of_interest_from_overlay,
+            group=sec5c,
+        )
+        self.add_key_binding(
+            "alt+c",
+            self.copy_frames_of_interest_from_overlay,
             "Copy annotations at frames of interest from overlay",
-            group=sec5c)
-        self.add_key_binding("c", self.copy_current_annotation_from_overlay,
+            group=sec5c,
+        )
+        self.add_key_binding(
+            "c",
+            self.copy_current_annotation_from_overlay,
             "Copy current annotation at current frame from overlay",
-            group=sec5c)
-        self.add_key_binding("ctrl+alt+c", self.copy_frames_in_interval_from_overlay,
+            group=sec5c,
+        )
+        self.add_key_binding(
+            "ctrl+alt+c",
+            self.copy_frames_in_interval_from_overlay,
             "Copy annotations in selected interval from overlay",
-            group=sec5c)
+            group=sec5c,
+        )
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
         self.add_key_binding("s", self.save, "Save current annotation layer")
-        self.add_key_binding("`", self.cycle_number_keys_behavior,
-            "Toggle num-keys mode (select / place)")
-        self.add_key_binding("alt+q", self.keep_overlapping_continuous_frames,
-            "Keep only consecutive frames where every label is annotated")
         self.add_key_binding(
-            "f5", self.refresh, "Refresh UI from current annotation data",
+            "`",
+            self.cycle_number_keys_behavior,
+            "Toggle num-keys mode (select / place)",
+        )
+        self.add_key_binding(
+            "alt+q",
+            self.keep_overlapping_continuous_frames,
+            "Keep only consecutive frames where every label is annotated",
+        )
+        self.add_key_binding(
+            "f5",
+            self.refresh,
+            "Refresh UI from current annotation data",
         )
 
         # Pan keys: ``/`` and ``l`` were registered by
@@ -3334,7 +3576,9 @@ class DUSTrack(VideoBrowser):
             description="pan up",
         )
 
-        self.remove_key_binding("e")  # remove the "Extract clip" feature from VideoBrowser
+        self.remove_key_binding(
+            "e"
+        )  # remove the "Extract clip" feature from VideoBrowser
 
         if self._fast_render:
             # Overwrite the inherited 'r' binding (GenericBrowser.reset_axes)
@@ -3344,11 +3588,13 @@ class DUSTrack(VideoBrowser):
             # -- preserving the catch-all muscle memory. Tier 1 keeps the
             # inherited binding (no image zoom to reset).
             self.add_key_binding(
-                "r", self._reset_view_all,
+                "r",
+                self._reset_view_all,
                 "Reset view under cursor (traces: full-video x, active label y)",
             )
             self.add_key_binding(
-                "alt+r", self._reset_view_to_data_extent,
+                "alt+r",
+                self._reset_view_to_data_extent,
                 "Reset view under cursor (traces: data-extent x, all-labels y)",
             )
 
@@ -3568,7 +3814,10 @@ class DUSTrack(VideoBrowser):
     @property
     def _current_label(self) -> str:
         """Return current label."""
-        return str(int(self.statevariables["annotation_label"].current_state) + int(self.statevariables["label_range"]._current_state_idx) * 10)
+        return str(
+            int(self.statevariables["annotation_label"].current_state)
+            + int(self.statevariables["label_range"]._current_state_idx) * 10
+        )
 
     @property
     def _current_layer(self) -> str:
@@ -3637,10 +3886,17 @@ class DUSTrack(VideoBrowser):
         self._patch_event_for_image_pane(event)
         super().__call__(event)
         # if a number key is pressed
-        if event.name == "key_press_event" and str(event.key).isdigit() and int(event.key) in range(10):
+        if (
+            event.name == "key_press_event"
+            and str(event.key).isdigit()
+            and int(event.key) in range(10)
+        ):
             key_str = str(event.key)
             key_int = int(event.key)
-            label = str(key_int + int(self.statevariables["label_range"]._current_state_idx) * 10)
+            label = str(
+                key_int
+                + int(self.statevariables["label_range"]._current_state_idx) * 10
+            )
 
             # if the label already exists
             if label in self.ann.labels:
@@ -3712,9 +3968,14 @@ class DUSTrack(VideoBrowser):
                 [ann.to_trace(self._current_label).T for ann in self.annotations._list]
             )
 
-            default_x, default_y = self._ax_trace_x.get_ylim(), self._ax_trace_y.get_ylim()
+            default_x, default_y = (
+                self._ax_trace_x.get_ylim(),
+                self._ax_trace_y.get_ylim(),
+            )
             xl, yl = nanlim(trace_data_x, default_x), nanlim(trace_data_y, default_y)
-            xls, yls = nanlim_small(trace_data_x, default_x), nanlim_small(trace_data_y, default_y)
+            xls, yls = nanlim_small(trace_data_x, default_x), nanlim_small(
+                trace_data_y, default_y
+            )
 
             self._plot_frames_of_interest_x.set_data(
                 *utils.ticks_from_times(self.frames_of_interest, xl)
@@ -3923,7 +4184,15 @@ class DUSTrack(VideoBrowser):
     def update_annotation_label_states(self) -> None:
         """Update the states of the annotation label state variable."""
         # find labels in the current range
-        label_states = [str(int(x) % 10) for x in self.ann.labels if int(x) in range(int(self.statevariables["label_range"]._current_state_idx) * 10, (int(self.statevariables["label_range"]._current_state_idx) + 1) * 10)]
+        label_states = [
+            str(int(x) % 10)
+            for x in self.ann.labels
+            if int(x)
+            in range(
+                int(self.statevariables["label_range"]._current_state_idx) * 10,
+                (int(self.statevariables["label_range"]._current_state_idx) + 1) * 10,
+            )
+        ]
         self.statevariables["annotation_label"].states = label_states
 
     def cycle_number_keys_behavior(self) -> None:
@@ -3979,12 +4248,14 @@ class DUSTrack(VideoBrowser):
         """Select a label by clicking on it with the left mousebutton."""
         if event.mouseevent.button.name == "LEFT":
             picked_label = self.ann.labels[int(event.ind[0])]
-            self.statevariables["label_range"]._current_state_idx = int(picked_label) // 10
-            self.update_annotation_label_states()
-            self.statevariables["annotation_label"].set_state(str(int(picked_label) % 10))
-            print(
-                f'Picked label {picked_label} at frame {self._current_idx}'
+            self.statevariables["label_range"]._current_state_idx = (
+                int(picked_label) // 10
             )
+            self.update_annotation_label_states()
+            self.statevariables["annotation_label"].set_state(
+                str(int(picked_label) % 10)
+            )
+            print(f"Picked label {picked_label} at frame {self._current_idx}")
             self.update()
 
     def place_label_with_mouse(self, event: Any) -> None:
@@ -4205,9 +4476,7 @@ class DUSTrack(VideoBrowser):
                 for frame_count, frame_num in enumerate(
                     range(start_frame, end_frame + 1)
                 ):
-                    target_ann.add(
-                        list(rstc_path[frame_count, 0, :]), label, frame_num
-                    )
+                    target_ann.add(list(rstc_path[frame_count, 0, :]), label, frame_num)
                 rstc_paths[label][start_frame : end_frame + 1, :] = np.squeeze(
                     rstc_path
                 )
@@ -4228,5 +4497,3 @@ class DUSTrack(VideoBrowser):
                 self._current_idx = idx
                 self.update()
                 writer.grab_frame()
-
-

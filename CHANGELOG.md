@@ -422,6 +422,104 @@ old subclass on every observable surface besides the `fast_render`
 default — and that default only matters for headless contexts that
 weren't previously using `DUSTrack`).
 
+**1.2.0rc1 structural refactor: `dlcinterface.py` split into focused
+modules (2026-05-22 → 2026-05-23).** `dustrack/dlcinterface.py` had
+accreted to ~9700 LOC and bundled too many concerns (DUSTrack GUI
+class + DLCProject + VideoFileManager + DLCData + overlay factories
++ `open()` dispatch + image-enhancement helpers + first-paint notice
++ DLC interop). The 1.2.0rc1 band split it into focused modules
+without changing observable behavior. Eleven commits land the split
+plus a hygiene close-out:
+
+- **Phase 0 — leaf module renames**: ``opticalflow.py`` →
+  ``lk_opticalflow.py``, ``postprocess.py`` → ``lk_filter.py``,
+  ``convert.py`` → ``batch.py``, ``_dlc_patch.py`` → ``dlcpatch.py``.
+  No back-compat aliases for the old paths (the prior
+  ``sys.modules`` setdefault block in ``__init__.py`` was dropped
+  with the ``_DUSTrackBase`` merge above); re-pickle if you hit a
+  baked-in old module path.
+- **Phase A — extract leaf helpers from ``dlcinterface``**:
+  ``_layer_names.py``, ``_image_enhance.py``, ``_workflow_gates.py``,
+  ``_view_state.py``, ``_qt_styling.py``, ``_close_guard.py``,
+  ``_nav_widget.py``, ``_preflight.py``, ``_preflight_modal.py``,
+  ``_seed_bundle_modal.py``, ``_train_modal.py``. Pure-logic vs
+  Qt-modal pairs (``_preflight.py`` + ``_preflight_modal.py``,
+  ``seed.py`` + ``_seed_bundle_modal.py``) follow the
+  alphabetic-pair naming convention so directory sorting surfaces
+  them side by side.
+- **Phase B — extract ``_overlays.py``** (~1800 LOC): every overlay
+  factory (``_make_confirm_overlay_class``,
+  ``_make_progress_overlay_class``, ``_make_seed_bundle_picker_class``,
+  ``_make_training_options_class``, ``_make_open_video_overlay_class``)
+  and the ``_show_first_paint_notice`` helper into one Qt-modal
+  toolkit module. Not paired with any single feature; the
+  workflow-specific ``*_modal.py`` files compose these factories.
+- **Phase C — extract ``_file_management.py`` + expand
+  ``_bundle.py``**: ``VideoFileManager`` + canonical-path helpers +
+  frame-extraction helpers (``_extract_frames``,
+  ``_extract_frames_decord``, ``make_annotation_file_name``,
+  ``get_annotation_file_name``, ``merge_annotations_in_folder``,
+  ``rebase_to_config``) move to ``_file_management.py``; bundle
+  hydration helpers (``hydrate_bundle_data_only``,
+  ``finalise_bundle_artists``, ``park_bundle_artists``, etc.) move
+  from inline to ``_bundle.py`` as standalone functions over
+  ``_BundleState``.
+- **Phase D — narrow ``dlcinterface.py`` + extract ``gui.py`` +
+  ``_open.py``**: ``DUSTrack`` moves to ``gui.py``; the ``open()``
+  dispatch + seed-modal session helpers move to ``_open.py``.
+  ``dlcinterface.py`` is now ~1700 LOC, holding only ``DLCProject``
+  + ``DLCData`` + the lazy-DLC ``__getattr__`` proxy + the
+  ``_RELOCATED_NAMES`` shim that keeps
+  ``from dustrack.dlcinterface import X`` callers resolving for the
+  relocated names without forcing the new modules to load eagerly
+  (which would cycle through ``dlcinterface`` at module-load time).
+- **Phase E — extract ``annotations.py`` from ``pointtracking.py``**:
+  ``VideoAnnotation`` + ``VideoAnnotations`` + ``_TrackedFrameDict``
+  move into ``annotations.py``.
+- **Phase F (above) — ``_DUSTrackBase`` merged into ``DUSTrack``**
+  and ``pointtracking.py`` deleted. See the earlier "1.2.0rc1
+  refactor tail" note.
+- **Follow-up — extract ``_dlc_paths.py``**: six pure path
+  predicates (``_is_dlc_config_yaml``, ``_is_dlc_project_root``,
+  ``_find_dlc_config``, ``_find_video_index``,
+  ``_session_inside_dlc_project``, ``_resolve_multi_video_from_list``)
+  move out of ``dlcinterface.py`` into their own module; shimmed
+  through ``dlcinterface.__getattr__``.
+- **Follow-up — ``gui.py`` thin-coordinator pass**: extract DUSTrack
+  helpers (bundle-swap state machine, broadcast-statevar hooks,
+  navigation widget binding) so the class file is orchestration code
+  with per-feature logic in the ``_*`` modules.
+- **Hygiene — import sweep + black formatting**: cleared unused
+  imports across every module, declared ``__all__`` in
+  ``__init__.py`` to make the public surface explicit (17 names),
+  applied black to every module per pyproject's ``[tool.black]``.
+  Fixed three latent undefined-name bugs the refactor introduced
+  (missing ``plt`` import in ``_open`` seed-modal fallback paths,
+  missing ``import_seed_bundle_into_project`` in ``gui.py`` seeding
+  flow, missing ``DLCProject`` type reference in
+  ``_file_management.py``). Kept ``seed.py``'s ``_USER_CONFIG_DIR``
+  / ``_USER_CONFIG_PATH`` re-exports with explicit noqa — the test
+  fixture in ``tests/test_seed.py`` monkeypatches them.
+
+**Public API: observably backwards-compatible.** Portfolio sweep
+across `pn-projects/`, `immersionToolbox/`, and
+`datanavigator/tests/` confirmed zero external callers reference
+relocated module paths directly; every external import uses the
+top-level ``dustrack.X`` surface. The ``dlcinterface.__getattr__``
+lazy proxy covers the relocated names that internal tests + bench
+scripts still reach via ``from dustrack.dlcinterface import X``.
+Three benchmark scripts (``bench_decode_in_ui.py``,
+``14_benchmark_fast_render.py``, ``14b_paint_counter.py``) reach
+``dustrack.dlcinterface.VideoFileManager`` — works because
+``dlcinterface.py`` imports ``VideoFileManager`` at module level
+from ``_file_management``. Three autodoc directives in
+``docs/api.md`` (``_extract_frames``, ``get_annotation_file_name``,
+``merge_annotations_in_folder``) were stale and have been
+re-pointed at ``dustrack._file_management``.
+
+Tests: **588 passed, 1 skipped** (the skip is the no-deeplabcut
+install path, conditional on ``HAS_DLC`` being False).
+
 ## [1.2.0a2] - unreleased
 
 Cold-open optimisation: two independent wins folded together — the
