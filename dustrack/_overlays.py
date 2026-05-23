@@ -1447,6 +1447,31 @@ def _make_open_video_overlay_class():
 
             layout = QVBoxLayout(self._frame)
             layout.setAlignment(Qt.AlignCenter)
+
+            # Top row: spacer + batch-process button in the corner. Sits
+            # at the very top of the modal so it reads as unrelated to
+            # the centered Open / Load action below.
+            top_row = QHBoxLayout()
+            top_row.setContentsMargins(16, 16, 16, 0)
+            top_row.addStretch(1)
+            self._batch_btn = QPushButton("Batch process...")
+            # Faint blue-tint chrome: visible on the rgba(0,0,0,200)
+            # backdrop without competing with the centered primary
+            # Open / Load action. White text + #3a86ff accent border
+            # carries the brand colour without filling like a primary.
+            self._batch_btn.setStyleSheet(
+                "QPushButton { background-color: rgba(58, 134, 255, 60); "
+                "  color: white; border: 1px solid #3a86ff; "
+                "  padding: 8px 20px; font-size: 11pt; "
+                "  font-weight: bold; }"
+                "QPushButton:hover { background-color: rgba(58, 134, 255, 120); "
+                "  border-color: #5aa0ff; }"
+                "QPushButton:pressed { background-color: rgba(58, 134, 255, 180); }"
+            )
+            self._batch_btn.clicked.connect(self._on_batch_clicked)
+            top_row.addWidget(self._batch_btn)
+            layout.addLayout(top_row)
+
             layout.addStretch(1)
 
             title_lbl = QLabel("Welcome to DUSTrack")
@@ -1481,23 +1506,6 @@ def _make_open_video_overlay_class():
             self._action_btn.clicked.connect(self._on_action_clicked)
             btn_row.addWidget(self._action_btn)
             layout.addLayout(btn_row)
-
-            # Secondary batch-process entry. Visually subordinate to the
-            # primary Open / Load action (smaller text, neutral chrome).
-            layout.addSpacing(8)
-            batch_row = QHBoxLayout()
-            batch_row.setAlignment(Qt.AlignCenter)
-            self._batch_btn = QPushButton("Batch process...")
-            self._batch_btn.setStyleSheet(
-                "QPushButton { background-color: transparent; "
-                "  color: #cccccc; border: 1px solid #444; "
-                "  padding: 4px 16px; font-size: 10pt; }"
-                "QPushButton:hover { color: white; border-color: #888; }"
-                "QPushButton:pressed { color: #3a86ff; }"
-            )
-            self._batch_btn.clicked.connect(self._on_batch_clicked)
-            batch_row.addWidget(self._batch_btn)
-            layout.addLayout(batch_row)
 
             # Recent-sessions list. Hidden entirely when empty so a
             # fresh-install launch shows just the title + button.

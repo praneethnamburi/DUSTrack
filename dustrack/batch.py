@@ -342,39 +342,6 @@ def convert_to_mono(
 # ---------- TOC pre-build ----------
 
 
-def _iter_video_files(
-    sources: Union[str, Path, Iterable[Union[str, Path]]],
-    *,
-    extensions: Iterable[str] = dnav.DEFAULT_VIDEO_EXTENSIONS,
-    recursive: bool = True,
-) -> list[Path]:
-    """Walk ``sources`` into a sorted list of video paths.
-
-    Mirrors :func:`datanavigator.precompute_toc_folder`'s expansion rules
-    (each entry may be a directory walked for ``extensions``, or a file
-    kept as-is) but returns the path list explicitly so callers like the
-    batch-process modal can drive their own per-file loop with progress
-    + cancel hooks. Files whose suffix doesn't match ``extensions`` are
-    dropped silently; non-existent explicit entries are surfaced upstream
-    by the caller.
-    """
-    exts = {("." + e.lstrip(".")).lower() for e in extensions}
-    if isinstance(sources, (str, Path)):
-        entries: list[Path] = [Path(sources)]
-    else:
-        entries = [Path(s) for s in sources]
-    out: list[Path] = []
-    for entry in entries:
-        if entry.is_dir():
-            walker = entry.rglob("*") if recursive else entry.iterdir()
-            for fp in walker:
-                if fp.is_file() and fp.suffix.lower() in exts:
-                    out.append(fp)
-        elif entry.is_file() and entry.suffix.lower() in exts:
-            out.append(entry)
-    return sorted(set(out))
-
-
 def build_toc(
     sources: Union[str, Path, Iterable[Union[str, Path]]],
     *,
@@ -407,54 +374,39 @@ def build_toc(
             upgrading pre-1.3 sidecars to schema v2 with per-frame
             timestamps.
         show_progress: If True (default), wrap iteration in a tqdm bar.
-            Ignored when ``progress_callback`` is set (the caller is
-            driving the per-file loop and owns its own progress UI).
+            Suppressed automatically when ``progress_callback`` is set.
         progress_callback: Optional ``fn(idx, total, video_path, status)``
             invoked after each video. ``status`` is the per-file result
             string from :func:`datanavigator.precompute_toc` (``"hit"``,
-            ``"built"``, ``"built (uncached)"``, ``"error: ..."``). When
-            set, this function bypasses ``dnav.precompute_toc_folder``
-            and drives a per-file loop so progress + cancel hooks fire
-            at file granularity.
+            ``"built"``, ``"built (uncached)"``, ``"error: ..."``).
+            Forwarded to dnav; the path is converted to a :class:`Path`
+            for consumer convenience (dnav itself emits a string path).
         cancel_check: Optional zero-arg callable polled at the top of
-            each file. If truthy, the loop exits early. Only honoured
-            when ``progress_callback`` is set (the callback-driven path).
+            each file. If truthy, the loop exits early and the partial
+            result dict is returned.
 
     Returns:
         ``{path: status}`` per :func:`datanavigator.precompute_toc`, plus
         an ``"error: missing"`` entry for any explicitly-named path that
         doesn't exist.
     """
+    # Adapt the consumer callback (which expects a Path) onto dnav's
+    # (idx, total, str, status) signature so dustrack's existing
+    # contract is preserved.
     if progress_callback is None:
-        # Fast path: full delegation to dnav for tqdm + CLI use.
-        return dnav.precompute_toc_folder(
-            sources,
-            extensions=extensions,
-            recursive=recursive,
-            force=force,
-            show_progress=show_progress,
-        )
-    # Driven path: iterate explicit + walked files ourselves so the
-    # callback fires after each video, and cancel_check can break the
-    # loop between files.
-    if isinstance(sources, (str, Path)):
-        explicit = [Path(sources)]
+        dnav_cb = None
     else:
-        explicit = [Path(s) for s in sources]
-    missing = {str(p): "error: missing" for p in explicit if not p.exists()}
-    files = _iter_video_files(sources, extensions=extensions, recursive=recursive)
-    results: dict[str, str] = {}
-    total = len(files)
-    for idx, fp in enumerate(files):
-        if cancel_check is not None and cancel_check():
-            break
-        single = dnav.precompute_toc([fp], force=force, show_progress=False)
-        # single is {str(fp): status}
-        for path_str, status in single.items():
-            results[path_str] = status
-            progress_callback(idx, total, fp, status)
-    for path_str, status in missing.items():
-        results.setdefault(path_str, status)
-    return results
+        def dnav_cb(idx, total, path_str, status):
+            progress_callback(idx, total, Path(path_str), status)
+
+    return dnav.precompute_toc_folder(
+        sources,
+        extensions=extensions,
+        recursive=recursive,
+        force=force,
+        show_progress=show_progress,
+        progress_callback=dnav_cb,
+        cancel_check=cancel_check,
+    )
 
 

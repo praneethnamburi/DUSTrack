@@ -14,27 +14,33 @@ from unittest.mock import patch
 from dustrack._batch_modal import BatchJobSpec, BatchRunResults, run_batch_jobs
 
 
-def test_dispatch_folder_calls_both_phases(tmp_path):
-    src = tmp_path
+def _sources(tmp_path, n=2) -> list[Path]:
+    return [tmp_path / f"v{i}.mp4" for i in range(n)]
+
+
+def test_dispatch_files_calls_both_phases(tmp_path):
+    src = _sources(tmp_path, n=1)
     spec = BatchJobSpec(source=src, convert_to_mono=True, build_toc=True)
 
     with patch("dustrack._batch_modal._batch.convert_to_mono") as mock_conv, patch(
         "dustrack._batch_modal._batch.build_toc"
     ) as mock_toc:
-        mock_conv.return_value = [src / "v1_mono.mp4"]
-        mock_toc.return_value = {str(src / "v1_mono.mp4"): "built"}
+        mock_conv.return_value = [tmp_path / "v0_mono.mp4"]
+        mock_toc.return_value = {str(tmp_path / "v0_mono.mp4"): "built"}
         results = run_batch_jobs(spec)
 
     assert mock_conv.called
     assert mock_toc.called
-    assert results.converted == [src / "v1_mono.mp4"]
-    assert results.toc_results == {str(src / "v1_mono.mp4"): "built"}
+    # source list is passed through verbatim.
+    assert mock_conv.call_args.args[0] == src
+    assert results.converted == [tmp_path / "v0_mono.mp4"]
+    assert results.toc_results == {str(tmp_path / "v0_mono.mp4"): "built"}
     assert results.error is None
     assert not results.cancelled
 
 
-def test_dispatch_folder_skips_convert_when_unchecked(tmp_path):
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=False, build_toc=True)
+def test_dispatch_skips_convert_when_unchecked(tmp_path):
+    spec = BatchJobSpec(source=_sources(tmp_path), convert_to_mono=False, build_toc=True)
 
     with patch("dustrack._batch_modal._batch.convert_to_mono") as mock_conv, patch(
         "dustrack._batch_modal._batch.build_toc"
@@ -48,7 +54,7 @@ def test_dispatch_folder_skips_convert_when_unchecked(tmp_path):
 
 def test_cancel_between_phases_skips_toc(tmp_path):
     """If cancel fires after the convert phase, build_toc must not run."""
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=True, build_toc=True)
+    spec = BatchJobSpec(source=_sources(tmp_path), convert_to_mono=True, build_toc=True)
     state = {"cancelled": False}
 
     def cancel_check():
@@ -69,7 +75,7 @@ def test_cancel_between_phases_skips_toc(tmp_path):
 
 
 def test_phase_callback_routes_phase_tag(tmp_path):
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=True, build_toc=True)
+    spec = BatchJobSpec(source=_sources(tmp_path), convert_to_mono=True, build_toc=True)
     seen: list[tuple] = []
 
     def cb(phase, idx, total, path, status):
@@ -97,7 +103,7 @@ def test_phase_callback_routes_phase_tag(tmp_path):
 def test_error_in_convert_does_not_block_toc(tmp_path):
     """The dispatcher captures per-phase errors but continues to the
     next phase so partial progress still happens."""
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=True, build_toc=True)
+    spec = BatchJobSpec(source=_sources(tmp_path), convert_to_mono=True, build_toc=True)
 
     with patch(
         "dustrack._batch_modal._batch.convert_to_mono",
@@ -111,6 +117,6 @@ def test_error_in_convert_does_not_block_toc(tmp_path):
 
 
 def test_run_batch_returns_batch_run_results_type(tmp_path):
-    spec = BatchJobSpec(source=tmp_path, convert_to_mono=False, build_toc=False)
+    spec = BatchJobSpec(source=_sources(tmp_path), convert_to_mono=False, build_toc=False)
     out = run_batch_jobs(spec)
     assert isinstance(out, BatchRunResults)

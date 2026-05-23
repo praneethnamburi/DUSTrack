@@ -26,9 +26,14 @@ import threading
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, Optional
 
 from . import batch as _batch
+
+
+# Mirror :data:`dustrack._overlays._VIDEO_PICKER_EXTENSIONS`; kept local
+# so the modal stays free of the heavy ``_overlays`` qtpy-import chain.
+_VIDEO_EXTENSIONS = ("mp4", "avi", "mov", "mkv", "mts", "m4v", "wmv", "webm")
 
 
 # Status strings the modal renders as user-facing tags. Anything not in
@@ -50,15 +55,13 @@ _STATUS_LABELS = {
 class BatchJobSpec:
     """What the user picked in the modal's setup view.
 
-    ``source`` is a folder of videos or a single video file -- the same
-    shapes :func:`dustrack.convert_to_mono` and :func:`dustrack.build_toc`
-    accept. DLC projects are not a special case: point the picker at
-    ``<project>/videos`` to TOC the in-project copies (use
-    ``recursive=False`` semantics implicitly by picking the leaf
-    folder).
+    ``source`` is a list of video file paths -- the multiselect form
+    that :func:`dustrack.convert_to_mono` and :func:`dustrack.build_toc`
+    accept. For DLC projects, point the picker at ``<project>/videos``
+    and Ctrl+A to grab every clip.
     """
 
-    source: Path
+    source: list[Path]
     convert_to_mono: bool = True
     build_toc: bool = True
 
@@ -210,10 +213,9 @@ def _make_batch_modal_class():
         Surface (setup view):
 
         - Title + subtitle.
-        - Source row: "Source: <none picked>" label + "Pick folder..."
-          / "Pick DLC project..." buttons.
-        - Two checkboxes: Convert to mono, Build TOC sidecars. The
-          mono checkbox auto-disables when the source is a DLC project.
+        - Source row: "Source: <none picked>" label + "Pick videos..."
+          button (multiselect; Ctrl+A to grab every video in a folder).
+        - Two checkboxes: Convert to mono, Build TOC sidecars.
         - Run button (disabled until a source is picked) + Close button.
 
         Surface (running view):
@@ -228,12 +230,12 @@ def _make_batch_modal_class():
         - Summary line ("Converted N files, built M TOCs.") + Close.
         """
 
-        def __init__(self, main_window, *, initial_source: Optional[Path] = None):
+        def __init__(self, main_window, *, initial_sources=None):
             super().__init__(main_window)
             self._mw = main_window
             self._loop = QEventLoop()
-            self._spec_source: Optional[Path] = (
-                Path(initial_source) if initial_source else None
+            self._spec_source: Optional[list[Path]] = (
+                [Path(p) for p in initial_sources] if initial_sources else None
             )
             self._worker: Optional[_BatchWorker] = None
             self._results: Optional[BatchRunResults] = None
@@ -259,7 +261,30 @@ def _make_batch_modal_class():
                 "  border: 1px solid #333; padding: 6px; }"
                 "QCheckBox { color: white; font-size: 11pt; "
                 "  padding: 4px; }"
-                "QCheckBox:disabled { color: #777; }"
+                # Checkbox indicator -- on the dark overlay backdrop
+                # the native Windows tick is barely visible, so paint
+                # a white-bordered square that fills with the primary-
+                # action blue when checked. Mirrors the radio-button
+                # treatment in :func:`_make_training_options_overlay_class`
+                # (square instead of circle for the standard convention).
+                "QCheckBox::indicator { width: 14px; height: 14px; }"
+                "QCheckBox::indicator:unchecked { "
+                "  background-color: transparent; "
+                "  border: 2px solid white; "
+                "}"
+                "QCheckBox::indicator:checked { "
+                "  background-color: #3a86ff; "
+                "  border: 2px solid white; "
+                "}"
+                "QCheckBox:disabled { color: #777777; }"
+                "QCheckBox::indicator:disabled { "
+                "  background-color: transparent; "
+                "  border: 2px solid #666666; "
+                "}"
+                "QCheckBox::indicator:checked:disabled { "
+                "  background-color: #4a5a7a; "
+                "  border: 2px solid #666666; "
+                "}"
                 "QProgressBar { background-color: #1f1f1f; "
                 "  border: 1px solid #444; color: white; "
                 "  text-align: center; min-height: 20px; }"
@@ -299,10 +324,10 @@ def _make_batch_modal_class():
 
             picker_row = QHBoxLayout()
             picker_row.setAlignment(Qt.AlignCenter)
-            self._pick_folder_btn = QPushButton("Pick folder of videos...")
-            self._pick_folder_btn.setStyleSheet(_SECONDARY_QSS)
-            self._pick_folder_btn.clicked.connect(self._on_pick_folder)
-            picker_row.addWidget(self._pick_folder_btn)
+            self._pick_files_btn = QPushButton("Pick videos...")
+            self._pick_files_btn.setStyleSheet(_SECONDARY_QSS)
+            self._pick_files_btn.clicked.connect(self._on_pick_files)
+            picker_row.addWidget(self._pick_files_btn)
             layout.addLayout(picker_row)
 
             layout.addSpacing(14)
@@ -380,15 +405,27 @@ def _make_batch_modal_class():
         # --- source / state helpers ---
 
         def _source_label_text(self) -> str:
-            if self._spec_source is None:
+            if not self._spec_source:
                 return "Source: (none picked)"
-            return f"Source: {self._spec_source}"
+            paths = self._spec_source
+            n = len(paths)
+            if n == 1:
+                return f"Source: {paths[0]}"
+            # N>1: render "<first>.<ext> + N-1 more (<common parent>)"
+            # mirroring the welcome modal's recent-session rendering.
+            import os
+
+            try:
+                common = os.path.commonpath([str(p) for p in paths])
+                return f"Source: {paths[0].name} + {n - 1} more  ({common})"
+            except (ValueError, OSError):
+                return f"Source: {paths[0].name} + {n - 1} more"
 
         def _current_spec(self) -> Optional[BatchJobSpec]:
-            if self._spec_source is None:
+            if not self._spec_source:
                 return None
             spec = BatchJobSpec(
-                source=self._spec_source,
+                source=list(self._spec_source),
                 convert_to_mono=self._mono_cb.isChecked(),
                 build_toc=self._toc_cb.isChecked(),
             )
@@ -405,15 +442,31 @@ def _make_batch_modal_class():
 
         # --- pickers ---
 
-        def _on_pick_folder(self):
-            picked = QFileDialog.getExistingDirectory(
+        def _on_pick_files(self):
+            # Multi-select file picker -- user can grab a whole folder
+            # via Ctrl+A, or hand-pick a subset. Filtered to video
+            # extensions; "All files" escape hatch available via the
+            # filter dropdown in the native dialog. The start dir is
+            # the directory of the last-picked source (or the user's
+            # last video-picker dir if nothing is staged).
+            from . import _config
+
+            if self._spec_source:
+                start_dir = str(self._spec_source[0].parent)
+            else:
+                last = _config.get_last_video_picker_dir()
+                start_dir = str(last) if last is not None else ""
+            exts = " ".join(f"*.{e}" for e in _VIDEO_EXTENSIONS)
+            file_filter = f"Videos ({exts});;All files (*.*)"
+            paths, _selected = QFileDialog.getOpenFileNames(
                 self._frame,
-                "Pick a folder of videos to batch-process",
-                str(self._spec_source) if self._spec_source else "",
+                "Pick videos to batch-process (Ctrl+A for all in folder)",
+                start_dir,
+                file_filter,
             )
-            if not picked:
+            if not paths:
                 return
-            self._spec_source = Path(picked)
+            self._spec_source = [Path(p) for p in paths]
             self._source_lbl.setText(self._source_label_text())
             self._refresh_run_state()
 
@@ -424,7 +477,7 @@ def _make_batch_modal_class():
             if spec is None:
                 return
             # Switch to running view.
-            self._pick_folder_btn.setEnabled(False)
+            self._pick_files_btn.setEnabled(False)
             self._mono_cb.setEnabled(False)
             self._toc_cb.setEnabled(False)
             self._run_btn.setText("Cancel")
@@ -566,17 +619,21 @@ def _make_batch_modal_class():
 def open_batch_modal(
     main_window,
     *,
-    initial_source: Optional[Union[str, Path]] = None,
+    initial_sources=None,
 ) -> Optional[BatchRunResults]:
     """Convenience launcher used by the welcome modal + Tools menu.
 
     Constructs the lazy modal class, mounts it on ``main_window``, and
     blocks on its event loop. Returns the run results (or ``None`` if
     the user closed without running anything).
+
+    ``initial_sources`` is an optional iterable of video paths to seed
+    the source label with (useful when launching from a context that
+    already knows which files to process).
     """
     BatchModal = _make_batch_modal_class()
     modal = BatchModal(
         main_window,
-        initial_source=Path(initial_source) if initial_source else None,
+        initial_sources=[Path(p) for p in initial_sources] if initial_sources else None,
     )
     return modal.exec_()
