@@ -128,14 +128,13 @@ The line-vs-dot rendering picks itself: any layer whose name starts with `dlc_`,
 
 ## Workflow buttons and sidebar groups
 
-The workflow panel groups its buttons by task into five sections separated by horizontal lines, with a pastel per-group palette so visual scanning matches the workflow phase:
+The workflow panel groups its buttons by task into four sections separated by horizontal lines, with a pastel per-group palette so visual scanning matches the workflow phase:
 
 | Group | Buttons | What they do |
 |-------|---------|--------------|
 | **Workflow** | Create DLC project · Train DLC model · Apply manual corrections · Reduce jitter · Save annotation as... | The five-step pipeline: scaffold a DLC project from your manual annotations → train ResNet → splice manual corrections into DLC predictions → smooth jitter with LK-RSTC → export. |
-| **Display** | Trace: line / Trace: dot · Freeze/Unfreeze plot axes · (EnhanceWidget) | Visual controls. The **EnhanceWidget** is two sliders — CLAHE clip and Gamma — plus a `[None | Auto]` row; *None* resets to raw image (pass-through), *Auto* infers per-frame heuristics from the current frame histogram. |
-| **Niche** | Replace existing from overlay · Remove layer | Layer-mutating affordances. *Replace existing from overlay* copies the overlay's annotations into the current layer at frames the current layer is missing. *Remove layer* drops a layer from the session (file on disk is **not** deleted — to fully discard, save annotation as... then delete the original). |
-| **Utilities** | Refresh UI (F5) · Keyboard shortcuts | *Refresh UI* re-renders all annotations from `.data` — recovery affordance if you mutated data from the Python REPL behind DUSTrack's back. *Keyboard shortcuts* opens the live cheatsheet (modeless dialog, grouped by section). |
+| **Display** | Trace: line / Trace: dot · Freeze/Unfreeze plot axes · Refresh UI · Keyboard shortcuts · (EnhanceWidget) | Visual controls + UI utilities. The **EnhanceWidget** is two sliders — CLAHE clip and Gamma — plus a `[None | Auto]` row; *None* resets to raw image (pass-through), *Auto* infers per-frame heuristics from the current frame histogram. *Refresh UI* (F5) re-renders all annotations from `.data` — recovery affordance if you mutated data from the Python REPL behind DUSTrack's back. *Keyboard shortcuts* opens the live cheatsheet (modeless dialog, grouped by section). |
+| **Niche** | Decimate annotations · Discard unsaved annotations · Replace existing from overlay · Remove layer | Layer-mutating affordances. *Decimate annotations* prunes incomplete frames then halves the remainder in the selected interval (training-feed prep). *Discard unsaved annotations* rolls the active manual layer back to disk (severity-aware confirm; refuses on `dlccorr` / `dlc_*` / dense layers). *Replace existing from overlay* copies the overlay's annotations into the current layer at frames the current layer is missing. *Remove layer* drops a layer from the session (file on disk is **not** deleted — to fully discard, save annotation as... then delete the original). |
 | **Swap layers** | (single button) | Toggles foreground ↔ overlay. Positioned directly above the statevars widget it manipulates so the cause/effect is one glance. |
 
 The workflow order in the **Workflow** group matches the steady-state DUSTrack workflow:

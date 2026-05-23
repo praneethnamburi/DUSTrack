@@ -29,22 +29,21 @@ interface.
 but the contents within each panel have evolved since the paper.**
 Specifically:
 
-- **Workflow panel**: now organized into five task-flow groups
+- **Workflow panel**: now organized into four task-flow groups
   separated by horizontal lines, with a pastel per-group palette
-  (powder blue → mint → apricot → sand → silver):
+  (powder blue → mint → apricot → silver):
   - **Workflow**: Create DLC project · Train DLC model · Apply manual
     corrections · Reduce jitter · Save annotation as...
   - **Display**: Trace: line / Trace: dot · Freeze/Unfreeze plot
-    axes — and an **EnhanceWidget** with two sliders (CLAHE clip,
-    Gamma) plus a `None | Auto` button row that replaces the old
-    "Toggle enhance" single-button affordance.
-  - **Niche** (layer-mutating affordances): Replace existing from
-    overlay · Remove layer.
-  - **Utilities**: Refresh UI (F5) · Keyboard shortcuts.
+    axes · Refresh UI · Keyboard shortcuts — and an **EnhanceWidget**
+    with two sliders (CLAHE clip, Gamma) plus a `None | Auto` button
+    row that replaces the old "Toggle enhance" single-button
+    affordance.
+  - **Niche** (layer-mutating affordances): Decimate annotations ·
+    Discard unsaved annotations · Replace existing from overlay ·
+    Remove layer.
   - **Swap layers** (foreground ↔ overlay, positioned directly above
     the statevars widget it manipulates).
-  - Also accessible: **Discard unsaved annotations** (reloads the
-    active layer from disk, dropping in-memory edits).
 - **Interface state panel**: promoted from a static text overlay to
   an interactive Qt widget. Each state variable is now its own row
   with a control matched to the variable's type — dropdowns for
@@ -65,6 +64,6 @@ Specifically:
 
 For a complete list of keyboard shortcuts and mouse controls, see
 {doc}`keyboardshortcuts` — or open the **Keyboard shortcuts** button
-in the Utilities group to display the same cheatsheet live, grouped
+in the Display group to display the same cheatsheet live, grouped
 by section (Annotation / Frame navigation / Layer-label /
 LK-interpolate / View / File / Other).

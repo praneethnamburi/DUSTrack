@@ -5,8 +5,7 @@ Two concerns:
 * :func:`_qss_for_group` / :func:`_make_group_styler` -- per-group QSS
   factory closed over a palette ``spec`` (bg / fg / border / hover /
   pressed / disabled). Used by :meth:`DUSTrack._add_default_buttons`
-  to paint the Workflow / Display / Niche / Utilities / Swap sidebar
-  bands.
+  to paint the Workflow / Display / Niche / Swap sidebar bands.
 
 * :func:`_pin_qt_palette` -- deterministic Fusion-styled
   ``QApplication`` palette so DUSTrack paints the same colors

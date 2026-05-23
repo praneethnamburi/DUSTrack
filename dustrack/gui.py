@@ -455,13 +455,6 @@ class DUSTrack(VideoBrowser):
                 style_tag="workflow",
             )
         self.buttons.add(
-            text="Decimate annotations",
-            action_func=(lambda s, ev: s.decimate_annotations_in_interval()).__get__(
-                self
-            ),
-            style_tag="workflow",
-        )
-        self.buttons.add(
             text="Save annotation as...",
             action_func=self.save_annotation_as,
             style_tag="workflow",
@@ -472,11 +465,6 @@ class DUSTrack(VideoBrowser):
         # Image enhancement is driven by the EnhanceWidget sliders
         # (mounted below statevars by _add_enhance_widget). Sliders at
         # min = bypass; no separate Toggle enhance button.
-        self.buttons.add(
-            text="Discard unsaved annotations",
-            action_func=self.discard_unsaved_annotations,
-            style_tag="display",
-        )
         self.buttons.add_multi(
             dict(
                 text="Trace: line",
@@ -501,11 +489,32 @@ class DUSTrack(VideoBrowser):
                 style_tag="display",
             ),
         )
+        self.buttons.add(
+            text="Refresh UI", action_func=self.refresh, style_tag="display"
+        )
+        self.buttons.add(
+            text="Keyboard shortcuts",
+            action_func=(lambda s, ev: s.show_key_bindings()).__get__(self),
+            style_tag="display",
+        )
         self.buttons.add_separator(style="double")
 
-        # Niche operation; flagged for a future decision -- should this
-        # button be replaced by a keyboard-only shortcut to reclaim the
-        # vertical slot? Track usage before removing.
+        # Niche group -- layer-mutating affordances that compound with
+        # the user's edit history. Surfaced as buttons (vs keyboard-only)
+        # because their destructive scope warrants the explicit click +
+        # confirm-modal cadence.
+        self.buttons.add(
+            text="Decimate annotations",
+            action_func=(lambda s, ev: s.decimate_annotations_in_interval()).__get__(
+                self
+            ),
+            style_tag="niche",
+        )
+        self.buttons.add(
+            text="Discard unsaved annotations",
+            action_func=self.discard_unsaved_annotations,
+            style_tag="niche",
+        )
         self.buttons.add(
             text="Replace existing from overlay",
             action_func=self.copy_existing_annotations_from_overlay,
@@ -515,21 +524,6 @@ class DUSTrack(VideoBrowser):
             text="Remove layer",
             action_func=self.remove_current_layer,
             style_tag="niche",
-        )
-        self.buttons.add_separator(style="double")
-
-        # --- Utilities + Swap layers -----------------------------------
-        # Refresh UI lands next to Keyboard shortcuts as a "utility"
-        # pair just above Swap layers. (Pre-1.2.0rc1 the parent
-        # class installed it via a default-buttons hook; the hook is
-        # gone after the _DUSTrackBase merge.)
-        self.buttons.add(
-            text="Refresh UI", action_func=self.refresh, style_tag="utilities"
-        )
-        self.buttons.add(
-            text="Keyboard shortcuts",
-            action_func=(lambda s, ev: s.show_key_bindings()).__get__(self),
-            style_tag="utilities",
         )
         self.buttons.add_separator(style="double")
 
@@ -647,13 +641,6 @@ class DUSTrack(VideoBrowser):
             "border": "#d9b88a",
             "hover": "#eaca9f",
             "pressed": "#d9b88a",
-        },
-        "utilities": {  # pale sand -- neutral warm
-            "bg": "#ece6d5",
-            "fg": "#2c3e50",
-            "border": "#d4cdb8",
-            "hover": "#e0d9c5",
-            "pressed": "#d4cdb8",
         },
         "swap": {  # pale silver -- matches statevars
             "bg": "#e0e4e8",
