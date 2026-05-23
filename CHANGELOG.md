@@ -1,6 +1,34 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`dustrack.batch.build_toc(sources, *, extensions, recursive, force,
+  show_progress)`** — pre-build the PyAV+TOC sidecar
+  (`<video>.dnav-toc`) for every video under `sources`. Thin pass-through
+  to `datanavigator.precompute_toc_folder` so DUSTrack callers can stay
+  inside the `dustrack` namespace. Accepts a directory, a video file, or
+  an iterable mixing both. First DUSTrack open of a video pays the
+  per-file TOC build cost (a full sequential demux to record per-packet
+  offsets + per-frame timestamps); pre-building means `dustrack.open(...)`
+  returns essentially instantly afterward. Use case: warming the pia02
+  master corpus at `M:/us_videos_for_tracking2/` (1627 mp4s) before an
+  annotation session.
+- **`dustrack.batch.propagate_toc_to_dlc_project(project_or_config, *,
+  extensions, force, show_progress)`** — pre-build TOC sidecars for every
+  video in a DLC project's `videos/` subfolder. Accepts the project root
+  (folder containing `config.yaml`) or the `config.yaml` itself.
+  Rebuilds TOC fresh for each in-project copy (the source-side sidecar
+  doesn't validate against the copy because dnav's cache key includes
+  mtime + path-local SHA probes). Walks `videos/` recursively so a hand-
+  organized project with subfolders works too.
+- Both functions also re-exported at the package root
+  (`dustrack.build_toc`, `dustrack.propagate_toc_to_dlc_project`); the
+  `dustrack.batch` submodule is now part of the public surface alongside
+  `dustrack.convert_to_mono`. 18 new tests in
+  `tests/test_batch_toc.py`.
+
 ## [1.2.0] - 2026-05-23
 
 First minor release on top of 1.1.0. Three months of development
