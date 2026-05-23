@@ -91,6 +91,44 @@ def scan_incomplete_frames(
     return incomplete
 
 
+def scan_stray_labels(
+    data: dict, target_labels: "list[str] | None",
+) -> dict:
+    """Find non-empty labels on the layer that are not in the
+    project's required-label set.
+
+    "Stray label" = a label that has at least one annotation but
+    isn't a project bodypart. Two typical sources:
+
+    1. User added a label intending to track another point, and
+       hasn't promoted it to a project bodypart yet (the "Fork
+       project" workflow extends bodyparts by spawning a new DLC
+       project with ``bodyparts ∪ strays``; see the design rule
+       in the dustrack spec).
+    2. User added a label as a working / scratch tag and never
+       intended it for training.
+
+    Returns ``{label: [frame, ...]}`` for each stray label, with
+    frames sorted. Returns ``{}`` when ``target_labels is None``
+    (project-unaware mode has no external truth to call something
+    "stray" against) or when no annotated labels lie outside the
+    target set.
+
+    Pure data-in / data-out; testable from synthetic dicts.
+    """
+    if target_labels is None:
+        return {}
+    target = set(target_labels)
+    strays: dict = {}
+    for label, frames in data.items():
+        if label in target:
+            continue
+        if not frames:
+            continue
+        strays[label] = sorted(frames.keys())
+    return strays
+
+
 def build_dropped_incomplete_payload(data: dict, incomplete_frames: dict) -> dict:
     """Build the JSON payload for the dropped-incomplete sidecar.
 
@@ -257,6 +295,15 @@ def scan_unsaved_and_incomplete(
     ``config['bodyparts']`` (mapped through
     :func:`_dlc_bodyparts_to_layer_labels`) and hands it to
     :func:`scan_incomplete_frames` as ``target_labels``.
+
+    Stray-label scan (project-aware only): the same
+    ``target_labels`` set is used to find labels with annotations
+    that lie outside the project's bodyparts -- see
+    :func:`scan_stray_labels`. When the modal-side asks the user
+    whether to keep strays in the saved file (a separate checkbox;
+    default unchecked), the remediation honours that decision via
+    :func:`apply_pre_flight_remediations`'s ``strip_strays`` arg.
+    Project-unaware mode yields no strays (no external truth).
     """
     target_labels: "list[str] | None" = None
     if dlcproject is not None:
@@ -272,13 +319,18 @@ def scan_unsaved_and_incomplete(
             ann.data,
             target_labels=target_labels,
         )
+        strays = scan_stray_labels(ann.data, target_labels)
         diff = {"added": [], "removed": [], "modified": []}
         if is_manual_annotation_layer(video_fname, ann.fname, ann.name):
             mem_data = normalize_layer_data(ann.data)
             disk_data = load_layer_disk_data(ann.fname)
             diff = diff_ann_vs_disk(mem_data, disk_data)
-        if any(diff.values()) or incomplete:
-            issues[ann.name] = {"diff": diff, "incomplete": incomplete}
+        if any(diff.values()) or incomplete or strays:
+            issues[ann.name] = {
+                "diff": diff,
+                "incomplete": incomplete,
+                "strays": strays,
+            }
     return issues
 
 
@@ -357,8 +409,33 @@ def format_pre_flight_summary(
                 lines.append(f"    frame {frame}: missing {', '.join(missing)}")
         else:
             lines.append("  (no incomplete frames)")
+        strays = info.get("strays", {})
+        if strays:
+            n = len(strays)
+            total_annotations = sum(len(frames) for frames in strays.values())
+            lines.append(
+                f"  Labels not in this DLC project: {n} "
+                f"({total_annotations} annotation"
+                f"{'s' if total_annotations != 1 else ''} across "
+                "these label(s) will not be trained)"
+            )
+            for label, frames in sorted(strays.items(), key=lambda kv: kv[0]):
+                lines.append(
+                    f"    label {label!r}: {len(frames)} annotation"
+                    f"{'s' if len(frames) != 1 else ''}"
+                )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def has_strays(issues: dict) -> bool:
+    """True iff any layer in the issues dict has at least one stray
+    label with at least one annotation.
+
+    Used by the modal layer to decide whether to render the "Save
+    labels not in this DLC project" checkbox.
+    """
+    return any(info.get("strays") for info in issues.values())
 
 
 # ---------------------------------------------------------------------
@@ -372,9 +449,11 @@ def apply_pre_flight_remediations(
     issues: dict,
     *,
     make_annotation_file_name,
+    strip_strays: bool = True,
 ) -> None:
     """For each layer with issues, drop incomplete frames (with
-    recovery sidecar) and save the (possibly trimmed) layer.
+    recovery sidecar), optionally strip stray labels, and save the
+    (possibly trimmed) layer.
 
     Layers whose ``ann.fname`` is ``None`` (in-session unsaved
     layers, the first-time-training case) get a canonical fname
@@ -385,6 +464,15 @@ def apply_pre_flight_remediations(
     ``make_annotation_file_name`` is injected to avoid an import cycle
     (``_file_management.py`` imports ``_layer_names`` already, and
     the canonical fname builder lives there).
+
+    ``strip_strays`` -- when True (default), remove every annotation
+    in stray labels (labels not in the project's bodyparts) before
+    save. When False, preserve strays in the saved JSON so the user
+    can promote them via the "Fork project" workflow later. The
+    pre-flight modal exposes this as a single checkbox: default
+    unchecked (strip) -- the user must deliberately opt in to keep
+    extra-label work. Project-unaware mode has no strays so the
+    arg is a no-op there.
     """
     for layer_name, info in issues.items():
         ann = annotations[layer_name]
@@ -404,6 +492,14 @@ def apply_pre_flight_remediations(
             # ``feedback_revision_counter_invalidation_pattern``).
             for frame in incomplete:
                 for label in list(ann.data.keys()):
+                    if frame in ann.data[label]:
+                        ann.remove(label, frame)
+        if strip_strays:
+            strays = info.get("strays") or {}
+            for label, frames in strays.items():
+                if label not in ann.data:
+                    continue
+                for frame in list(frames):
                     if frame in ann.data[label]:
                         ann.remove(label, frame)
         ann.save()

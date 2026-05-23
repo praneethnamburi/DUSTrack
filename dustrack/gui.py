@@ -455,6 +455,13 @@ class DUSTrack(VideoBrowser):
                 style_tag="workflow",
             )
         self.buttons.add(
+            text="Decimate annotations",
+            action_func=(lambda s, ev: s.decimate_annotations_in_interval()).__get__(
+                self
+            ),
+            style_tag="workflow",
+        )
+        self.buttons.add(
             text="Save annotation as...",
             action_func=self.save_annotation_as,
             style_tag="workflow",
@@ -1278,9 +1285,12 @@ class DUSTrack(VideoBrowser):
         # crash or a silent-overwrite of an unrelated layer.
         issues = self._scan_unsaved_and_incomplete()
         if issues:
-            if not self._prompt_unified_pre_flight(qt_window, issues):
+            decision = self._prompt_unified_pre_flight(qt_window, issues)
+            if not decision.proceed:
                 return self  # user cancelled -- UI left intact
-            self._apply_pre_flight_remediations(issues)
+            self._apply_pre_flight_remediations(
+                issues, strip_strays=not decision.keep_strays,
+            )
             # Cleaning can drop every frame of a layer (typical
             # post-seed case: user annotated only one label out of
             # the project bodyparts, every annotated frame is
@@ -1415,20 +1425,25 @@ class DUSTrack(VideoBrowser):
             self.ann.name,
         )
 
-    def _prompt_unified_pre_flight(self, qt_window, issues: dict) -> bool:
-        """Combined save-state + incompleteness modal.
+    def _prompt_unified_pre_flight(self, qt_window, issues: dict):
+        """Combined save-state + incompleteness + strays modal.
         See :func:`._preflight_modal.prompt_unified_pre_flight`.
+        Returns a :class:`PreFlightDecision`.
         """
         return _preflight_modal.prompt_unified_pre_flight(qt_window, issues)
 
-    def _apply_pre_flight_remediations(self, issues: dict) -> None:
-        """Drop incomplete frames + save each affected layer, then repaint.
+    def _apply_pre_flight_remediations(
+        self, issues: dict, *, strip_strays: bool = True,
+    ) -> None:
+        """Drop incomplete frames, optionally strip strays, save each
+        affected layer, then repaint.
         See :func:`._preflight_modal.apply_pre_flight_remediations`.
         """
         _preflight_modal.apply_pre_flight_remediations(
             self.annotations,
             self.fname,
             issues,
+            strip_strays=strip_strays,
         )
         self.update()
 
@@ -3497,6 +3512,12 @@ class DUSTrack(VideoBrowser):
             group=sec5b,
         )
         self.add_key_binding(
+            "x",
+            self.decimate_annotations_in_interval,
+            "Decimate in selected interval -- drop incomplete, then halve",
+            group=sec5b,
+        )
+        self.add_key_binding(
             "ctrl+d",
             (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
             "Interpolate all labels with LK (no RSTC, primary layer)",
@@ -3793,7 +3814,9 @@ class DUSTrack(VideoBrowser):
                 Path(self.fname).parent,
                 Path(self.fname).stem + f"_events_{event_name}.json",
             ),
-            data_id_func=(lambda s: (s._current_layer, s._current_label)).__get__(self),
+            data_id_func=(
+                lambda s: (Path(s.fname).stem, s._current_layer, s._current_label)
+            ).__get__(self),
             data_func=round,
             color="gray",
             pick_action="overwrite",
@@ -4333,7 +4356,7 @@ class DUSTrack(VideoBrowser):
     def get_selected_interval(self) -> "tuple[int, int]":
         start_frame, end_frame = (
             self.events["interp_with_lk"]
-            ._data[(self._current_layer, self._current_label)]
+            ._data[(Path(self.fname).stem, self._current_layer, self._current_label)]
             .get_times()[-1]
         )
         return start_frame, end_frame
@@ -4352,6 +4375,66 @@ class DUSTrack(VideoBrowser):
         ann_overlay = self.annotations[self._current_overlay]
         for frame_count, frame_number in enumerate(range(start_frame, end_frame + 1)):
             for label in label_list:
+                self.ann.remove(label, frame_number)
+        self.update()
+
+    def decimate_annotations_in_interval(self) -> None:
+        """Prune incomplete frames, then drop every other complete frame in the selected interval.
+
+        Prep step for training: ensures the surviving in-interval
+        frames are (a) fully annotated across the required-label set
+        and (b) half as dense (even-stride sampling). Frame-level --
+        every label is removed at each dropped frame.
+
+        Required-label set follows the same project-aware /
+        project-unaware split the Train preflight uses
+        (:func:`_preflight.scan_incomplete_frames`):
+
+        * **DLC project loaded** -- required = project ``bodyparts``
+          (mapped through :func:`_dlc_bodyparts_to_layer_labels`).
+          Stray non-bodypart labels on the layer are ignored from the
+          required check, but any frame they sit on is still part of
+          ``all_frames`` -- if it's missing a required label it still
+          counts as incomplete, and pruning cleans the stray with it.
+        * **No DLC project** -- required = labels with at least one
+          annotation. Empty labels are treated as UI placeholders
+          (user created a slot and abandoned it). This is the best
+          inference available without external truth and matches the
+          project-unaware Train preflight rule.
+
+        Starter form of the "general-model workflow" decimation
+        feature; the DINOv3-feature farthest-point-sampling variant
+        is deferred. Incomplete frames in the interval are always
+        pruned. The every-other halving is a no-op when fewer than
+        2 complete frames remain in the interval after pruning.
+        """
+        start_frame, end_frame = self.get_selected_interval()
+        labels = list(self.ann.labels)
+        target_labels: "list[str] | None" = None
+        if self._dlcproject is not None:
+            bodyparts = self._dlcproject.config.get("bodyparts") or []
+            if bodyparts:
+                target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
+        incomplete_in_interval = sorted(
+            f
+            for f in _preflight.scan_incomplete_frames(
+                self.ann.data, target_labels=target_labels,
+            )
+            if start_frame <= f <= end_frame
+        )
+        for frame_number in incomplete_in_interval:
+            for label in labels:
+                self.ann.remove(label, frame_number)
+        complete_in_interval = sorted(
+            {
+                f
+                for label in labels
+                for f in self.ann.get_frames(label)
+                if start_frame <= f <= end_frame
+            }
+        )
+        for frame_number in complete_in_interval[1::2]:
+            for label in labels:
                 self.ann.remove(label, frame_number)
         self.update()
 

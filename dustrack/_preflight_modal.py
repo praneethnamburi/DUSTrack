@@ -5,9 +5,11 @@ Three modal prompts and one orchestrator, all keyed on the
 :func:`._preflight.scan_unsaved_and_incomplete`:
 
 * :func:`prompt_unified_pre_flight` -- the main "Save and clean"
-  modal, shown when any manual layer has unsaved edits and/or
-  incomplete frames. Returns ``True`` iff the user picked
-  *Save and clean*.
+  modal, shown when any manual layer has unsaved edits, incomplete
+  frames, or stray labels (labels with annotations that aren't in
+  the project's bodyparts). Returns a :class:`PreFlightDecision`
+  with ``proceed`` (user picked *Save and clean*) and
+  ``keep_strays`` (the optional checkbox state, default False).
 
 * :func:`prompt_no_trainable_labels` -- hard-block overlay shown
   when no labels exist anywhere in the project (the freshly-seeded
@@ -32,16 +34,47 @@ Extracted from ``gui.DUSTrack`` in the 1.2.0rc1 follow-up.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from ._overlays import _make_confirm_overlay_class
 from ._preflight import (
     apply_pre_flight_remediations as _apply_remediations_logic,
     format_pre_flight_summary,
+    has_strays,
 )
 
 
-def prompt_unified_pre_flight(qt_window, issues: dict) -> bool:
-    """Single modal for the combined save-state + incompleteness
-    pre-flight. Returns True iff the user picked *Save and clean*.
+@dataclass(frozen=True)
+class PreFlightDecision:
+    """User's decision out of the unified pre-flight modal.
+
+    ``proceed`` is True iff the user clicked *Save and clean*.
+    ``keep_strays`` is the checkbox state -- True means "keep stray
+    labels in the saved JSON file", False (default, the unchecked
+    box) means "strip them on save". The checkbox is only rendered
+    when the issues dict contains strays, but the field is always
+    populated on the decision (False when no checkbox was shown).
+    """
+
+    proceed: bool
+    keep_strays: bool = False
+
+
+# Canonical phrasing for the stray-labels checkbox. Multi-naming
+# alternatives considered: "Keep extra labels in the saved file
+# (they won't be trained)", "Preserve labels not in this DLC
+# project". The canonical form names the action ("save") and the
+# user-side criterion ("not in this DLC project", avoiding the
+# DLC-vocabulary word "bodyparts") and reassures about the
+# consequence ("won't affect training").
+_KEEP_STRAYS_CHECKBOX_LABEL = (
+    "Save labels not in this DLC project (won't affect training)"
+)
+
+
+def prompt_unified_pre_flight(qt_window, issues: dict) -> PreFlightDecision:
+    """Single modal for the combined save-state + incompleteness +
+    stray-labels pre-flight. Returns a :class:`PreFlightDecision`.
 
     Routes through :class:`ConfirmOverlay` (rc2) so the modal
     shares visual vocabulary with the new ``Discard unsaved`` /
@@ -49,26 +82,50 @@ def prompt_unified_pre_flight(qt_window, issues: dict) -> bool:
     inline rather than behind a collapsed "Show Details..." toggle
     -- the breakdown is the substance the user needs to decide on,
     not optional extra.
+
+    When any layer has stray labels, an opt-in checkbox is added
+    asking the user whether to keep them in the saved file. Default
+    unchecked: the user must deliberately press the checkbox to
+    preserve work on extra labels. The expected workflow is "Save
+    stray labels, then later fork a new DLC project with the
+    expanded label set" -- spelling this out in the body so the
+    decision has context.
     """
     ConfirmOverlay = _make_confirm_overlay_class()
     n = len(issues)
     header = (
         f"{n} manual annotation layer{'s' if n != 1 else ''} "
-        f"{'have' if n != 1 else 'has'} unsaved changes and/or "
-        "incomplete frames."
+        f"{'have' if n != 1 else 'has'} unsaved changes, "
+        "incomplete frames, or labels outside this DLC project."
     )
     breakdown = format_pre_flight_summary(issues)
+    strays_present = has_strays(issues)
+    actions = [
+        " - save in-memory edits to disk for the listed layer(s),",
+        " - drop frames missing one or more bodyparts (per-layer "
+        "recovery sidecars written next to each annotation file),",
+    ]
+    if strays_present:
+        actions.append(
+            " - drop annotations on labels not in this DLC project "
+            "(opt out via the checkbox below to keep them in the "
+            "saved file),"
+        )
+    actions.append(" - then start training.")
     body = (
         f"{header}\n\n"
         f"{breakdown}\n\n"
-        "Save and clean will:\n"
-        " - save in-memory edits to disk for the listed layer(s),\n"
-        " - drop frames missing one or more bodyparts (per-layer "
-        "recovery sidecars written next to each annotation file),\n"
-        " - then start training.\n\n"
+        "Save and clean will:\n" + "\n".join(actions) + "\n\n"
         "Cancel returns to the UI without changes."
     )
-    result = ConfirmOverlay(
+    checkboxes = []
+    if strays_present:
+        checkboxes.append({
+            "key": "keep_strays",
+            "label": _KEEP_STRAYS_CHECKBOX_LABEL,
+            "default_checked": False,
+        })
+    overlay = ConfirmOverlay(
         qt_window,
         title="Pre-flight issues",
         message=body,
@@ -78,8 +135,13 @@ def prompt_unified_pre_flight(qt_window, issues: dict) -> bool:
         ],
         default="Cancel",
         severity="warning",
-    ).exec_()
-    return result == "Save and clean"
+        checkboxes=checkboxes,
+    )
+    result = overlay.exec_()
+    return PreFlightDecision(
+        proceed=(result == "Save and clean"),
+        keep_strays=bool(overlay.checkbox_states.get("keep_strays", False)),
+    )
 
 
 def prompt_no_trainable_labels(qt_window, active_layer_name: str) -> None:
@@ -145,11 +207,14 @@ def prompt_empty_layer_train_confirm(qt_window, active_layer_name: str) -> bool:
     return result == "Continue training"
 
 
-def apply_pre_flight_remediations(annotations, video_fname, issues: dict) -> None:
+def apply_pre_flight_remediations(
+    annotations, video_fname, issues: dict, *, strip_strays: bool = True,
+) -> None:
     """Wrapper around :func:`._preflight.apply_pre_flight_remediations`
     that injects the ``make_annotation_file_name`` builder (kept
     out of the logic module to avoid an import cycle with
-    ``_file_management``).
+    ``_file_management``) and forwards the ``strip_strays`` decision
+    from the modal's checkbox.
     """
     from ._file_management import make_annotation_file_name
 
@@ -158,4 +223,5 @@ def apply_pre_flight_remediations(annotations, video_fname, issues: dict) -> Non
         video_fname,
         issues,
         make_annotation_file_name=make_annotation_file_name,
+        strip_strays=strip_strays,
     )

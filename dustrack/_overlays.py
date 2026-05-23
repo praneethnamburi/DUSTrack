@@ -381,6 +381,7 @@ def _make_confirm_overlay_class():
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
+        QCheckBox,
         QFrame,
         QHBoxLayout,
         QLabel,
@@ -462,11 +463,21 @@ def _make_confirm_overlay_class():
             buttons,  # list[tuple[label, role]]
             default: str | None = None,
             severity: str = "info",
+            checkboxes=None,  # list[dict(key, label, default_checked)]
         ):
             super().__init__(main_window)
             self._mw = main_window
             self._result: str | None = None
             self._loop = QEventLoop()
+            # checkbox_states is populated for every exec_() (empty
+            # dict when no checkboxes were supplied) so callers can
+            # always read it unconditionally.
+            self._checkbox_specs = list(checkboxes or [])
+            self._checkbox_widgets: dict = {}
+            self.checkbox_states: dict = {
+                spec["key"]: bool(spec.get("default_checked", False))
+                for spec in self._checkbox_specs
+            }
 
             self._frame = QFrame(main_window)
             self._frame.setObjectName("dustrack_confirm_overlay")
@@ -497,6 +508,28 @@ def _make_confirm_overlay_class():
             # stretching the overlay to the full window width.
             message_lbl.setMaximumWidth(720)
             layout.addWidget(message_lbl, alignment=Qt.AlignCenter)
+
+            # Optional checkboxes -- rendered as a centered column
+            # between the message and the button row. Each checkbox's
+            # state is tracked on ``self.checkbox_states[key]`` and
+            # is the canonical place callers read post-``exec_()``.
+            # QSS pins the indicator to a visible size + the label
+            # to white so it reads on the dark backdrop (Windows-
+            # native disabled is too subtle here, per
+            # feedback_dark_overlay_native_disabled_subtle).
+            for spec in self._checkbox_specs:
+                key = spec["key"]
+                cb = QCheckBox(spec["label"])
+                cb.setChecked(self.checkbox_states[key])
+                cb.setStyleSheet(
+                    "QCheckBox { color: white; font-size: 11pt; }"
+                    "QCheckBox::indicator { width: 16px; height: 16px; }"
+                )
+                cb.stateChanged.connect(
+                    lambda state, k=key: self._on_checkbox_changed(k, state)
+                )
+                self._checkbox_widgets[key] = cb
+                layout.addWidget(cb, alignment=Qt.AlignCenter)
 
             button_row = QHBoxLayout()
             button_row.setAlignment(Qt.AlignCenter)
@@ -545,6 +578,9 @@ def _make_confirm_overlay_class():
             self._result = label
             self._dismiss()
             self._loop.quit()
+
+        def _on_checkbox_changed(self, key: str, state: int) -> None:
+            self.checkbox_states[key] = bool(state)
 
         def _dismiss(self) -> None:
             try:
