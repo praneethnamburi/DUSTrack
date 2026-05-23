@@ -18,7 +18,7 @@ post-processing.
     Interface for training and managing DeepLabCut pose estimation models.
     Requires the ``deeplabcut`` package to be installed.
 
-:class:`~dustrack.pointtracking.VideoAnnotation`
+:class:`~dustrack.annotations.VideoAnnotation`
     Annotation-data container with DeepLabCut HDF5 interop. Use directly
     for programmatic loads -- ``dustrack.VideoAnnotation(json_path, video).to_signals()``.
 
@@ -153,35 +153,12 @@ from . import dlcpatch as dlcpatch  # noqa: F401
 # returned a parent-class instance (see feedback_isinstance_subclass_narrowing).
 VideoAnnotation.postprocess = lk_moving_average_filter
 
-# ---------------------------------------------------------------------
-# Pickle-compat aliases for pre-1.2.0rc1 module paths
-# ---------------------------------------------------------------------
-# The 1.2.0rc1 refactor renamed four submodules:
-#   opticalflow.py -> lk_opticalflow.py
-#   postprocess.py -> lk_filter.py
-#   convert.py     -> batch.py
-#   _dlc_patch.py  -> dlcpatch.py
-# Pickles produced under the old paths bake module names into their
-# headers. Register sys.modules aliases so ``pickle.load`` can still
-# resolve classes like ``dustrack.pointtracking.VideoAnnotation`` (the
-# pointtracking module name was kept in Phase E because _DUSTrackBase
-# still lives there; pointtracking.py re-exports VideoAnnotation /
-# VideoAnnotations / _TrackedFrameDict from dustrack.annotations so
-# the pickle path resolves naturally with no sys.modules trickery).
-import sys as _sys
-from . import lk_opticalflow as _lk_opticalflow
-from . import lk_filter as _lk_filter
-from . import batch as _batch
-_sys.modules.setdefault("dustrack.opticalflow", _lk_opticalflow)
-_sys.modules.setdefault("dustrack.postprocess", _lk_filter)
-_sys.modules.setdefault("dustrack.convert", _batch)
-# Also bind on the package namespace so ``dustrack.opticalflow`` attribute
-# access (as opposed to ``import dustrack.opticalflow``) resolves. Python's
-# import machinery sets this attribute as part of the submodule load step,
-# but a pre-populated sys.modules entry short-circuits the load and skips
-# the attribute binding -- we set it ourselves.
-opticalflow = _lk_opticalflow
-postprocess = _lk_filter
-convert = _batch
-# Note: dustrack._dlc_patch alias deliberately omitted -- _dlc_patch
-# only contained module-level monkey-patch helpers, no picklable types.
+# The 1.2.0rc1 refactor renamed several submodules
+# (``opticalflow.py`` -> ``lk_opticalflow.py``, ``postprocess.py`` ->
+# ``lk_filter.py``, ``convert.py`` -> ``batch.py``, ``_dlc_patch.py``
+# -> ``dlcpatch.py``) and deleted ``pointtracking.py`` (data classes
+# moved to ``annotations.py``; the ``_DUSTrackBase`` GUI parent
+# collapsed into ``DUSTrack`` in ``gui.py``). No back-compat aliases
+# are registered for these renames -- portfolio sweep confirmed no
+# external callers, and pickle compat for the old module paths is
+# explicitly out of scope (re-pickle if you hit one).

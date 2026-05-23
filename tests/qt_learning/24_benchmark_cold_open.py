@@ -141,22 +141,23 @@ def install_segment_timers(timer: _Timer):
     on each segment of the annotate() call.
     """
     import dustrack
-    from dustrack import dlcinterface, pointtracking
+    from dustrack import gui
     import datanavigator
     from datanavigator import videos as dnav_videos
 
-    # Heavy methods called inside DUSTrack.__init__ / _DUSTrackBase.__init__.
-    pointtracking._DUSTrackBase.add_annotation_layers = _wrap(
+    # Heavy methods called inside DUSTrack.__init__ (1.2.0rc1 merged
+    # the former _DUSTrackBase methods into the DUSTrack class itself).
+    gui.DUSTrack.add_annotation_layers = _wrap(
         timer, "  add_annotation_layers",
-        pointtracking._DUSTrackBase.add_annotation_layers,
+        gui.DUSTrack.add_annotation_layers,
     )
-    pointtracking._DUSTrackBase.add_events = _wrap(
+    gui.DUSTrack.add_events = _wrap(
         timer, "  add_events",
-        pointtracking._DUSTrackBase.add_events,
+        gui.DUSTrack.add_events,
     )
-    pointtracking._DUSTrackBase.set_key_bindings = _wrap(
+    gui.DUSTrack.set_key_bindings = _wrap(
         timer, "  set_key_bindings",
-        pointtracking._DUSTrackBase.set_key_bindings,
+        gui.DUSTrack.set_key_bindings,
     )
 
     # statevariables.show is one of the slow Qt-sidebar mounts.
@@ -172,29 +173,29 @@ def install_segment_timers(timer: _Timer):
     )
 
     # DUSTrack-side: enhance widget + close guard.
-    dlcinterface.DUSTrack._add_enhance_widget = _wrap(
+    gui.DUSTrack._add_enhance_widget = _wrap(
         timer, "  _add_enhance_widget",
-        dlcinterface.DUSTrack._add_enhance_widget,
+        gui.DUSTrack._add_enhance_widget,
     )
-    dlcinterface.DUSTrack._install_close_guard = _wrap(
+    gui.DUSTrack._install_close_guard = _wrap(
         timer, "  _install_close_guard",
-        dlcinterface.DUSTrack._install_close_guard,
+        gui.DUSTrack._install_close_guard,
     )
 
     # Post-construct helpers.
-    dlcinterface.DUSTrack._normalize_dlc_layer_display = _wrap(
+    gui.DUSTrack._normalize_dlc_layer_display = _wrap(
         timer, "_normalize_dlc_layer_display",
-        dlcinterface.DUSTrack._normalize_dlc_layer_display,
+        gui.DUSTrack._normalize_dlc_layer_display,
     )
-    dlcinterface.DUSTrack._restructure_annotation_order = _wrap(
+    gui.DUSTrack._restructure_annotation_order = _wrap(
         timer, "_restructure_annotation_order",
-        dlcinterface.DUSTrack._restructure_annotation_order,
+        gui.DUSTrack._restructure_annotation_order,
     )
 
     # update() = the final paint pump.
-    pointtracking._DUSTrackBase.update = _wrap(
+    gui.DUSTrack.update = _wrap(
         timer, "ret.update() (final)",
-        pointtracking._DUSTrackBase.update,
+        gui.DUSTrack.update,
     )
 
 

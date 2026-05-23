@@ -84,7 +84,7 @@ class _BundleState:
 
     # Heavy state, populated during hydration.
     reader: Any = None  # datanavigator.VideoReader
-    annotations: Any = None  # dustrack.pointtracking.VideoAnnotations
+    annotations: Any = None  # dustrack.annotations.VideoAnnotations
 
     # Lightweight per-bundle UI snapshot.
     current_idx: int = 0

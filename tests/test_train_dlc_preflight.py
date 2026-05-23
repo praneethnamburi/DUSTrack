@@ -455,7 +455,7 @@ class TestScanUnsavedAndIncomplete:
         import json
 
         import matplotlib.pyplot as plt
-        from dustrack.pointtracking import VideoAnnotation
+        from dustrack.annotations import VideoAnnotation
 
         ann_path = tmp_path / "v_annotations_iteration-1.json"
         with open(ann_path, "w") as f:

@@ -1,8 +1,8 @@
 """
 Per-video Lucas-Kanade helpers used by
 :py:meth:`dustrack.DUSTrack.predict_labels_with_lucas_kanade`
-(inherited from the internal ``_DUSTrackBase`` in
-:py:mod:`dustrack.pointtracking`).
+(absorbed from the pre-1.2.0rc1 ``_DUSTrackBase`` parent class when
+that split collapsed into :class:`dustrack.DUSTrack`).
 
 These are the *per-video* shapes (called with ``video, start_frame, end_frame, ...``).
 The frame-list shapes used by the LK-filter pipeline

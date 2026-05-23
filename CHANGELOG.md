@@ -374,6 +374,54 @@ Tests: +21 this follow-up (10 modal contextual/toggle + 6 config.yaml
 dispatch + 3 enhance-defaults + 2 misc). Full suite: 580 passed, 1
 skipped.
 
+**`_DUSTrackBase` merged into `DUSTrack` (2026-05-22, 1.2.0rc1
+refactor tail)**. The 1.2.0rc1 structural refactor (Phases 0-E)
+deferred the `_DUSTrackBase` collapse to a dedicated session because
+the 37 tests in `test_pointtracking.py` instantiated the base class
+directly. This change closes that follow-up:
+
+- All `_DUSTrackBase` methods + `__init__` body absorbed into
+  `DUSTrack` in `dustrack/gui.py` (now ~5,650 LOC; was ~5,110 LOC +
+  ~1,500 LOC in `pointtracking.py`). DUSTrack's base class is now
+  `datanavigator.videos.VideoBrowser` directly.
+- `pointtracking.py` **deleted**. Test imports for `VideoAnnotation` /
+  `VideoAnnotations` / `_TrackedFrameDict` updated to
+  `dustrack.annotations`. Portfolio sweep confirmed no external
+  imports.
+- **All pickle-compat `sys.modules` aliases dropped from
+  `dustrack/__init__.py`** (the prior `opticalflow` / `postprocess` /
+  `convert` aliases as well as the never-published `pointtracking`
+  alias). Pickle compat for the renamed-leaf-module paths is
+  explicitly out of scope; re-pickle if you hit one. The only
+  surviving forwarding shim is `dlcinterface.__getattr__`, which
+  bounces `DUSTrack` / `open` / DLC-path-classifier names through
+  to their new homes for live `from dustrack.dlcinterface import X`
+  callers (not a pickle path).
+- `DUSTrack.__init__` signature grew the kwargs that used to live on
+  the parent: `n_labels`, `titlefunc`, `height_ratios`, `fast_render`.
+  `fast_render` defaults to `True` (Qt-native image pane) for the
+  normal interactive path; pass `fast_render=False` for headless /
+  Agg test contexts that used to construct `_DUSTrackBase` directly.
+- `tests/test_pointtracking.py` rewritten: 37 call sites updated
+  from `_DUSTrackBase(...)` to `DUSTrack(..., fast_render=False,
+  annotation_names="")` (the old `_DUSTrackBase` default was `""`;
+  `DUSTrack` defaults to `"iteration-0"`).
+- The default-buttons hook (`_add_default_buttons`) was removed
+  entirely — the rc2 sidebar already places `Refresh UI` as a styled
+  utility-group button next to `Keyboard shortcuts`, so the parent
+  hook had no remaining consumer.
+- Benchmark `tests/qt_learning/24_benchmark_cold_open.py` rewired to
+  patch `gui.DUSTrack.{add_annotation_layers,add_events,
+  set_key_bindings,update}` instead of `pointtracking._DUSTrackBase.*`.
+- `docs/keyconcepts.md` inheritance diagram updated; CHANGELOG note
+  here.
+
+Tests: full `test_pointtracking.py` (90 cases) passes; suite-wide
+green expected to hold (the merged class is bit-identical to the
+old subclass on every observable surface besides the `fast_render`
+default — and that default only matters for headless contexts that
+weren't previously using `DUSTrack`).
+
 ## [1.2.0a2] - unreleased
 
 Cold-open optimisation: two independent wins folded together — the

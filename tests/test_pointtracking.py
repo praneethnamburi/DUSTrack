@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import datanavigator
 import dustrack
-from dustrack.pointtracking import _DUSTrackBase
+from dustrack import DUSTrack
 from datanavigator.examples import get_example_video
 from tests.conftest import (
     simulate_key_press,
@@ -882,7 +882,7 @@ def test_video_point_annotator_xlim_preserved_across_layer_add(video_fname):
     Pre-fix, the trace xlim resets to (0, n_frames). Post-fix, it
     stays where the user put it.
     """
-    v = _DUSTrackBase(vid_name=video_fname)
+    v = DUSTrack(vid_name=video_fname, annotation_names="", fast_render=False)
     n_frames = v.ann.n_frames
 
     # Initial setup leaves xlim at (0, n_frames).
@@ -915,8 +915,8 @@ def test_video_point_annotator_ylim_manual_policy(video_fname):
     are no-ops. Pressing `r` (= `reset_axes("both")`) re-enables
     autoscale, restoring a one-shot refit.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=2,
     )
     # The annotator's __init__ runs update() once with the empty annotation;
     # all-NaN trace data leaves ylim at the matplotlib default.
@@ -1000,7 +1000,7 @@ def test_r_keybinding_cursor_aware_dispatch(video_fname):
     to verify the full-video pin. The active-label y-fit semantics are
     covered by ``test_r_keybinding_trace_branch_fits_active_label_only``.
     """
-    v = _DUSTrackBase(vid_name=video_fname)
+    v = DUSTrack(vid_name=video_fname, annotation_names="", fast_render=False)
     n_frames = v.ann.n_frames
 
     mock_pane = MagicMock()
@@ -1061,7 +1061,7 @@ def test_alt_r_keybinding_cursor_aware_data_extent_dispatch(video_fname):
     video range. Useful when the annotated region is much narrower than
     the full video and the user wants to zoom in to it.
     """
-    v = _DUSTrackBase(vid_name=video_fname)
+    v = DUSTrack(vid_name=video_fname, annotation_names="", fast_render=False)
     n_frames = v.ann.n_frames
 
     mock_pane = MagicMock()
@@ -1133,8 +1133,8 @@ def test_fit_y_to_active_label_active_only(video_fname):
     y window. Asserts the helper does NOT union with other labels'
     extents.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=2,
     )
     # Label "0" data clusters at y ~ (0, 10); label "1" data clusters
     # at y ~ (1000, 1010). Use x ~ (0, 10) for both labels so the x
@@ -1171,8 +1171,8 @@ def test_fit_y_to_active_label_with_overlay(video_fname):
     has y ~ (5, 25). Helper should fit y to (0, 25) -- the union for
     the active label across the two layers.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["primary", "overlay"], n_labels=1,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["primary", "overlay"], n_labels=1,
     )
     primary = v.annotations["primary"]
     overlay = v.annotations["overlay"]
@@ -1191,8 +1191,8 @@ def test_fit_y_to_active_label_with_overlay(video_fname):
 
 def test_fit_y_to_active_label_empty_is_noop(video_fname):
     """No data for active label → helper short-circuits, leaves ylim alone."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["empty"], n_labels=1,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["empty"], n_labels=1,
     )
     # No annotations added; label "0" has empty data.
     v._ax_trace_y.set_ylim(-100, 100)
@@ -1212,8 +1212,8 @@ def test_label_switch_triggers_yfit(video_fname):
     land the new label inside the y window. Also verifies the round-trip
     (back to the original label refits).
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
         v.ann.add([float(f), float(f)], "0", f)
@@ -1251,8 +1251,8 @@ def test_layer_switch_does_not_trigger_yfit(video_fname):
     wired only to annotation_label + label_range; annotation_layer /
     annotation_overlay are explicitly NOT hooked.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["a", "b"], n_labels=1,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["a", "b"], n_labels=1,
     )
     layer_a = v.annotations["a"]
     layer_b = v.annotations["b"]
@@ -1281,8 +1281,8 @@ def test_layer_switch_does_not_trigger_yfit(video_fname):
 
 def test_label_range_switch_triggers_yfit(video_fname):
     """Cycling label_range must fire the on_change hook (decade switcher)."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=1,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=1,
     )
     # Add label "0" data in y ~ (0, 5) and label "10" data in y ~ (1000, 1005).
     for f in range(5):
@@ -1314,8 +1314,8 @@ def test_label_range_switch_triggers_yfit(video_fname):
 
 def test_r_keybinding_trace_branch_fits_active_label_only(video_fname):
     """``r`` over a trace fits y to the active label only, not the union."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
         v.ann.add([float(f), float(f)], "0", f)               # y ~ (0, 5)
@@ -1343,8 +1343,8 @@ def test_r_keybinding_trace_branch_fits_active_label_only(video_fname):
 
 def test_alt_r_keybinding_trace_branch_keeps_union(video_fname):
     """``alt+r`` over a trace keeps the union autoscale (all labels)."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["test"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["test"], n_labels=2,
     )
     for f in range(5):
         v.ann.add([float(f), float(f)], "0", f)               # y ~ (0, 5)
@@ -1469,41 +1469,41 @@ def test_set_plot_type_survives_re_setup_display(video_fname):
 
 def test_video_point_annotator_init(video_fname):
     # simple initialization with video only.
-    v = _DUSTrackBase(vid_name=video_fname)
+    v = DUSTrack(vid_name=video_fname, annotation_names="", fast_render=False)
     assert len(v.annotations) == 2
     assert v.annotations[0].name == ""
     assert v.annotations[0].fstem == "example_video_annotations"
     assert v.annotations[-1].name == "buffer"
     plt.close(v.figure)
 
-    v = _DUSTrackBase(vid_name=video_fname, annotation_names=["pn"])
+    v = DUSTrack(vid_name=video_fname, annotation_names=["pn"], fast_render=False)
     assert v.annotations.names == [
         "pn",
         "buffer",
     ]  # the _annotations.json file will not be loaded
     plt.close(v.figure)
 
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["", "pn"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["", "pn"]
     )
     assert v.annotations.names == ["", "pn", "buffer"]
     plt.close(v.figure)
 
     # explicitly adding a "buffer" name will not make a difference
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["", "pn", "buffer"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["", "pn", "buffer"]
     )
     assert v.annotations.names == ["", "pn", "buffer"]
     plt.close(v.figure)
 
 
 def test_video_point_annotator_from_annotations(ann_object):
-    v = _DUSTrackBase.from_annotations(ann_object)
+    v = DUSTrack.from_annotations(ann_object, fast_render=False)
     assert len(v.ann.frames) == 10
 
 
 def test_video_point_annotator_add_new_label(ann_object):
-    v = _DUSTrackBase.from_annotations(ann_object)
+    v = DUSTrack.from_annotations(ann_object, fast_render=False)
     assert "5" not in v.ann.labels
     assert "5" not in v.annotations["buffer"].labels
     v(simulate_key_press(v.figure, key="5"))
@@ -1528,15 +1528,15 @@ def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
     # ann_fname / ann2_fname are requested for their side effect: they
     # write ``example_video_annotations.json`` (10 frames, label "") and
     # ``example_video_annotations_pn.json`` (9 frames, label "pn") next
-    # to the example video. The ``_DUSTrackBase(..., annotation_names=
+    # to the example video. The ``DUSTrack(..., annotation_names=
     # ["", "pn"])`` constructor below reads those files from disk; if
     # the fixtures aren't requested, the discovery returns empty layers
     # and the asserts below fail. (Pre-fix, in serial mode pytest
     # happened to schedule the fixture-touching tests first, masking
     # this; ``-n auto`` exposed the dependency.)
     del ann_fname, ann2_fname  # only the on-disk side effect is needed
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["", "pn"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["", "pn"]
     )
     assert len(v.annotations[""].frames) == 10
     assert len(v.annotations["pn"].frames) == 9
@@ -1640,8 +1640,8 @@ def test_video_point_annotator_key_bindings(video_fname, ann_fname, ann2_fname):
 
 
 def test_video_point_annotator_add_remove_annotation(video_fname):
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn2"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn2"]
     )
     assert len(v.annotations) == 2
     assert v.annotations.names == ["pn2", "buffer"]
@@ -1678,8 +1678,8 @@ def test_video_point_annotator_add_remove_annotation(video_fname):
 
 def test_video_point_annotator_conditional_move(video_fname):
     """Test the feature that allows to change frame only if there is no annotation at the current frame."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn2"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn2"]
     )
     assert len(v.annotations) == 2
     assert v.annotations.names == ["pn2", "buffer"]
@@ -1725,8 +1725,8 @@ def test_video_point_annotator_state_variables(video_fname, ann_fname, ann2_fnam
     files on disk.
     """
     del ann_fname, ann2_fname
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["", "pn"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["", "pn"]
     )
     assert len(v.annotations) == 3
     assert v.annotations.names == ["", "pn", "buffer"]
@@ -1792,8 +1792,8 @@ def test_video_point_annotator_state_variables(video_fname, ann_fname, ann2_fnam
 
 def test_video_point_annotator_frames_of_interest(video_fname):
     """Test the frames of interest feature."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn3"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn3"]
     )
     assert len(v.annotations) == 2
     assert v.annotations.names == ["pn3", "buffer"]
@@ -1884,8 +1884,8 @@ def test_video_point_annotator_frames_of_interest(video_fname):
 
 def test_video_point_annotator_copy_annotations(video_fname):
     """Test the feature of copying annotations between layers."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn4", "pn5"], n_labels=5,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn4", "pn5"], n_labels=5,
     )
     # testing c - copy current annotaion from overlay to the current annotation layer
     # add a label to pn4
@@ -2020,8 +2020,8 @@ def test_video_point_annotator_copy_annotations(video_fname):
 
 def test_video_point_annotator_lucas_kanade(video_fname):
     # -- predict_labels_with_lucas_kanade --
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn6"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn6"]
     )
     v.ann.data = {}
     v.ann.add_label("0")
@@ -2106,8 +2106,8 @@ def test_video_point_annotator_lucas_kanade(video_fname):
 
 
 def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn7"], n_labels=2,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn7"], n_labels=2,
     )
     # add annotation in frames 5 and 8
     v.annotations["pn7"].add([10, 10], "0", 5)
@@ -2130,8 +2130,8 @@ def test_video_point_annotator_prev_next_frames_with_current_label(video_fname):
 
 
 def test_save(video_fname):
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn7"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn7"]
     )
     assert not os.path.exists(v.annotations["pn7"].fname)
     v.save()
@@ -2140,8 +2140,8 @@ def test_save(video_fname):
 
 
 def test_video_point_annotator_keep_overlapping_continuous_frames(video_fname):
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn8"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn8"]
     )
     v.ann.data = {}
     v.ann.add_label("0")
@@ -2172,8 +2172,8 @@ def test_video_point_annotator_keep_overlapping_frames(video_fname):
     keybinding is wired -- DUSTrack's "Train DLC model" pre-flight
     is the only caller.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn_kof"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn_kof"]
     )
     v.ann.data = {}
     v.ann.add_label("0")
@@ -2194,8 +2194,8 @@ def test_video_point_annotator_keep_overlapping_frames(video_fname):
 
 
 def test_video_point_annotator_render(video_fname):
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["pn9"]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["pn9"]
     )
     v.annotations["pn9"].add([10, 100], "0", 0)  # add some data
     v.annotations["pn9"].add([50, 200], "0", 60)  # add some data
@@ -2217,7 +2217,7 @@ def test_video_point_annotator_render(video_fname):
 # makes the next bypass unrepresentable: any write to an inner per-label
 # dict bumps _revision regardless of which API path the caller took.
 
-from dustrack.pointtracking import _TrackedFrameDict
+from dustrack.annotations import _TrackedFrameDict
 
 
 def test_inner_dict_is_tracked_frame_dict(ann_object):
@@ -2351,8 +2351,8 @@ def test_clear_bumps_revision_only_when_nonempty(ann_object):
 
 def test_revision_consumers_invalidate_on_direct_mutation(video_fname, ann_fname):
     """Trace-display cache key is (labels, _revision); direct mutation invalidates."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=[Path(ann_fname).stem]
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=[Path(ann_fname).stem]
     )
     ann = v.annotations[Path(ann_fname).stem]
     v.update()  # populate cache
@@ -2524,8 +2524,9 @@ def test_corrections_layer_shaped_update_frame_marker(video_fname, tmp_path):
     missing the label. Post-fix the missing-label layer contributes
     a NaN trace and ``np.hstack`` of the layer stack succeeds.
     """
-    v = _DUSTrackBase(
+    v = DUSTrack(
         vid_name=video_fname,
+        fast_render=False,
         annotation_names=["base", "corrections"],
         n_labels=2,
     )
@@ -2570,8 +2571,8 @@ def test_add_annotation_layers_unions_declared_labels(video_fname):
     declared label gets it added (the same auto-extend rule as
     before, just sourced from declarations rather than data).
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["alpha", "beta"], n_labels=1,
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["alpha", "beta"], n_labels=1,
     )
     # Declare three labels on alpha, two on beta -- one is shared.
     v.annotations["alpha"].add_label("1")
@@ -2585,8 +2586,8 @@ def test_add_annotation_layers_unions_declared_labels(video_fname):
 
     # Reopen and confirm both layers carry the full union of declared
     # labels, including alpha's empty "1".
-    v2 = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["alpha", "beta"],
+    v2 = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["alpha", "beta"],
     )
     for layer_name in ("alpha", "beta"):
         labels = set(v2.annotations[layer_name].labels)
@@ -2629,8 +2630,8 @@ def test_remove_annotation_layer_swaps_active_and_clears_overlay(video_fname):
     is ``None``, and both statevars' rotation lists no longer contain
     the removed name.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["alpha", "beta", "gamma"],
     )
     # Sanity: rotation includes all three plus the implicit buffer slot.
     assert set(v.statevariables["annotation_layer"].states) >= {
@@ -2661,8 +2662,8 @@ def test_remove_annotation_layer_refuses_only_layer(video_fname):
     a second remove must refuse. The dnav layer treats every named
     entry the same -- the buffer-exclusion is a DUSTrack UI concern.
     """
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["solo"],
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["solo"],
     )
     assert set(v.annotations.names) == {"solo", "buffer"}
     v.remove_annotation_layer("solo")
@@ -2674,8 +2675,8 @@ def test_remove_annotation_layer_refuses_only_layer(video_fname):
 
 def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
     """Overlay stays put when a non-overlay, non-primary layer is removed."""
-    v = _DUSTrackBase(
-        vid_name=video_fname, annotation_names=["alpha", "beta", "gamma"],
+    v = DUSTrack(
+        vid_name=video_fname, fast_render=False, annotation_names=["alpha", "beta", "gamma"],
     )
     v.statevariables["annotation_layer"].set_state("alpha")
     v.statevariables["annotation_overlay"].set_state("gamma")
@@ -2690,7 +2691,7 @@ def test_remove_annotation_layer_preserves_overlay_when_unrelated(video_fname):
 
 def test_video_annotations_reorder_permutes_in_place():
     """``VideoAnnotations.reorder(names)`` rewrites _list order; idempotent."""
-    from dustrack.pointtracking import VideoAnnotations
+    from dustrack.annotations import VideoAnnotations
 
     class _Named:
         def __init__(self, name):
@@ -2716,7 +2717,7 @@ def test_video_annotations_reorder_permutes_in_place():
 
 def test_video_annotations_reorder_rejects_non_permutation():
     """``reorder`` rejects missing / extra / duplicate names."""
-    from dustrack.pointtracking import VideoAnnotations
+    from dustrack.annotations import VideoAnnotations
 
     class _Named:
         def __init__(self, name):

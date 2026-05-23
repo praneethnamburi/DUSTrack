@@ -31,7 +31,6 @@ from datanavigator import VideoReader, cpu
 
 from .lk_filter import lk_moving_average_filter
 from .annotations import VideoAnnotation, VideoAnnotations
-from .pointtracking import _DUSTrackBase
 from .seed import (
     get_seed_bundles_root,
     import_seed_bundle_into_project,
@@ -565,7 +564,7 @@ class DLCProject:
     
     def copy_annotations(self, video_name: Union[Path, list]):
         """
-        Copy DUSTrack/_DUSTrackBase JSON files into project's video folder.
+        Copy DUSTrack JSON files into project's video folder.
         
         Args:
             video_name: Single video path or list of video paths.

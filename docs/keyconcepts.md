@@ -297,9 +297,8 @@ DUSTrack is built on top of the `datanavigator` package, which provides the foun
 
 ```python
 datanavigator.VideoBrowser           # Foundational video-browsing GUI
-    └── dustrack.pointtracking._DUSTrackBase   # Internal: point-annotation
-        │                                       # primitives (no DLC)
-        └── dustrack.DUSTrack                   # Public: DLC workflow + UI
+    └── dustrack.DUSTrack            # Public: point-annotation primitives
+                                     # + DLC workflow + UI (single class)
 
 dustrack.VideoAnnotation             # Annotation data container; ships with
                                      # the LK-RSTC postprocess hook attached
@@ -312,9 +311,11 @@ Since DUSTrack inherits from datanavigator:
 
 Note: the point-annotation UI primitives (formerly
 `datanavigator.VideoPointAnnotator`) relocated to `dustrack` in
-1.2.0a1 and the class was renamed to `_DUSTrackBase`. Use
-`dustrack.DUSTrack` directly; direct construction of the internal
-base is discouraged (it's the implementation of DUSTrack, not a
-public API).
+1.2.0a1 as the internal `_DUSTrackBase` parent class. The
+1.2.0rc1 refactor collapsed `_DUSTrackBase` into `dustrack.DUSTrack`
+(a single class is easier to navigate, and the parent/child split
+was no longer load-bearing). Headless / mpl-only constructions (the
+test suite, scripted render paths) pass `fast_render=False` to opt
+out of the Qt image pane.
 
 ---

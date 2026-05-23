@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from datanavigator import utils
-from dustrack.pointtracking import VideoAnnotation
+from dustrack.annotations import VideoAnnotation
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ def test_tier1_scatter_offsets_match_data_coords(video_fname, tmp_path):  # noqa
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
-    from dustrack.pointtracking import VideoAnnotation
+    from dustrack.annotations import VideoAnnotation
 
     fig, ax = plt.subplots()
     ann = VideoAnnotation(vname=video_fname, name="parity", n_labels=2)
