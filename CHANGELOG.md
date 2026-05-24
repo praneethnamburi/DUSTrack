@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **`dustrack.detect_blips(ann)` + `dustrack.interpolate_blips(ann, report)`
+  + `dustrack.detect_and_interpolate_blips(ann)`** — sparse-blip outlier
+  detection on dense-trace annotations (typically DLC `.h5` predicted
+  traces) and per-label LK-RSTC re-tracking across detected blips.
+  A *blip* is a short run of frames where the labeled point jumps away
+  and returns — the signature of a model picking the visually-strongest
+  answer for one or a few frames before snapping back to the
+  temporally-consistent lane. Per-label robust threshold
+  (`med + factor * 1.4826 * MAD`, with midpoint fallback for flat-with-
+  spikes traces); return-tolerance scales with run length. Interpolation
+  delegates to the existing `lucas_kanade_rstc` helper, anchored to the
+  surrounding good frames; sparse `VideoAnnotation` output containing
+  only the blip frames for blipped labels (other labels in the same
+  frame untouched, per spec). Suitable as DLC training data via the
+  NaN-tolerant labeled-data pipeline. Sequential per-blip; reuses one
+  `VideoReader` across blips (network-drive open cost). Saves to
+  `<source_stem>_blip_corrections.json` next to the source; refuses to
+  overwrite an existing file. New module `dustrack/blip.py`; new
+  exports `Blip`, `BlipReport`, `detect_blips`, `interpolate_blips`,
+  `detect_and_interpolate_blips`. 15 new tests in `tests/test_blip.py`
+  (synthetic detection + LK-on-example-video interpolation +
+  round-trip). Real-data smoke at `tests/qt_learning/30_blip_demo.py`:
+  on `pia02_s001_007_RFA2` (36715 frames × 2 labels), detection runs
+  in 0.14s and surfaces 1676 blips; interpolation runs in 137s. Roadmap
+  item 5 in *Next (general-model workflow features)*; independent of
+  the DINOv3 infrastructure (#1).
 - **`dustrack.batch.build_toc(sources, *, extensions, recursive, force,
   show_progress)`** — pre-build the PyAV+TOC sidecar
   (`<video>.dnav-toc`) for every video under `sources`. Thin pass-through

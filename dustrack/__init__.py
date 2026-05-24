@@ -93,6 +93,13 @@ if _importlib_util.find_spec("deeplabcut") is not None:
 from .lk_opticalflow import lucas_kanade, lucas_kanade_rstc
 from .annotations import VideoAnnotation, VideoAnnotations
 from .lk_filter import lk_moving_average_filter
+from .blip import (
+    Blip,
+    BlipReport,
+    detect_blips,
+    detect_and_interpolate_blips,
+    interpolate_blips,
+)
 from .dlcinterface import DLCProject
 from .gui import DUSTrack
 from ._open import open
@@ -109,6 +116,8 @@ from .seed import (
 
 __all__ = [
     "__version__",
+    "Blip",
+    "BlipReport",
     "DUSTrack",
     "DLCProject",
     "VideoAnnotation",
@@ -116,11 +125,14 @@ __all__ = [
     "batch",
     "build_toc",
     "convert_to_mono",
+    "detect_blips",
+    "detect_and_interpolate_blips",
     "dlcpatch",
     "extract_snapshot_for_seeding",
     "get_seed_bundles_root",
     "import_seed_bundle_into_project",
     "inspect_seed_bundle",
+    "interpolate_blips",
     "list_seed_bundles",
     "lk_moving_average_filter",
     "lucas_kanade",
