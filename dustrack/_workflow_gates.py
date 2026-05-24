@@ -128,12 +128,13 @@ def evaluate_workflow_gates(dustrack) -> dict:
     # DLC-stem-derived layer (e.g. the layer ends up named
     # `dlc_iteration-0_removed` rather than `..._blip_removed`).
     ann_fname = getattr(ann, "fname", None) if ann is not None else None
+    # ``ann.fname`` is typically a ``Path`` (WindowsPath), which has no
+    # ``.endswith``; coerce to str. Empty string when absent so the
+    # suffix checks below are cleanly False rather than raising.
+    ann_fname_str = "" if ann_fname is None else str(ann_fname)
     is_blip_output = bool(
-        ann_fname
-        and (
-            ann_fname.endswith("_blip_removed.json")
-            or ann_fname.endswith("_blip_corrections.json")
-        )
+        ann_fname_str.endswith("_blip_removed.json")
+        or ann_fname_str.endswith("_blip_corrections.json")
     ) or bool(
         ann_name
         and (

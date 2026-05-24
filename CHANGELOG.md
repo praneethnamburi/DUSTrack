@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Detect-blip-outliers gate no longer crashes on a Path fname.**
+  ``_workflow_gates.evaluate_workflow_gates`` called ``.endswith()`` on
+  ``ann.fname``, which is a ``Path`` (WindowsPath) in the real flow --
+  ``AttributeError: 'WindowsPath' object has no attribute 'endswith'``.
+  Surfaced in the seed-bundle flow (``_refresh_dlc_layers`` ->
+  ``set_state`` -> ``_refresh_workflow_button_state``). The gate's
+  test stub had no ``fname`` attribute, so the bug never triggered in
+  CI. Fix: coerce ``ann.fname`` to ``str`` before the suffix checks.
+  New ``TestDetectBlipGate`` class in
+  ``tests/test_workflow_button_gates.py`` (5 cases incl. the
+  Path-fname regression) -- the gate previously had zero coverage.
 - **Re-running Detect blip outliers with overwrite no longer shows
   stale corrections.** After the user picked Overwrite on a second
   run for the same source layer, the in-session corrections layer

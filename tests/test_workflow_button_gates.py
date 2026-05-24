@@ -47,10 +47,17 @@ def _make_dlc_root(folder: Path) -> Path:
 
 
 class _Ann:
-    """Stand-in for an annotation layer with just a ``.name``."""
+    """Stand-in for an annotation layer with a ``.name`` and optional
+    ``.fname`` / ``.labels`` (the blip-output gate reads all three).
 
-    def __init__(self, name):
+    ``fname``/``labels`` default to ``None`` so the existing
+    ``_Stub(active_layer_name=...)`` tests are unaffected (the gate
+    reads them via ``getattr(ann, ..., None)``)."""
+
+    def __init__(self, name, fname=None, labels=None):
         self.name = name
+        self.fname = fname
+        self.labels = labels
 
 
 class _Stub:
@@ -68,11 +75,17 @@ class _Stub:
         dlcproject=None,
         current_overlay=None,
         active_layer_name=None,
+        ann_fname=None,
+        ann_labels=None,
     ):
         self.fname = fname
         self._dlcproject = dlcproject
         self._current_overlay = current_overlay
-        self.ann = _Ann(active_layer_name) if active_layer_name else None
+        self.ann = (
+            _Ann(active_layer_name, fname=ann_fname, labels=ann_labels)
+            if active_layer_name
+            else None
+        )
 
     # Bind the actual method so we exercise the real predicate code.
     evaluate = DUSTrack._evaluate_workflow_gates
@@ -273,3 +286,82 @@ class TestCreateDLCProjectGateDuringLoad:
         assert enabled is False
         assert "Already inside DLC project" in tooltip
         assert "Loading DeepLabCut" not in tooltip
+
+
+class TestDetectBlipGate:
+    """Coverage for the Detect blip outliers gate, including the
+    regression for the ``WindowsPath has no attribute 'endswith'``
+    crash that surfaced in the seed-bundle flow (the gate called
+    ``.endswith`` on ``ann.fname``, which is a Path, not a str)."""
+
+    def test_path_fname_does_not_crash(self, tmp_path):
+        """Regression: ``ann.fname`` is a ``Path`` in the real flow.
+        The gate must coerce to str before ``.endswith`` rather than
+        raising AttributeError."""
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        # A dense DLC layer whose fname is a real Path object.
+        ann_path = tmp_path / "sample_iteration-0.h5"
+        stub = _Stub(
+            fname=str(vid),
+            active_layer_name="dlc_iteration-0",
+            ann_fname=Path(ann_path),
+            ann_labels=["0", "1"],
+        )
+        # Must not raise.
+        gates = stub.evaluate()
+        assert "Detect blip outliers" in gates
+
+    def test_dense_dlc_layer_enables_blip(self, tmp_path):
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(
+            fname=str(vid),
+            active_layer_name="dlc_iteration-0",
+            ann_fname=Path(tmp_path / "sample_iteration-0.h5"),
+            ann_labels=["0", "1"],
+        )
+        enabled, tooltip = stub.evaluate()["Detect blip outliers"]
+        assert enabled is True
+        assert tooltip == ""
+
+    def test_blip_output_layer_disabled_by_fname(self, tmp_path):
+        """A ``_blip_removed.json`` fname disables re-running on the
+        output (the str-suffix branch the crash was guarding)."""
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(
+            fname=str(vid),
+            active_layer_name="dlc_iteration-0_removed",
+            ann_fname=Path(tmp_path / "sample_blip_removed.json"),
+            ann_labels=["0", "1"],
+        )
+        enabled, tooltip = stub.evaluate()["Detect blip outliers"]
+        assert enabled is False
+        assert "output of blip detection" in tooltip
+
+    def test_manual_layer_disabled(self, tmp_path):
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(
+            fname=str(vid),
+            active_layer_name="manual",
+            ann_fname=Path(tmp_path / "sample_annotations_manual.json"),
+            ann_labels=["0", "1"],
+        )
+        enabled, tooltip = stub.evaluate()["Detect blip outliers"]
+        assert enabled is False
+        assert "dense trace layers" in tooltip
+
+    def test_no_labels_disabled(self, tmp_path):
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(
+            fname=str(vid),
+            active_layer_name="dlc_iteration-0",
+            ann_fname=Path(tmp_path / "sample_iteration-0.h5"),
+            ann_labels=None,  # no labels -> "No active layer"
+        )
+        enabled, tooltip = stub.evaluate()["Detect blip outliers"]
+        assert enabled is False
+        assert "No active layer" in tooltip
