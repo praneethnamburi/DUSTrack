@@ -4300,7 +4300,25 @@ class DUSTrack(VideoBrowser):
             self.decrement()
 
     def save(self) -> None:
-        """Save current annotation layer json file."""
+        """Save current annotation layer json file.
+
+        ``.h5`` layers (DLC predicted traces, ``labeled_data`` blocks)
+        are not in-place editable through this key — the JSON-only
+        contract on :meth:`VideoAnnotation.save` would raise mid-keypress
+        and look like a silent no-op. Short-circuit with a clear
+        printed message that points the user to manual layers or to
+        ``Save annotation as...`` for explicit copy-out.
+        """
+        ann_fname = getattr(self.ann, "fname", None)
+        if ann_fname is not None and Path(ann_fname).suffix.lower() == ".h5":
+            layer_name = getattr(self.ann, "name", None) or Path(ann_fname).stem
+            print(
+                f"[save] Layer {layer_name!r} is a .h5 file; the 's' key "
+                f"saves only manual .json layers. Switch to a manual layer "
+                f"or use 'Save annotation as...' (sidebar) to copy this "
+                f"layer to a new .json file."
+            )
+            return
         self.ann.save()
 
     def select_label_with_mouse(self, event: Any) -> None:

@@ -3,6 +3,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`s` key on `.h5` layers no longer silent no-op.** Pressing `s` on a
+  DLC trace / `labeled_data` `.h5` layer previously called
+  `VideoAnnotation.save()`, which raises `ValueError("Supply a json file
+  name.")` on non-JSON suffixes; the exception was swallowed by
+  matplotlib's key-event dispatcher and the user saw nothing happen.
+  `DUSTrack.save()` now short-circuits `.h5` cases with a printed
+  message naming the layer and pointing at `Save annotation as...`
+  (sidebar) for explicit copy-out. 4 new tests in
+  `tests/test_save_h5_noop.py`. Surfaces a pia02 mid-session UX gap
+  (2026-05-23).
+
 ### Added
 - **`dustrack.detect_blips(ann)` + `dustrack.interpolate_blips(ann, report)`
   + `dustrack.detect_and_interpolate_blips(ann)`** — sparse-blip outlier
