@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -100,6 +100,7 @@ class BlipReport:
     blips: list[Blip] = field(default_factory=list)
     per_label_stats: dict[str, dict[str, float | int]] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
+    n_frames: int = 0  # total frames in the source annotation
 
     def __len__(self) -> int:
         return len(self.blips)
@@ -117,6 +118,28 @@ class BlipReport:
         for b in self.blips:
             hist[b.length] = hist.get(b.length, 0) + 1
         return dict(sorted(hist.items()))
+
+    def min_coverage(self) -> float:
+        """Smallest per-label fraction of finite frames in the source annotation.
+
+        ``min_coverage() == 1.0`` means every label is densely populated
+        across all frames (typical DLC predicted trace); lower values
+        mean at least one label has gaps. Used by the UI gate to decide
+        whether the active layer is dense enough for blip detection to
+        be meaningful (sparse manual layers can be scanned, but the
+        per-label MAD threshold isn't well-conditioned on a handful of
+        points).
+
+        Returns ``0.0`` when there are no labels, no per-label stats
+        recorded, or ``n_frames == 0``.
+        """
+        if not self.per_label_stats or self.n_frames <= 0:
+            return 0.0
+        ratios = [
+            int(stats.get("n_finite_frames", 0)) / self.n_frames
+            for stats in self.per_label_stats.values()
+        ]
+        return float(min(ratios)) if ratios else 0.0
 
 
 def _label_threshold(
@@ -291,7 +314,7 @@ def detect_blips(
         max_blip_length=max_blip_length,
         return_position_factor=return_position_factor,
     )
-    report = BlipReport(params=params)
+    report = BlipReport(params=params, n_frames=int(ann.n_frames))
 
     for label in ann.labels:
         xy = ann.to_trace(label)  # (n_frames, 2) with NaN for missing
@@ -351,6 +374,7 @@ def interpolate_blips(
     report: BlipReport,
     *,
     lk_config: dict | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> VideoAnnotation:
     """LK-RSTC re-track every blip and return a sparse corrections layer.
 
@@ -366,6 +390,12 @@ def interpolate_blips(
         report: Detection result from :func:`detect_blips`.
         lk_config: Optional override for the per-pair LK config (passed
             through to :func:`dustrack.lk_opticalflow.lucas_kanade_rstc`).
+        progress_callback: Optional ``(done_count, total_count)``
+            callback fired once per completed blip. Used by the UI
+            ProgressOverlay to drive a progress bar; headless callers
+            can leave it ``None``. Fires after the per-blip LK has
+            completed and the corrections are written into the sparse
+            output dict.
 
     Returns:
         A sparse :class:`VideoAnnotation` with corrections at blip
@@ -388,7 +418,8 @@ def interpolate_blips(
     # the same shape; only blipped labels get populated frames.
     sparse: dict[str, dict[int, list[float]]] = {label: {} for label in ann.labels}
 
-    for blip in report.blips:
+    total = len(report.blips)
+    for done_count, blip in enumerate(report.blips, start=1):
         start_pts = np.asarray([blip.anchor_before], dtype=np.float32)
         end_pts = np.asarray([blip.anchor_after], dtype=np.float32)
         path = lucas_kanade_rstc(
@@ -422,6 +453,9 @@ def interpolate_blips(
             frame = blip.start + offset
             sparse[blip.label][frame] = [float(xy[0]), float(xy[1])]
 
+        if progress_callback is not None:
+            progress_callback(done_count, total)
+
     # Construct the sparse output annotation. Pre-build the per-label
     # dict and pass via ``preloaded_json`` so ``VideoAnnotation.__init__``
     # doesn't try to read the (nonexistent) target file from disk.
@@ -448,6 +482,7 @@ def detect_and_interpolate_blips(
     max_blip_length: int = 5,
     return_position_factor: float = 3.0,
     lk_config: dict | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[VideoAnnotation, BlipReport]:
     """Convenience wrapper: detect, interpolate, optionally save.
 
@@ -477,7 +512,9 @@ def detect_and_interpolate_blips(
         max_blip_length=max_blip_length,
         return_position_factor=return_position_factor,
     )
-    out = interpolate_blips(ann, report, lk_config=lk_config)
+    out = interpolate_blips(
+        ann, report, lk_config=lk_config, progress_callback=progress_callback
+    )
     if save:
         if os.path.exists(out.fname):
             raise FileExistsError(

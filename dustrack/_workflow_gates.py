@@ -96,7 +96,53 @@ def evaluate_workflow_gates(dustrack) -> dict:
     else:
         gates["Apply manual corrections"] = (True, "")
 
+    # --- Detect blip outliers ------------------------------------
+    # Data-property gate (per [[gate-on-data-not-naming]]): require at
+    # least 80% per-label coverage so the MAD-based threshold has
+    # enough finite displacements to be well-conditioned. Refuse to
+    # re-detect on a blip-corrections layer (would be sparse-on-sparse,
+    # and the output naming would self-collide).
+    if ann is None or not getattr(ann, "labels", None):
+        gates["Detect blip outliers"] = (False, "No active layer.")
+    elif ann_name and ann_name.endswith("_blip_corrections"):
+        gates["Detect blip outliers"] = (
+            False,
+            "This is a blip-corrections output; switch to the "
+            "source DLC trace to re-run detection.",
+        )
+    else:
+        coverage = _min_label_coverage(ann)
+        if coverage < 0.8:
+            gates["Detect blip outliers"] = (
+                False,
+                "Detection needs a densely-labeled layer "
+                "(>=80% per-label coverage); the active layer "
+                f"is at {coverage:.0%}. Pick a DLC trace or the "
+                "post-Apply-manual-corrections layer.",
+            )
+        else:
+            gates["Detect blip outliers"] = (True, "")
+
     return gates
+
+
+def _min_label_coverage(ann) -> float:
+    """Smallest per-label fraction of finite frames in an annotation.
+
+    Pure-data helper for the Detect-blip-outliers gate; returns 0.0 if
+    the annotation has no labels or no frames. Mirrors the calculation
+    :meth:`dustrack.blip.BlipReport.min_coverage` does post-detection,
+    but operates pre-detection so the gate is fast and decode-free.
+    """
+    n_frames = int(getattr(ann, "n_frames", 0) or 0)
+    if n_frames <= 0:
+        return 0.0
+    labels = getattr(ann, "labels", None) or []
+    if not labels:
+        return 0.0
+    data = getattr(ann, "data", {})
+    ratios = [len(data.get(label, {})) / n_frames for label in labels]
+    return float(min(ratios)) if ratios else 0.0
 
 
 def refresh_workflow_button_state(dustrack) -> None:

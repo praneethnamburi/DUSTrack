@@ -61,7 +61,9 @@ from . import _nav_widget
 from . import _preflight
 from . import _preflight_modal
 from . import _seed_bundle_modal
+from . import _blip_modal
 from . import _train_modal
+from . import blip as _blip
 from . import _view_state
 from . import _workflow_gates
 from ._qt_styling import _make_group_styler, _pin_qt_palette
@@ -452,6 +454,11 @@ class DUSTrack(VideoBrowser):
             self.buttons.add(
                 text="Reduce jitter",
                 action_func=self.process_with_lk,
+                style_tag="workflow",
+            )
+            self.buttons.add(
+                text="Detect blip outliers",
+                action_func=self.detect_blips_workflow,
                 style_tag="workflow",
             )
         self.buttons.add(
@@ -2340,6 +2347,128 @@ class DUSTrack(VideoBrowser):
             success_summary=(
                 f"Jitter reduction complete on layer {source_layer_name!r}. "
                 f"Smoothed layer loaded."
+            ),
+        )
+        return None
+
+    def detect_blips_workflow(self, event=None):
+        """Detect blip outliers on the active layer + LK-interpolate them.
+
+        Two-stage flow that mirrors :meth:`process_with_lk`'s Qt-vs-mpl
+        dispatch:
+
+        1. On Qt: pop the ``BlipOptionsDialog`` modal (knob tuning +
+           in-modal Detect button + results pane). Cancel returns; on
+           Interpolate, kick off the slow LK pass under a
+           ``ProgressOverlay`` (one tick per blip, driven by the new
+           ``progress_callback`` kwarg on :func:`dustrack.blip.interpolate_blips`).
+        2. On mpl-fallback: run detect + interpolate synchronously with
+           module defaults; print a one-line summary.
+
+        Either way, the sparse blip-corrections layer adopts via
+        :meth:`_adopt_layer` with the source layer pinned as overlay
+        (mirrors Reduce jitter's adoption shape so the user sees the
+        source DLC trace + corrections side-by-side immediately).
+        """
+        source_ann = self.ann
+        source_layer_name = source_ann.name
+
+        qt_window = self._find_qt_window()
+        if qt_window is None:
+            # mpl-fallback: synchronous, default knobs, no modal.
+            report = _blip.detect_blips(source_ann)
+            if len(report) == 0:
+                print(
+                    f"[detect_blips] no blips found on layer "
+                    f"{source_layer_name!r}; nothing to interpolate."
+                )
+                return None
+            out = _blip.interpolate_blips(source_ann, report)
+            out.save()
+            self._adopt_layer(
+                out,
+                set_active=True,
+                set_overlay=source_layer_name,
+            )
+            self.update()
+            print(
+                f"[detect_blips] {len(report)} blips on layer "
+                f"{source_layer_name!r}; sparse corrections saved to "
+                f"{out.fname}."
+            )
+            return out
+
+        modal_result = _blip_modal.prompt_blip_options(qt_window, source_ann)
+        if modal_result is None:
+            return None  # user clicked Cancel
+        report, knobs = modal_result
+
+        # Refuse to overwrite an existing corrections file. The
+        # detect_and_interpolate_blips composer raises FileExistsError
+        # at save time; we surface that as a confirm modal before
+        # spending 100+ seconds on LK.
+        from ._overlays import _make_confirm_overlay_class
+        from .blip import _corrections_fname
+
+        out_path = _corrections_fname(source_ann)
+        if os.path.exists(out_path):
+            ConfirmOverlay = _make_confirm_overlay_class()
+            choice = ConfirmOverlay(
+                qt_window,
+                title="Corrections file exists",
+                message=(
+                    f"A blip-corrections file already exists at\n  {out_path}\n\n"
+                    "Overwrite it (the existing file is lost), or cancel?"
+                ),
+                buttons=[("Overwrite", "destructive"), ("Cancel", "neutral")],
+                default="Cancel",
+                severity="warning",
+            ).exec_()
+            if choice != "Overwrite":
+                return None
+            os.remove(out_path)
+
+        def _interpolate():
+            from tqdm import tqdm
+
+            # tqdm bar drives the ProgressOverlay via the teed stdout
+            # picked up by _PROGRESS_PATTERNS' "N/M [" matcher.
+            with tqdm(total=len(report), desc="Interpolating blips") as pbar:
+
+                def _on_progress(done, total):
+                    if pbar.total != total:
+                        pbar.total = total
+                        pbar.refresh()
+                    pbar.update(1)
+
+                out = _blip.interpolate_blips(
+                    source_ann, report, progress_callback=_on_progress
+                )
+            out.save()
+            return out
+
+        def _on_success(out):
+            self._adopt_layer(
+                out,
+                set_active=True,
+                set_overlay=source_layer_name,
+            )
+            self.update()
+
+        self._run_with_overlay(
+            qt_window,
+            work_fn=_interpolate,
+            on_success=_on_success,
+            title=f"Interpolating {len(report)} blips ({source_layer_name})",
+            initial_phase="Preparing LK-RSTC re-track per blip",
+            hint=(
+                "Output is also streamed to the launching terminal. "
+                "The sparse corrections layer will load when you click Done."
+            ),
+            show_progress_bar=True,
+            success_summary=(
+                f"Blip interpolation complete: {len(report)} blips on layer "
+                f"{source_layer_name!r}. Sparse corrections layer loaded."
             ),
         )
         return None

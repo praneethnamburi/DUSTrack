@@ -1094,6 +1094,331 @@ def _make_training_options_class():
     return TrainingOptionsDialog
 
 
+# ---------------------------------------------------------------------------
+# Blip-detection options modal (Detect blip outliers click flow, 1.3.0)
+# ---------------------------------------------------------------------------
+
+
+def _format_blip_results_text(report) -> str:
+    """Render a :class:`dustrack.blip.BlipReport` as the multi-line
+    string the modal shows in its results section. Pure-data helper
+    so the rendering is unit-testable without Qt.
+    """
+    if report is None:
+        return "Press Detect to scan the active layer."
+
+    lines = []
+    total = len(report)
+    if total == 0:
+        lines.append("0 blips found.")
+        # Still surface per-label stats so users can see what the
+        # threshold was — informative when tuning knobs down.
+        for label, stats in report.per_label_stats.items():
+            med = stats.get("median_d", float("nan"))
+            thr = stats.get("threshold", float("nan"))
+            lines.append(
+                f"  Label {label!r}:  med={med:.3f}  threshold={thr:.3f}"
+            )
+        return "\n".join(lines)
+
+    for label, stats in report.per_label_stats.items():
+        n = int(stats.get("n_blips", 0))
+        med = stats.get("median_d", float("nan"))
+        thr = stats.get("threshold", float("nan"))
+        lines.append(
+            f"Label {label!r}:  {n} blips  med={med:.3f}  threshold={thr:.3f}"
+        )
+    lines.append(f"Total: {total} blips")
+    hist = report.length_histogram()
+    if hist:
+        hist_str = "  ".join(f"{length}:{count}" for length, count in hist.items())
+        lines.append(f"Length histogram: {hist_str}")
+    # Skipped summary -- aggregate across labels.
+    n_edge = sum(int(s.get("n_skipped_edge", 0)) for s in report.per_label_stats.values())
+    n_long = sum(int(s.get("n_skipped_long", 0)) for s in report.per_label_stats.values())
+    n_noreturn = sum(
+        int(s.get("n_skipped_noreturn", 0)) for s in report.per_label_stats.values()
+    )
+    if n_edge or n_long or n_noreturn:
+        lines.append(
+            f"(skipped: edge={n_edge}  long={n_long}  noreturn={n_noreturn})"
+        )
+    return "\n".join(lines)
+
+
+def _make_blip_options_class():
+    """Build :class:`BlipOptionsDialog` lazily, mirroring
+    :func:`_make_training_options_class`'s qtpy-import-on-demand pattern.
+
+    Two-stage modal for the **Detect blip outliers** workflow button.
+    Stage 1: user tunes the three detection knobs (threshold factor,
+    max blip length, return position factor) and clicks **Detect** to
+    run :func:`dustrack.blip.detect_blips` synchronously against the
+    active annotation. Detection is fast (~0.14 s on a 36715-frame
+    pia02 trace), so an in-modal blocking call is fine and avoids the
+    overhead of an extra async overlay for the cheap stage.
+
+    Stage 2: results populate in-modal (per-label blip counts +
+    thresholds + length histogram); the **Interpolate** button enables.
+    Clicking Interpolate closes the modal and returns
+    ``(report, knobs)``; the caller (``DUSTrack.detect_blips_workflow``)
+    kicks off the slow LK interpolation pass under a separate
+    :class:`ProgressOverlay`. **Cancel** returns ``None`` -- caller
+    aborts.
+
+    Knobs persist across re-Detect clicks within the same modal session
+    so users can iterate ("tune down threshold_factor, look at the
+    histogram, tune again").
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QDoubleSpinBox,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QSpinBox,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    # Reuse ConfirmOverlay's role QSS (same vocab as Train/Cancel).
+    _ROLE_QSS = {
+        "primary": (
+            "QPushButton { background-color: #3a86ff; color: white; "
+            "  border: 1px solid #2a76ef; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4a96ff; }"
+            "QPushButton:pressed { background-color: #2a76ef; }"
+            "QPushButton:disabled { background-color: #2a4a7a; color: #999999; "
+            "  border: 1px solid #244270; }"
+        ),
+        "neutral": (
+            "QPushButton { background-color: #555555; color: white; "
+            "  border: 1px solid #444444; padding: 6px 24px; "
+            "  font-size: 11pt; }"
+            "QPushButton:hover { background-color: #666666; }"
+            "QPushButton:pressed { background-color: #444444; }"
+        ),
+    }
+
+    def _labeled_row(text: str, widget):
+        """Helper: ``[QLabel(text)  widget  <stretch>]`` row layout."""
+        row = QHBoxLayout()
+        lbl = QLabel(text + ":")
+        lbl.setMinimumWidth(180)
+        row.addWidget(lbl)
+        row.addWidget(widget)
+        row.addStretch(1)
+        return row
+
+    class BlipOptionsDialog(QObject):
+        """Synchronous two-stage modal for Detect blip outliers.
+
+        ``exec_()`` returns ``(report, params_dict)`` on Interpolate,
+        ``None`` on Cancel. ``report`` is whatever the last Detect run
+        produced (guaranteed to have ``len(blips) > 0`` because the
+        Interpolate button is gated on non-empty results).
+        """
+
+        def __init__(
+            self,
+            main_window,
+            *,
+            ann,
+            detect_fn,
+        ):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._ann = ann
+            self._detect_fn = detect_fn
+            self._result = None
+            self._loop = QEventLoop()
+            self._last_report = None
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_blip_options_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_blip_options_overlay { "
+                "  background-color: rgba(0, 0, 0, 200); "
+                "}"
+                "QLabel { color: white; }"
+                "#dustrack_blip_title { color: white; "
+                "  font-size: 22pt; font-weight: bold; }"
+                "#dustrack_blip_results { color: white; font-family: "
+                "  'Consolas', 'Courier New', monospace; font-size: 10pt; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setAlignment(Qt.AlignCenter)
+            outer.addStretch(1)
+
+            title_lbl = QLabel("Detect blip outliers")
+            title_lbl.setObjectName("dustrack_blip_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title_lbl)
+
+            # Inner content card -- no QWidget QSS so native spinboxes
+            # keep their native rendering (per feedback_qt_qss_vs_palette).
+            content = QWidget()
+            content.setMaximumWidth(640)
+            content_layout = QVBoxLayout(content)
+            content_layout.setSpacing(12)
+
+            # Active-layer context line.
+            layer_name = getattr(ann, "name", None) or "<unnamed>"
+            n_labels = len(getattr(ann, "labels", []) or [])
+            n_frames = int(getattr(ann, "n_frames", 0) or 0)
+            ctx_lbl = QLabel(
+                f"Active layer: {layer_name!r}\n"
+                f"  {n_labels} label{'s' if n_labels != 1 else ''} × {n_frames} frames"
+            )
+            content_layout.addWidget(ctx_lbl)
+
+            # --- Detection-parameter spinboxes ---
+            params_lbl = QLabel("Detection parameters")
+            params_lbl.setStyleSheet("font-weight: bold;")
+            content_layout.addWidget(params_lbl)
+
+            self._threshold_spin = QDoubleSpinBox()
+            self._threshold_spin.setRange(0.5, 20.0)
+            self._threshold_spin.setSingleStep(0.5)
+            self._threshold_spin.setDecimals(1)
+            self._threshold_spin.setValue(5.0)
+            content_layout.addLayout(
+                _labeled_row("Threshold factor", self._threshold_spin)
+            )
+
+            self._max_len_spin = QSpinBox()
+            self._max_len_spin.setRange(1, 30)
+            self._max_len_spin.setValue(5)
+            content_layout.addLayout(
+                _labeled_row("Max blip length", self._max_len_spin)
+            )
+
+            self._return_factor_spin = QDoubleSpinBox()
+            self._return_factor_spin.setRange(0.5, 10.0)
+            self._return_factor_spin.setSingleStep(0.5)
+            self._return_factor_spin.setDecimals(1)
+            self._return_factor_spin.setValue(3.0)
+            content_layout.addLayout(
+                _labeled_row("Return tolerance", self._return_factor_spin)
+            )
+
+            # Detect button (its own row, centered).
+            detect_row = QHBoxLayout()
+            detect_row.setAlignment(Qt.AlignCenter)
+            self._detect_btn = QPushButton("Detect")
+            self._detect_btn.setMinimumWidth(160)
+            self._detect_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._detect_btn.clicked.connect(self._on_detect_clicked)
+            detect_row.addWidget(self._detect_btn)
+            content_layout.addLayout(detect_row)
+
+            # Results section: blank until first Detect.
+            results_header = QLabel("Results")
+            results_header.setStyleSheet("font-weight: bold;")
+            content_layout.addWidget(results_header)
+            self._results_lbl = QLabel(_format_blip_results_text(None))
+            self._results_lbl.setObjectName("dustrack_blip_results")
+            self._results_lbl.setWordWrap(False)
+            self._results_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            content_layout.addWidget(self._results_lbl)
+
+            # Cancel + Interpolate button row.
+            button_row = QHBoxLayout()
+            button_row.setAlignment(Qt.AlignCenter)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setMinimumWidth(160)
+            self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+            self._interpolate_btn = QPushButton("Interpolate →")
+            self._interpolate_btn.setMinimumWidth(160)
+            self._interpolate_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._interpolate_btn.setEnabled(False)
+            self._interpolate_btn.clicked.connect(self._on_interpolate_clicked)
+            button_row.addWidget(self._cancel_btn)
+            button_row.addWidget(self._interpolate_btn)
+            content_layout.addLayout(button_row)
+
+            outer.addWidget(content, alignment=Qt.AlignCenter)
+            outer.addStretch(1)
+
+            main_window.installEventFilter(self)
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._detect_btn.setFocus()
+
+        # -- Slots -----------------------------------------------------
+
+        def _current_knobs(self) -> dict:
+            return dict(
+                threshold_factor=float(self._threshold_spin.value()),
+                max_blip_length=int(self._max_len_spin.value()),
+                return_position_factor=float(self._return_factor_spin.value()),
+            )
+
+        def _on_detect_clicked(self):
+            knobs = self._current_knobs()
+            try:
+                self._last_report = self._detect_fn(self._ann, **knobs)
+            except Exception as exc:  # noqa: BLE001
+                # Surface the failure in the results pane rather than
+                # tearing down the modal; detect is supposed to be
+                # cheap + safe, so an exception here is a real signal
+                # (e.g. ann has no labels). Disable Interpolate.
+                self._last_report = None
+                self._results_lbl.setText(f"Detection failed: {exc}")
+                self._interpolate_btn.setEnabled(False)
+                return
+            self._results_lbl.setText(_format_blip_results_text(self._last_report))
+            self._interpolate_btn.setEnabled(len(self._last_report) > 0)
+
+        def _on_interpolate_clicked(self):
+            if self._last_report is None or len(self._last_report) == 0:
+                return  # button shouldn't have been clickable, but be defensive
+            self._result = (self._last_report, self._current_knobs())
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel_clicked(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        # -- Lifecycle (mirror TrainingOptionsDialog) ------------------
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            """Block until the user clicks Interpolate or Cancel.
+
+            Returns ``(report, knobs_dict)`` on Interpolate; ``None``
+            on Cancel.
+            """
+            self._loop.exec_()
+            return self._result
+
+    return BlipOptionsDialog
+
+
 def _make_seed_bundle_picker_class():
     """Build :class:`SeedBundlePickerDialog` lazily, mirroring
     :func:`_make_training_options_class`'s qtpy-import-on-demand

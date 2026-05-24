@@ -16,6 +16,32 @@ All notable changes to this project will be documented in this file.
   (2026-05-23).
 
 ### Added
+- **Detect blip outliers — sidebar button + two-stage modal +
+  ProgressOverlay (UI wiring on top of the existing `detect_blips`
+  / `interpolate_blips` API).** New **Detect blip outliers** button
+  in the Workflow group (right after Reduce jitter, before Save
+  annotation as...) that pops `BlipOptionsDialog`. Stage 1: tune three
+  detection knobs (threshold factor / max blip length / return
+  tolerance) + click **Detect** to run detection synchronously in-modal
+  (~0.14 s on a 36715-frame pia02 trace); per-label counts +
+  thresholds + length histogram populate. Re-Detect with new knobs to
+  iterate. Stage 2: **Interpolate** closes the modal and kicks off the
+  slow LK pass under a `ProgressOverlay` (one tick per blip via the
+  new `progress_callback` kwarg on `interpolate_blips`); the sparse
+  blip-corrections layer adopts as active with the source DLC trace
+  pinned as overlay (mirrors Reduce jitter's adoption shape).
+  Overwrite-confirm overlay fires when a `<stem>_blip_corrections.json`
+  already exists alongside the source. mpl-fallback path runs detect +
+  interpolate synchronously with module defaults (no modal, no
+  overlay), preserving the headless workflow. Workflow gate disables
+  the button when the active layer is sparse (per-label coverage
+  < 80%, per [[gate-on-data-not-naming]]) or when the active layer is
+  already a blip-corrections output. New `BlipReport.min_coverage()`
+  helper exposes the gate-relevant statistic on the algorithm side.
+  12 new tests in `tests/test_blip_modal.py` (result-text renderer +
+  mpl-fallback workflow dispatch + progress-callback semantics +
+  coverage helper + gate matrix). Manual Qt smoke harness at
+  `tests/qt_learning/31_blip_modal_smoke.py`.
 - **`dustrack.detect_blips(ann)` + `dustrack.interpolate_blips(ann, report)`
   + `dustrack.detect_and_interpolate_blips(ann)`** — sparse-blip outlier
   detection on dense-trace annotations (typically DLC `.h5` predicted
