@@ -29,10 +29,14 @@ def prompt_blip_options(qt_window, ann):
         ann: The active :class:`VideoAnnotation` to scan.
 
     Returns:
-        ``(report, knobs)`` on Interpolate, where ``report`` is a
-        :class:`dustrack.blip.BlipReport` with at least one blip and
-        ``knobs`` is the dict of detection-knob values used to produce
-        it. ``None`` if the user clicked Cancel.
+        ``(report, knobs, drop_frame_if_any_blip)`` on Remove blips,
+        where ``report`` is a :class:`dustrack.blip.BlipReport` with
+        at least one blip, ``knobs`` is the dict of detection-knob
+        values used to produce it, and ``drop_frame_if_any_blip`` is
+        the checkbox state (``False`` = drop only the blipped label
+        at each blip frame; ``True`` = drop every label at any frame
+        where any blip was detected). ``None`` if the user clicked
+        Cancel.
     """
     BlipOptionsDialog = _make_blip_options_class()
     dialog = BlipOptionsDialog(

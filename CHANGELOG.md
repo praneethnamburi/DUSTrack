@@ -55,6 +55,30 @@ All notable changes to this project will be documented in this file.
   `tests/test_save_h5_noop.py`. Surfaces a pia02 mid-session UX gap
   (2026-05-23).
 
+### Changed
+- **Detect blip outliers UI now produces a *without-blip* layer
+  instead of an LK-interpolated sparse corrections layer.** The
+  LK-interpolation approach (per-blip RSTC re-track producing a
+  sparse layer of synthesized positions) shipped first but turned
+  out to be less useful in the pia02 workflow than just dropping
+  the contaminating frames — DLC trains on a cleaner subset rather
+  than on synthesized positions. New module-level
+  `dustrack.remove_blips(ann, report, *, drop_frame_if_any_blip=False)`
+  copies the source data and drops the blipped entries; output
+  lands at `<source_stem>_blip_removed.json`. Modal gains a checkbox
+  **"Drop all labels at frames where any blip was detected"**
+  (unchecked default) controlling per-label-only vs whole-frame
+  removal. Action button renamed from `Interpolate →` to
+  `Remove blips →`. The LK function
+  `dustrack.interpolate_blips` stays available for headless callers
+  who explicitly want the sparse-corrections output. Workflow gate
+  also disables on `*_blip_removed.json` outputs (in addition to
+  the existing `*_blip_corrections.json` block) so re-detection
+  doesn't self-collide on the output filename. 4 new tests in
+  `tests/test_blip_modal.py` (per-label-only drop preserves other
+  labels at blip frame; whole-frame drop removes all labels;
+  non-blip frames preserved; `_blip_removed` gate path).
+
 ### Added
 - **Detect blip outliers — sidebar button + two-stage modal +
   ProgressOverlay (UI wiring on top of the existing `detect_blips`

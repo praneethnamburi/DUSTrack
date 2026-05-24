@@ -534,3 +534,83 @@ def _corrections_fname(ann: VideoAnnotation) -> str:
         raise ValueError("Source annotation has no fname; cannot derive output path.")
     p = Path(ann.fname)
     return str(p.parent / f"{p.stem}_blip_corrections.json")
+
+
+def _removed_fname(ann: VideoAnnotation) -> str:
+    """Derive the without-blip dense output path from a source annotation.
+
+    ``<source_stem>_blip_removed.json`` next to the source file.
+    """
+    if ann.fname is None:
+        raise ValueError("Source annotation has no fname; cannot derive output path.")
+    p = Path(ann.fname)
+    return str(p.parent / f"{p.stem}_blip_removed.json")
+
+
+def remove_blips(
+    ann: VideoAnnotation,
+    report: BlipReport,
+    *,
+    drop_frame_if_any_blip: bool = False,
+) -> VideoAnnotation:
+    """Build a *without-blip* copy of ``ann``: every blip frame's entry
+    is dropped, all other frames carry their original (x, y) untouched.
+
+    The output is a **dense** :class:`VideoAnnotation` (same labels +
+    frame coverage as the source minus the dropped entries) — directly
+    usable as DLC training data via the NaN-tolerant labeled-data path,
+    since DLC simply skips frames with missing per-bodypart values.
+
+    Args:
+        ann: Source dense-trace annotation passed to :func:`detect_blips`.
+        report: Detection result from :func:`detect_blips`.
+        drop_frame_if_any_blip: When ``False`` (default), only the
+            blipped label's entry is removed at each blip frame; other
+            labels at the same frame are preserved. When ``True``, the
+            blip frame is dropped from *every* label — the strict
+            "if any label was bad at this frame, the frame is suspect
+            for all" policy. Useful when blips on one label tend to
+            correlate with bad image quality (occlusion, motion blur)
+            that compromises every label at the same instant.
+
+    Returns:
+        A new :class:`VideoAnnotation` whose ``fname`` is set to
+        ``<source_stem>_blip_removed.json`` next to the source; the
+        file is NOT written by this function (call ``.save()`` on the
+        returned object if you want it persisted).
+    """
+    # Collect blip frames into per-label sets (and a union set for the
+    # whole-frame policy). Use sets for O(1) lookup during the copy.
+    per_label_drop: dict[str, set[int]] = {label: set() for label in ann.labels}
+    any_label_drop: set[int] = set()
+    for blip in report.blips:
+        for f in range(blip.start, blip.end + 1):
+            per_label_drop.setdefault(blip.label, set()).add(f)
+            any_label_drop.add(f)
+
+    # Build the new per-label data dict by filtering the source.
+    drop_set_for = (
+        (lambda label: any_label_drop)
+        if drop_frame_if_any_blip
+        else (lambda label: per_label_drop.get(label, set()))
+    )
+    new_data: dict[str, dict[int, list[float]]] = {}
+    for label in ann.labels:
+        drop = drop_set_for(label)
+        src = ann.data[label]
+        new_data[label] = {
+            int(frame): [float(xy[0]), float(xy[1])]
+            for frame, xy in src.items()
+            if frame not in drop
+        }
+
+    video = ann.video
+    out_fname = _removed_fname(ann)
+    out = VideoAnnotation(
+        fname=out_fname,
+        vname=None,
+        n_labels=len(ann.labels),
+        preloaded_json=new_data,
+        video=video,  # share the reader; avoid a second av.open
+    )
+    return out

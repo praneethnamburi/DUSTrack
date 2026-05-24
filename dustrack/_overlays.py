@@ -1172,6 +1172,7 @@ def _make_blip_options_class():
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
+        QCheckBox,
         QDoubleSpinBox,
         QFrame,
         QHBoxLayout,
@@ -1202,6 +1203,14 @@ def _make_blip_options_class():
         ),
     }
 
+    # Checkbox QSS so the indicator + label are legible on the dark
+    # rgba(0,0,0,200) backdrop (Windows-native is too subtle per
+    # [[feedback_dark_overlay_native_disabled_subtle]]).
+    _CHECKBOX_QSS = (
+        "QCheckBox { color: white; font-size: 11pt; }"
+        "QCheckBox::indicator { width: 16px; height: 16px; }"
+    )
+
     def _labeled_row(text: str, widget, tooltip: str = ""):
         """Helper: ``[QLabel(text)  widget  <stretch>]`` row layout.
 
@@ -1223,7 +1232,7 @@ def _make_blip_options_class():
     class BlipOptionsDialog(QObject):
         """Synchronous two-stage modal for Detect blip outliers.
 
-        ``exec_()`` returns ``(report, params_dict)`` on Interpolate,
+        ``exec_()`` returns ``(report, params_dict, drop_frame_if_any_blip)`` on Remove blips,
         ``None`` on Cancel. ``report`` is whatever the last Detect run
         produced (guaranteed to have ``len(blips) > 0`` because the
         Interpolate button is gated on non-empty results).
@@ -1380,20 +1389,40 @@ def _make_blip_options_class():
             self._results_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             content_layout.addWidget(self._results_lbl)
 
-            # Cancel + Interpolate button row.
+            # Output options
+            options_header = QLabel("Output options")
+            options_header.setStyleSheet("font-weight: bold;")
+            content_layout.addWidget(options_header)
+            self._drop_frame_chk = QCheckBox(
+                "Drop all labels at frames where any blip was detected"
+            )
+            self._drop_frame_chk.setChecked(False)
+            self._drop_frame_chk.setStyleSheet(_CHECKBOX_QSS)
+            self._drop_frame_chk.setToolTip(
+                "When unchecked (default): only the blipped label's entry "
+                "is removed at each blip frame; other labels at the same "
+                "frame are preserved. When checked: every label is "
+                "dropped at any frame where any blip was detected -- "
+                "useful when blips correlate with bad image quality "
+                "(occlusion, motion blur) that compromises all labels at "
+                "the same instant."
+            )
+            content_layout.addWidget(self._drop_frame_chk)
+
+            # Cancel + Remove blips button row.
             button_row = QHBoxLayout()
             button_row.setAlignment(Qt.AlignCenter)
             self._cancel_btn = QPushButton("Cancel")
             self._cancel_btn.setMinimumWidth(160)
             self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
             self._cancel_btn.clicked.connect(self._on_cancel_clicked)
-            self._interpolate_btn = QPushButton("Interpolate →")
-            self._interpolate_btn.setMinimumWidth(160)
-            self._interpolate_btn.setStyleSheet(_ROLE_QSS["primary"])
-            self._interpolate_btn.setEnabled(False)
-            self._interpolate_btn.clicked.connect(self._on_interpolate_clicked)
+            self._apply_btn = QPushButton("Remove blips →")
+            self._apply_btn.setMinimumWidth(160)
+            self._apply_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._apply_btn.setEnabled(False)
+            self._apply_btn.clicked.connect(self._on_apply_clicked)
             button_row.addWidget(self._cancel_btn)
-            button_row.addWidget(self._interpolate_btn)
+            button_row.addWidget(self._apply_btn)
             content_layout.addLayout(button_row)
 
             outer.addWidget(content, alignment=Qt.AlignCenter)
@@ -1414,6 +1443,9 @@ def _make_blip_options_class():
                 return_position_factor=float(self._return_factor_spin.value()),
             )
 
+        def _drop_frame_state(self) -> bool:
+            return bool(self._drop_frame_chk.isChecked())
+
         def _on_detect_clicked(self):
             knobs = self._current_knobs()
             try:
@@ -1425,15 +1457,19 @@ def _make_blip_options_class():
                 # (e.g. ann has no labels). Disable Interpolate.
                 self._last_report = None
                 self._results_lbl.setText(f"Detection failed: {exc}")
-                self._interpolate_btn.setEnabled(False)
+                self._apply_btn.setEnabled(False)
                 return
             self._results_lbl.setText(_format_blip_results_text(self._last_report))
-            self._interpolate_btn.setEnabled(len(self._last_report) > 0)
+            self._apply_btn.setEnabled(len(self._last_report) > 0)
 
-        def _on_interpolate_clicked(self):
+        def _on_apply_clicked(self):
             if self._last_report is None or len(self._last_report) == 0:
                 return  # button shouldn't have been clickable, but be defensive
-            self._result = (self._last_report, self._current_knobs())
+            self._result = (
+                self._last_report,
+                self._current_knobs(),
+                self._drop_frame_state(),
+            )
             self._dismiss()
             self._loop.quit()
 
@@ -1462,9 +1498,10 @@ def _make_blip_options_class():
             self._frame.deleteLater()
 
         def exec_(self):
-            """Block until the user clicks Interpolate or Cancel.
+            """Block until the user clicks Remove blips or Cancel.
 
-            Returns ``(report, knobs_dict)`` on Interpolate; ``None``
+            Returns ``(report, knobs_dict, drop_frame_if_any_blip)``
+            on Remove blips; ``None``
             on Cancel.
             """
             self._loop.exec_()

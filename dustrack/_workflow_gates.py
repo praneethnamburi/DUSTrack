@@ -123,13 +123,31 @@ def evaluate_workflow_gates(dustrack) -> dict:
     # out) and (b) no gate at all (also 2026-05-24, then walked back
     # later the same day because sparse manual layers were enabled
     # too).
+    # Filename suffix check covers the case where canonical_layer_name
+    # strips the `_blip_removed` / `_blip_corrections` part from a
+    # DLC-stem-derived layer (e.g. the layer ends up named
+    # `dlc_iteration-0_removed` rather than `..._blip_removed`).
+    ann_fname = getattr(ann, "fname", None) if ann is not None else None
+    is_blip_output = bool(
+        ann_fname
+        and (
+            ann_fname.endswith("_blip_removed.json")
+            or ann_fname.endswith("_blip_corrections.json")
+        )
+    ) or bool(
+        ann_name
+        and (
+            ann_name.endswith("_blip_removed")
+            or ann_name.endswith("_blip_corrections")
+        )
+    )
     if ann is None or not getattr(ann, "labels", None):
         gates["Detect blip outliers"] = (False, "No active layer.")
-    elif ann_name and ann_name.endswith("_blip_corrections"):
+    elif is_blip_output:
         gates["Detect blip outliers"] = (
             False,
-            "This is a blip-corrections output; switch to the "
-            "source DLC trace to re-run detection.",
+            "This is an output of blip detection; switch to the "
+            "source DLC trace to re-run.",
         )
     elif not ann_name or not _is_dense_layer_name(ann_name):
         gates["Detect blip outliers"] = (

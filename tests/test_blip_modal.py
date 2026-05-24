@@ -108,10 +108,10 @@ def example_video(tmp_path_factory):
     return get_example_video(dest_folder=str(tmp_path_factory.getbasetemp()))
 
 
-def test_workflow_mpl_fallback_runs_detect_interpolate_and_adopts(
+def test_workflow_mpl_fallback_runs_detect_remove_and_adopts(
     tmp_path, example_video
 ):
-    """No Qt window: sync detect + interpolate, sparse layer adopted as active."""
+    """No Qt window: sync detect + remove_blips, without-blip layer adopted as active."""
     ann = _make_synthetic_ann_with_blip(tmp_path, example_video)
 
     adopted = []
@@ -129,35 +129,36 @@ def test_workflow_mpl_fallback_runs_detect_interpolate_and_adopts(
     out = DUSTrack.detect_blips_workflow(stub)
 
     assert out is not None
-    assert adopted, "Expected the sparse layer to be adopted"
+    assert adopted, "Expected the without-blip layer to be adopted"
     (layer, set_active, set_overlay) = adopted[0]
     assert layer is out
     assert set_active is True
     assert set_overlay == ann.name
-    # The sparse file should land on disk.
+    # The without-blip file should land on disk with the new suffix.
     assert Path(out.fname).exists()
+    assert out.fname.endswith("_blip_removed.json")
+    # The without-blip layer is dense: most frames preserved, only blip
+    # frames missing.
+    assert len(out.data["0"]) > 0
+    assert len(out.data["0"]) < ann.n_frames  # at least one blip dropped
 
 
-def test_workflow_mpl_fallback_reloads_existing_corrections_layer(
+def test_workflow_mpl_fallback_reloads_existing_removed_layer(
     tmp_path, example_video
 ):
-    """Re-run with an already-loaded corrections layer: reload() must be
+    """Re-run with an already-loaded without-blip layer: reload() must be
     called on the existing in-session annotation before _adopt_layer, or
     the user sees stale data (the disk file is fresh but the in-memory
-    object holds the prior run's corrections).
+    object holds the prior run's data).
     """
     ann = _make_synthetic_ann_with_blip(tmp_path, example_video)
 
-    # Stand-in "already loaded" corrections layer that records reload() calls.
+    # Stand-in "already loaded" without-blip layer that records reload() calls.
     reload_calls = []
     existing = SimpleNamespace(reload=lambda: reload_calls.append(True))
-    # The canonical layer name for an annotation file follows
-    # VideoFileManager.canonical_layer_name; for our test file we just
-    # need names to include whatever _adopt_layer's source path would map to.
-    # Build it explicitly via the same helper the production code uses.
     from dustrack._file_management import VideoFileManager
 
-    # Run once to produce a real corrections file so we know its layer name.
+    # Run once to produce a real without-blip file so we know its layer name.
     first_stub = SimpleNamespace(
         ann=ann,
         annotations=SimpleNamespace(names=[]),
@@ -167,7 +168,7 @@ def test_workflow_mpl_fallback_reloads_existing_corrections_layer(
     )
     first_out = DUSTrack.detect_blips_workflow(first_stub)
     assert first_out is not None
-    corrections_layer_name = VideoFileManager.canonical_layer_name(first_out.fname)
+    output_layer_name = VideoFileManager.canonical_layer_name(first_out.fname)
 
     # Now simulate the second run, with that layer "already loaded".
     class _StubAnnotations:
@@ -180,7 +181,7 @@ def test_workflow_mpl_fallback_reloads_existing_corrections_layer(
 
     second_stub = SimpleNamespace(
         ann=ann,
-        annotations=_StubAnnotations(corrections_layer_name, existing),
+        annotations=_StubAnnotations(output_layer_name, existing),
         _find_qt_window=lambda: None,
         _adopt_layer=lambda *a, **k: None,
         update=lambda: None,
@@ -188,7 +189,7 @@ def test_workflow_mpl_fallback_reloads_existing_corrections_layer(
     second_out = DUSTrack.detect_blips_workflow(second_stub)
     assert second_out is not None
     assert reload_calls == [True], (
-        "Expected existing in-session corrections layer to be reloaded; "
+        "Expected existing in-session without-blip layer to be reloaded; "
         "without it, the trace pane shows stale data."
     )
 
@@ -367,8 +368,8 @@ def test_gate_disabled_for_manual_layer(_patch_dlc_state):
 
 
 def test_gate_disabled_for_blip_corrections_layer(_patch_dlc_state):
-    """Blip-corrections is a sparse output of this very workflow;
-    disable so re-detection on the output doesn't self-collide."""
+    """Sparse LK-corrections output: disable so re-detection on the
+    output doesn't self-collide on the output filename."""
     gates = evaluate_workflow_gates(
         _stub_dustrack(
             ann_name="snapshot_300_blip_corrections", coverage=0.01
@@ -376,4 +377,124 @@ def test_gate_disabled_for_blip_corrections_layer(_patch_dlc_state):
     )
     enabled, tooltip = gates["Detect blip outliers"]
     assert enabled is False
-    assert "blip-corrections" in tooltip
+    assert "blip detection" in tooltip
+
+
+def test_gate_disabled_for_blip_removed_layer(_patch_dlc_state):
+    """Dense without-blip output: disable so re-detection on the
+    output doesn't self-collide on the output filename."""
+    gates = evaluate_workflow_gates(
+        _stub_dustrack(ann_name="dlc_iteration-0_removed", coverage=1.0)
+    )
+    enabled, _tooltip = gates["Detect blip outliers"]
+    # The name-only path doesn't end in `_blip_removed` (canonical_layer_name
+    # strips the suffix on DLC-stem-derived layers), so we exercise the
+    # fname-based check.
+    _stub_with_fname = _stub_dustrack(ann_name="dlc_iteration-0_removed")
+    _stub_with_fname.ann.fname = "C:/proj/video_blip_removed.json"
+    gates = evaluate_workflow_gates(_stub_with_fname)
+    enabled, tooltip = gates["Detect blip outliers"]
+    assert enabled is False
+    assert "blip detection" in tooltip
+
+
+# ---------------------------------------------------------------------
+# remove_blips behaviour
+# ---------------------------------------------------------------------
+
+
+def _make_dense_two_label_ann(tmp_path, example_video):
+    """Two-label dense annotation with one blip per label at different frames."""
+    import datanavigator
+    video = datanavigator.VideoReader(example_video)
+    n = len(video)
+    H, W = video[0].shape[:2]
+    xy0 = np.zeros((n, 2))
+    xy0[:, 0] = W * 0.4 + np.arange(n) * 0.2
+    xy0[:, 1] = H * 0.5
+    xy1 = np.zeros((n, 2))
+    xy1[:, 0] = W * 0.6 + np.arange(n) * 0.2
+    xy1[:, 1] = H * 0.5
+    # Distinct blip frames: label 0 blips at frame n//3; label 1 at 2n//3.
+    blip_a = n // 3
+    blip_b = (2 * n) // 3
+    xy0[blip_a, 0] += 40.0
+    xy1[blip_b, 0] += 40.0
+    fname = str(tmp_path / "two_label_dense_annotations_test.json")
+    ann = dustrack.VideoAnnotation(
+        fname=fname,
+        vname=example_video,
+        n_labels=2,
+        preloaded_json={
+            "0": {f: [float(xy0[f, 0]), float(xy0[f, 1])] for f in range(n)},
+            "1": {f: [float(xy1[f, 0]), float(xy1[f, 1])] for f in range(n)},
+        },
+    )
+    return ann, blip_a, blip_b
+
+
+def test_remove_blips_per_label_only_preserves_other_labels(
+    tmp_path, example_video
+):
+    """Default (drop_frame_if_any_blip=False): the blipped label's
+    entry at the blip frame is removed, but other labels at the same
+    frame are preserved."""
+    ann, blip_a, blip_b = _make_dense_two_label_ann(tmp_path, example_video)
+    report = _blip.detect_blips(ann)
+    # The test data is constructed so blips exist; if the detector fails
+    # to find them at the default knobs, the test premise is broken.
+    by_label = report.by_label()
+    assert "0" in by_label and "1" in by_label
+
+    out = _blip.remove_blips(ann, report, drop_frame_if_any_blip=False)
+    # Label 0 should have its blip frame(s) dropped; label 1's frames
+    # corresponding to label 0's blips should be untouched.
+    label0_blip_frames = {
+        f for b in by_label["0"] for f in range(b.start, b.end + 1)
+    }
+    for f in label0_blip_frames:
+        assert f not in out.data["0"]
+        # Label 1 at the same frame is preserved.
+        assert f in out.data["1"]
+
+
+def test_remove_blips_drop_frame_removes_all_labels_at_blip_frame(
+    tmp_path, example_video
+):
+    """drop_frame_if_any_blip=True: a blip on any label removes every
+    label's entry at that frame."""
+    ann, blip_a, blip_b = _make_dense_two_label_ann(tmp_path, example_video)
+    report = _blip.detect_blips(ann)
+    by_label = report.by_label()
+    all_blip_frames = {
+        f for b in report.blips for f in range(b.start, b.end + 1)
+    }
+
+    out = _blip.remove_blips(ann, report, drop_frame_if_any_blip=True)
+    for f in all_blip_frames:
+        for label in ann.labels:
+            assert f not in out.data[label], (
+                f"Frame {f} should be dropped from label {label!r} under "
+                f"drop_frame_if_any_blip=True"
+            )
+
+
+def test_remove_blips_preserves_non_blip_frames(tmp_path, example_video):
+    """Frames untouched by any blip retain their original (x, y)."""
+    ann, _, _ = _make_dense_two_label_ann(tmp_path, example_video)
+    report = _blip.detect_blips(ann)
+    all_blip_frames = {
+        f for b in report.blips for f in range(b.start, b.end + 1)
+    }
+
+    out = _blip.remove_blips(ann, report)
+    # Pick a couple of "clearly clean" frames -- well away from any blip --
+    # and assert their values pass through unchanged.
+    n = ann.n_frames
+    clean_frames = [f for f in (n // 4, n // 2, (3 * n) // 4) if f not in all_blip_frames]
+    assert clean_frames, "Test premise: expected at least one clean test frame"
+    for f in clean_frames:
+        for label in ann.labels:
+            np.testing.assert_allclose(
+                out.data[label][f], ann.data[label][f], rtol=0, atol=0
+            )

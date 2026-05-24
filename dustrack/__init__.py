@@ -99,6 +99,7 @@ from .blip import (
     detect_blips,
     detect_and_interpolate_blips,
     interpolate_blips,
+    remove_blips,
 )
 from .dlcinterface import DLCProject
 from .gui import DUSTrack
@@ -134,6 +135,7 @@ __all__ = [
     "inspect_seed_bundle",
     "interpolate_blips",
     "list_seed_bundles",
+    "remove_blips",
     "lk_moving_average_filter",
     "lucas_kanade",
     "lucas_kanade_rstc",
