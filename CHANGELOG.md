@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Create DLC Project options modal** (Qt path, 1.3.0a2). Clicking
+  Create DLC Project now opens a small modal with three editable,
+  pre-populated fields before the project is built: **project name**
+  (default ``{video_stem}_{layer_name}``), **project folder** (default:
+  the last directory you created a project into, persisted in
+  ``~/.dustrack/config.json: last_project_root``, falling back to the
+  active video's parent on first use; "Browse..." picks a different
+  one), and **experimenter** (default from ``_config.EXPERIMENTER``).
+  Closes the "no way to put the project in M:\\DLC_MODELS and no way to
+  rename it" gap. A live validation label disables Create until the
+  name is non-empty + dash-free (DLC's ``<name>-<experimenter>-<date>``
+  folder convention reserves dashes) and the folder + experimenter are
+  set. Programmatic callers that pass ``name`` and ``path`` to
+  ``DUSTrack.create_dlc_project`` skip the modal. New
+  ``dustrack/_create_project_modal.py`` driver +
+  ``_make_create_project_options_class`` /
+  ``_default_create_project_options`` /
+  ``_validate_create_project_options`` in ``_overlays.py`` +
+  ``record_project_root`` / ``get_last_project_root`` in ``_config.py``.
+  18 unit tests in ``tests/test_create_project_modal.py`` (default
+  builder + validator + config round-trip); the Qt dialog itself is
+  manual-smoke per the ConfirmOverlay precedent.
 - **Hard-link videos into DLC projects instead of copying** (the
   default for new projects created on the 1.3.0a2 branch). The new
   ``telemed.process()`` pipeline emits lossless h265 mp4s ~1-2 GB each

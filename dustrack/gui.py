@@ -959,6 +959,29 @@ class DUSTrack(VideoBrowser):
             if seed_bundle_path is None:
                 return None  # user cancelled at some step
 
+        # Create DLC Project options modal (1.3.0a2): on the Qt path,
+        # when the caller didn't pass an explicit name AND path, pop a
+        # small modal pre-populated with the derived name, the last-used
+        # project root (or the video's parent on first use), and the
+        # experimenter. Lets the user redirect the project into e.g.
+        # M:\DLC_MODELS and rename it before creation. Programmatic
+        # callers that supply name+path skip the modal entirely. Cancel
+        # leaves the UI intact (returns None).
+        if qt_window is not None and name is None and path is None:
+            from ._create_project_modal import prompt_create_project_options
+
+            chosen = prompt_create_project_options(
+                qt_window,
+                video_fname=self.fname,
+                layer_name=self.ann.name,
+                experimenter=experimenter,
+            )
+            if chosen is None:
+                return None  # user cancelled the options modal
+            name = chosen["name"]
+            path = chosen["path"]
+            experimenter = chosen["experimenter"]
+
         # An empty active manual layer still needs an on-disk JSON
         # for DLCProject's constructor: ``copy_annotations`` reads
         # ``<video_stem>_annotations_<suffix>.json`` and the

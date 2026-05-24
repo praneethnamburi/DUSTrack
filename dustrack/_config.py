@@ -366,3 +366,39 @@ def get_last_video_picker_dir() -> Optional[Path]:
         if first.is_dir():
             return first
     return None
+
+
+# ---------------------------------------------------------------------
+# Last-used DLC project root (1.3.0a2 Create DLC Project modal)
+# ---------------------------------------------------------------------
+#
+# Unlike the recent-session history (a list), this is a single value:
+# the directory the user last created a DLC project *into*. The Create
+# DLC Project modal seeds its "Project folder" field from it so the
+# typical "all my projects live in M:\DLC_MODELS" workflow doesn't
+# require re-browsing every time. A separate key (not derived from
+# recent_sessions) because a DLC project root is conceptually distinct
+# from "where I last opened a video".
+
+
+def record_project_root(path: Union[str, Path]) -> None:
+    """Remember ``path`` as the directory DLC projects are created into.
+
+    Stored as the ``last_project_root`` key. ``path`` is the *parent*
+    directory the user picked in the Create DLC Project modal (DLC then
+    creates ``<path>/<name>-<experimenter>-<date>/`` underneath it)."""
+    cfg = _read_user_config()
+    cfg["last_project_root"] = str(path)
+    _write_user_config(cfg)
+
+
+def get_last_project_root() -> Optional[Path]:
+    """Return the last directory a DLC project was created into, or
+    ``None`` if unset / the stored path no longer exists. Caller falls
+    back to the active video's parent folder."""
+    cfg = _read_user_config()
+    raw = cfg.get("last_project_root")
+    if not isinstance(raw, str) or not raw:
+        return None
+    p = Path(raw)
+    return p if p.is_dir() else None

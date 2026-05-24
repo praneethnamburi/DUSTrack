@@ -710,6 +710,77 @@ def _training_options_to_train_iteration_kwargs(options):
     raise ValueError(f"unknown refine_mode in options: {mode!r}")
 
 
+def _default_create_project_options(*, video_fname, layer_name, experimenter,
+                                    last_project_root=None):
+    """Initial state dict for the Create DLC Project modal.
+
+    Pure-Python, no Qt deps -- testable in isolation. Computes the
+    three editable fields' defaults:
+
+    * ``name``: ``"{video_stem}_{layer_name}"`` -- DLC suffixes
+      ``-<experimenter>-<date>`` to form the actual project folder.
+    * ``path``: ``last_project_root`` if supplied (the directory the
+      user last created a project into, persisted across sessions),
+      else the active video's parent folder.
+    * ``experimenter``: passed through from the caller (``_config``
+      default unless overridden).
+
+    Args:
+        video_fname: Active video path (its stem drives the name and
+            its parent is the fallback project folder).
+        layer_name: Active annotation layer name (the name suffix).
+        experimenter: Experimenter string.
+        last_project_root: Remembered project root (``None`` on first
+            use -> falls back to the video's parent).
+
+    Returns:
+        dict: ``{"name", "path", "experimenter"}`` -- the modal seeds
+        its three line edits from this.
+    """
+    from pathlib import Path as _Path
+
+    video = _Path(video_fname)
+    default_root = _Path(last_project_root) if last_project_root else video.parent
+    return {
+        "name": f"{video.stem}_{layer_name}",
+        "path": str(default_root),
+        "experimenter": str(experimenter),
+    }
+
+
+def _validate_create_project_options(options):
+    """Validate Create DLC Project modal state. Pure-Python.
+
+    Returns ``(ok: bool, error_message: str)``. The modal's Create
+    button stays disabled / shows the message until all checks pass:
+
+    * ``name`` non-empty and contains an underscore (DLC config
+      handling breaks on underscore-free names with network paths --
+      see :class:`DLCProject` docstring).
+    * ``path`` non-empty (existence is not required -- DLC creates it).
+    * ``experimenter`` non-empty.
+    """
+    name = (options.get("name") or "").strip()
+    path = (options.get("path") or "").strip()
+    experimenter = (options.get("experimenter") or "").strip()
+    if not name:
+        return False, "Project name is required."
+    if "_" in experimenter:
+        # DLC's folder name is <name>-<experimenter>-<date>; an
+        # underscore in experimenter is fine, but a dash would split
+        # the parse. Guard the dash instead.
+        pass
+    if "-" in name:
+        return False, "Project name cannot contain '-' (reserved by DLC's folder naming)."
+    if not path:
+        return False, "Project folder is required."
+    if not experimenter:
+        return False, "Experimenter is required."
+    if "-" in experimenter:
+        return False, "Experimenter cannot contain '-' (reserved by DLC's folder naming)."
+    return True, ""
+
+
 def _make_training_options_class():
     """Build :class:`TrainingOptionsDialog` lazily, mirroring
     :func:`_make_confirm_overlay_class`'s qtpy-import-on-demand pattern.
@@ -1092,6 +1163,224 @@ def _make_training_options_class():
             return self._result
 
     return TrainingOptionsDialog
+
+
+def _make_create_project_options_class():
+    """Build :class:`CreateProjectOptionsDialog` lazily, mirroring
+    :func:`_make_training_options_class`'s qtpy-import-on-demand pattern.
+
+    Modal shown when the user clicks Create DLC Project (1.3.0a2).
+    Three editable line edits -- project **name**, project **folder**
+    (with a Browse... button), and **experimenter** -- pre-populated
+    from :func:`_default_create_project_options`. The user can OK
+    straight through or edit any field. A live validation label
+    surfaces why Create is disabled (empty name, dash in name, etc.).
+
+    On Create, ``exec_()`` returns ``{"name", "path", "experimenter"}``;
+    on Cancel, ``None``. There is deliberately no "link videos" toggle
+    -- hard-linking with copy fall-back is the always-right default
+    (see ``DLCProject.__init__``'s ``link_videos`` kwarg for the
+    scripted override).
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QFileDialog,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    _ROLE_QSS = {
+        "primary": (
+            "QPushButton { background-color: #3a86ff; color: white; "
+            "  border: 1px solid #2a76ef; padding: 6px 24px; "
+            "  font-size: 11pt; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4a96ff; }"
+            "QPushButton:pressed { background-color: #2a76ef; }"
+            "QPushButton:disabled { background-color: #2a4a7a; color: #99aacc; }"
+        ),
+        "neutral": (
+            "QPushButton { background-color: #555555; color: white; "
+            "  border: 1px solid #444444; padding: 6px 24px; "
+            "  font-size: 11pt; }"
+            "QPushButton:hover { background-color: #666666; }"
+            "QPushButton:pressed { background-color: #444444; }"
+        ),
+    }
+
+    class CreateProjectOptionsDialog(QObject):
+        """Synchronous modal for the Create DLC Project pre-flight.
+
+        ``initial_state`` is the dict from
+        :func:`_default_create_project_options`. On Create, ``exec_()``
+        returns a dict with the user-edited values; on Cancel, ``None``.
+        """
+
+        def __init__(self, main_window, *, initial_state: dict):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._result = None
+            self._loop = QEventLoop()
+            self._state = dict(initial_state)
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_create_project_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_create_project_overlay { "
+                "  background-color: rgba(0, 0, 0, 200); "
+                "}"
+                "QLabel { color: white; }"
+                "#dustrack_create_project_title { color: white; "
+                "  font-size: 22pt; font-weight: bold; }"
+                "#dustrack_create_project_error { color: #ff9a9a; "
+                "  font-size: 10pt; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setAlignment(Qt.AlignCenter)
+            outer.addStretch(1)
+
+            title_lbl = QLabel("Create DLC project")
+            title_lbl.setObjectName("dustrack_create_project_title")
+            title_lbl.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title_lbl)
+
+            # Inner content card: no QSS on QWidget {} so the native
+            # QLineEdit rendering survives (feedback_qt_qss_vs_palette).
+            content = QWidget()
+            content.setMinimumWidth(560)
+            content.setMaximumWidth(720)
+            content_layout = QVBoxLayout(content)
+            content_layout.setSpacing(10)
+
+            # --- Project name ---
+            content_layout.addWidget(QLabel("Project name"))
+            self._name_edit = QLineEdit(self._state.get("name", ""))
+            self._name_edit.textChanged.connect(self._revalidate)
+            content_layout.addWidget(self._name_edit)
+
+            # --- Project folder + Browse ---
+            content_layout.addWidget(QLabel("Project folder"))
+            folder_row = QHBoxLayout()
+            self._path_edit = QLineEdit(self._state.get("path", ""))
+            self._path_edit.textChanged.connect(self._revalidate)
+            folder_row.addWidget(self._path_edit, stretch=1)
+            self._browse_btn = QPushButton("Browse...")
+            self._browse_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._browse_btn.clicked.connect(self._on_browse_clicked)
+            folder_row.addWidget(self._browse_btn)
+            content_layout.addLayout(folder_row)
+
+            # --- Experimenter ---
+            content_layout.addWidget(QLabel("Experimenter"))
+            self._experimenter_edit = QLineEdit(self._state.get("experimenter", ""))
+            self._experimenter_edit.textChanged.connect(self._revalidate)
+            content_layout.addWidget(self._experimenter_edit)
+
+            # --- Live validation message ---
+            self._error_lbl = QLabel("")
+            self._error_lbl.setObjectName("dustrack_create_project_error")
+            self._error_lbl.setWordWrap(True)
+            content_layout.addWidget(self._error_lbl)
+
+            # --- Create / Cancel buttons ---
+            button_row = QHBoxLayout()
+            button_row.setAlignment(Qt.AlignCenter)
+            self._create_btn = QPushButton("Create")
+            self._create_btn.setMinimumWidth(160)
+            self._create_btn.setStyleSheet(_ROLE_QSS["primary"])
+            self._create_btn.clicked.connect(self._on_create_clicked)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setMinimumWidth(160)
+            self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
+            self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+            button_row.addWidget(self._create_btn)
+            button_row.addWidget(self._cancel_btn)
+            content_layout.addLayout(button_row)
+
+            outer.addWidget(content, alignment=Qt.AlignCenter)
+            outer.addStretch(1)
+
+            main_window.installEventFilter(self)
+            self._revalidate()
+
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._name_edit.setFocus()
+
+        # -- Slots -----------------------------------------------------
+
+        def _current_options(self):
+            return {
+                "name": self._name_edit.text().strip(),
+                "path": self._path_edit.text().strip(),
+                "experimenter": self._experimenter_edit.text().strip(),
+            }
+
+        def _revalidate(self, *_):
+            ok, msg = _validate_create_project_options(self._current_options())
+            self._create_btn.setEnabled(ok)
+            self._error_lbl.setText("" if ok else msg)
+
+        def _on_browse_clicked(self):
+            start_dir = self._path_edit.text().strip() or ""
+            chosen = QFileDialog.getExistingDirectory(
+                self._mw,
+                "Choose the folder to create the DLC project in",
+                start_dir,
+            )
+            if chosen:
+                self._path_edit.setText(chosen)
+
+        def _on_create_clicked(self):
+            options = self._current_options()
+            ok, _msg = _validate_create_project_options(options)
+            if not ok:
+                return  # button shouldn't be enabled, but guard anyway
+            self._result = options
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel_clicked(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        # -- Lifecycle (mirror TrainingOptionsDialog) ------------------
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            """Block until the user clicks Create or Cancel.
+
+            Returns ``{"name", "path", "experimenter"}`` on Create;
+            ``None`` on Cancel.
+            """
+            self._loop.exec_()
+            return self._result
+
+    return CreateProjectOptionsDialog
 
 
 # ---------------------------------------------------------------------------
