@@ -3,6 +3,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Hard-link videos into DLC projects instead of copying** (the
+  default for new projects created on the 1.3.0a2 branch). The new
+  ``telemed.process()`` pipeline emits lossless h265 mp4s ~1-2 GB each
+  for a 20k-frame pia02 recording; copying every video into every DLC
+  project doesn't scale. ``DLCProject.__init__`` and
+  ``DLCProject.add_videos`` now scaffold the project with DLC's
+  ``copy_videos=False`` and then place hard links at
+  ``<project>/videos/<stem>.<ext>`` themselves via
+  :func:`dustrack._dlc_paths.link_or_copy_videos_into_project`. The
+  ``.dnav-toc`` sidecar is linked alongside if present (free perf win
+  for dnav-backed video readers downstream). New
+  ``link_videos: bool | None`` kwarg on ``DLCProject.__init__``,
+  ``DLCProject.add_videos`` and ``DUSTrack.create_dlc_project``;
+  default ``None`` auto-links on same-volume sources and falls back to
+  ``shutil.copy2`` with a stderr warning on cross-volume. ``True``
+  requires hard-linking (raises ``OSError`` on failure); ``False``
+  recovers the pre-1.3.0a2 deep-copy behaviour for callers that need
+  it (e.g. about to move the project to a different machine and want
+  a self-contained copy). ``rebase_to_config``,
+  ``_rewire_to_in_project_paths``, ``extract_frames``, ``analyze_videos``
+  and every other downstream path still see in-project video paths
+  because ``video_sets`` keys are rewritten from the source paths to
+  ``<project>/videos/<stem>`` in lockstep with the placement. DLC's own
+  ``copy_videos=False`` fall-back path (which writes a real copy on
+  Windows-without-symlink-privilege) is detected and replaced with a
+  hard link in the same call -- the result is one inode on disk, not
+  two. 19 unit tests in ``tests/test_link_or_copy_videos.py``;
+  end-to-end smoke in ``tests/_smoke_link_videos_real_dlc.py``
+  (manual, requires DLC + M:\\ + the pia02 fixtures, not pytest-
+  collected).
+
 ### Fixed
 - **Detect-blip-outliers gate no longer crashes on a Path fname.**
   ``_workflow_gates.evaluate_workflow_gates`` called ``.endswith()`` on

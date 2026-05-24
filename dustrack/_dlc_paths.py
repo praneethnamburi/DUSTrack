@@ -22,8 +22,11 @@ Extracted from ``dlcinterface.py`` in the 1.2.0rc1 follow-up.
 
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 
 def _is_dlc_config_yaml(path) -> bool:
@@ -191,3 +194,141 @@ def _resolve_multi_video_from_list(path_list: list) -> tuple:
         )
     project = DLCProject(str(next(iter(config_paths))))
     return project, resolved
+
+
+_DEFAULT_LINK_SIDECARS: tuple[str, ...] = (".dnav-toc",)
+
+
+def link_or_copy_videos_into_project(
+    project_videos_dir: Path,
+    source_videos: Sequence[Path],
+    link_videos: Optional[bool] = None,
+    link_sidecars: tuple[str, ...] = _DEFAULT_LINK_SIDECARS,
+) -> list[Path]:
+    """Place each source video inside ``<project>/videos/`` and return the
+    new in-project paths (suitable for rewriting DLC's ``video_sets``).
+
+    On the same volume, hard links the source via :func:`os.link` so the
+    file's bytes exist once on disk while DLC sees a real file at the
+    in-project path. Cross-volume (or any :class:`OSError` from
+    ``os.link``) falls back to :func:`shutil.copy2` so a project on a
+    different drive still gets a self-contained ``videos/`` folder. This
+    replaces DLC's ``copy_videos=True`` flow: the lossless h265 mp4s
+    produced by the new ``telemed.process()`` pipeline (~1-2 GB per
+    20k-frame recording) make per-project copies impractical at scale.
+
+    Sidecars listed in ``link_sidecars`` (default: ``.dnav-toc``) are
+    placed alongside if present beside the source. Linking the dnav TOC
+    saves the in-project copy from rebuilding it on first read.
+
+    Args:
+        project_videos_dir: Destination directory (``<project>/videos/``).
+            Created if missing.
+        source_videos: Source video paths to place.
+        link_videos: ``None`` (default) auto-picks: link, fall back to
+            copy on :class:`OSError` with a stderr warning. ``True``
+            requires linking and raises ``OSError`` on failure. ``False``
+            always copies.
+        link_sidecars: Extensions appended to each source video filename
+            to look for sidecars (e.g. ``("video.mp4", ".dnav-toc")``
+            picks up ``video.mp4.dnav-toc``). Sidecars use the same
+            link/copy policy as the video; absence is silent.
+
+    Returns:
+        In-project paths corresponding 1:1 to ``source_videos``. Caller
+        is responsible for rewriting ``config['video_sets']`` keys
+        (DLC's ``create_new_project(copy_videos=False)`` registers the
+        source paths; we want the in-project paths so downstream code
+        sees the videos as project-local).
+
+    Notes:
+        Idempotent on re-entry: if a target already exists and is the
+        same inode as the source (already hard-linked), it's left
+        alone. If a target exists but is a different file (e.g. a real
+        copy from a prior ``copy_videos=True`` project), it is also
+        left alone -- we don't overwrite, since the existing file is
+        functionally equivalent for DLC's purposes.
+    """
+    project_videos_dir = Path(project_videos_dir)
+    project_videos_dir.mkdir(parents=True, exist_ok=True)
+    in_project_paths: list[Path] = []
+    for src in source_videos:
+        src = Path(src)
+        dst = project_videos_dir / src.name
+        _place_one(src, dst, link_videos=link_videos)
+        for ext in link_sidecars:
+            sidecar_src = src.with_name(src.name + ext)
+            if sidecar_src.exists():
+                sidecar_dst = dst.with_name(dst.name + ext)
+                _place_one(sidecar_src, sidecar_dst, link_videos=link_videos)
+        in_project_paths.append(dst)
+    return in_project_paths
+
+
+def _place_one(src: Path, dst: Path, *, link_videos: Optional[bool]) -> None:
+    """Hard-link or copy ``src`` to ``dst`` per the ``link_videos`` mode.
+
+    See :func:`link_or_copy_videos_into_project` for the mode semantics.
+
+    If ``dst`` exists:
+
+    - same inode as ``src`` -> already linked, no-op.
+    - same bytes (file size match -- coarse but cheap) -> a copy of
+      ``src`` is there (typically DLC's own ``copy_videos=False``
+      fall-back path put it there: DLC tries a symlink and falls back
+      to a real copy on Windows without symlink privilege). Replace
+      with a hard link per ``link_videos`` mode so disk usage drops
+      back to one inode.
+    - different bytes -> raise. The caller's contract is "place
+      ``src`` at ``dst``"; silently leaving a different file at
+      ``dst`` would lie about the result.
+    """
+    if dst.exists():
+        if _is_same_inode(src, dst):
+            return
+        if _looks_like_existing_copy(src, dst):
+            dst.unlink()
+        else:
+            raise FileExistsError(
+                f"{dst} already exists with different size than {src}. "
+                "Refusing to overwrite -- remove the file manually if "
+                "the replacement is intentional."
+            )
+    if link_videos is False:
+        shutil.copy2(src, dst)
+        return
+    try:
+        os.link(src, dst)
+    except OSError as e:
+        if link_videos is True:
+            raise
+        print(
+            f"[link_or_copy_videos_into_project] cross-volume or "
+            f"filesystem-unsupported hard link for {src.name!r}: "
+            f"copying instead ({e.strerror})",
+            file=sys.stderr,
+        )
+        shutil.copy2(src, dst)
+
+
+def _is_same_inode(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _looks_like_existing_copy(src: Path, dst: Path) -> bool:
+    """Cheap heuristic for "``dst`` is a copy of ``src``": same size.
+
+    Same size on its own is weak evidence but fits the DLC-side flow:
+    DLC's ``copy_videos=False`` fall-back uses :func:`shutil.copy`, so
+    a freshly-created project's ``videos/<stem>.<ext>`` is either
+    byte-equal or absent. We don't md5 here because the typical telemed
+    h265 file is ~1-2 GB and hashing it adds minutes of I/O to project
+    creation. A future stricter mode could md5 small samples.
+    """
+    try:
+        return src.stat().st_size == dst.stat().st_size
+    except OSError:
+        return False

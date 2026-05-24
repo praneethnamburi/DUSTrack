@@ -895,6 +895,7 @@ class DUSTrack(VideoBrowser):
         path=None,
         experimenter=_config.EXPERIMENTER,
         seed_bundle_path=None,
+        link_videos: bool | None = None,
     ) -> DLCProject:
         """
         Create a new DeepLabCut project using current annotations as training labels.
@@ -929,6 +930,11 @@ class DUSTrack(VideoBrowser):
                 :func:`extract_snapshot_for_seeding`). When supplied,
                 the seeding flow runs unconditionally (Qt or non-Qt),
                 bypassing the empty-layer-triggered modal.
+            link_videos: Forwarded to :class:`DLCProject` to control
+                how the source video is placed inside ``<project>/videos/``.
+                ``None`` (default) hard-links on same-volume sources
+                and falls back to copy on cross-volume. ``False`` forces
+                a deep copy (the pre-1.3.0a2 behavior).
 
         Returns:
             DLCProject: The newly created project instance on the sync
@@ -972,6 +978,7 @@ class DUSTrack(VideoBrowser):
                 name=name,
                 experimenter=experimenter,
                 annotation_suffix=self.ann.name,
+                link_videos=link_videos,
             )
 
         # Seeding path: run project creation + bundle import +

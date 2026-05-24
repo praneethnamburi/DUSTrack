@@ -34,6 +34,7 @@ from ._file_management import (
     make_annotation_file_name,
     rebase_to_config,
 )
+from ._dlc_paths import link_or_copy_videos_into_project
 
 
 EXPERIMENTER = _config.EXPERIMENTER
@@ -160,6 +161,7 @@ class DLCProject:
         experimenter=_config.EXPERIMENTER,
         annotation_suffix="",
         internal_to_dlc_labels: dict = None,
+        link_videos: bool | None = None,
     ):
         """
         Initialize or load a DeepLabCut project.
@@ -174,9 +176,19 @@ class DLCProject:
             experimenter (str): Experimenter identifier.
             annotation_suffix (str): Suffix for annotation files (e.g., 'manual', 'refined').
             internal_to_dlc_labels (dict, optional): Custom label name mapping.
+            link_videos: How to place each source video inside
+                ``<project>/videos/``. ``None`` (default) hard-links via
+                :func:`os.link` on the same volume and falls back to a
+                regular copy with a stderr warning on cross-volume.
+                ``True`` requires hard-linking and raises ``OSError`` on
+                failure. ``False`` always copies (the pre-1.3.0a2
+                behavior).
 
         Note:
-            Videos are copied into the project folder by default.
+            Videos are hard-linked into the project folder by default
+            (1.3.0a2+), saving disk space when the source and the
+            project share a volume. Pre-1.3.0a2 behavior (deep copy)
+            is recoverable via ``link_videos=False``.
             Project names without underscores may cause config issues with network paths.
         """
         if not HAS_DLC:
@@ -208,12 +220,43 @@ class DLCProject:
         new_project = False
         if config_path is None:
             assert len(videos) > 0
+            # 1.3.0a2: scaffold the project shell with ``copy_videos=False``
+            # and then hard-link (or copy as cross-volume fallback) the
+            # source videos into ``<project>/videos/`` ourselves. Saves
+            # disk when source + project share a volume (the typical case
+            # for telemed h265 outputs on M:\). Sidecars (.dnav-toc)
+            # ride along.
             config_path = _dlcloader.deeplabcut.create_new_project(
-                name, experimenter, videos, working_directory=path, copy_videos=True
+                name, experimenter, videos, working_directory=path, copy_videos=False
+            )
+            project_videos_dir = Path(config_path).parent / "videos"
+            in_project_paths = link_or_copy_videos_into_project(
+                project_videos_dir,
+                [Path(v) for v in videos],
+                link_videos=link_videos,
             )
             new_project = True
 
         self.config_path = config_path
+        if new_project:
+            # Rewrite ``video_sets`` keys from source paths -> in-project
+            # paths so downstream code (extract_frames, analyze_videos,
+            # rebase_to_config, _rewire_to_in_project_paths) sees the
+            # videos as project-local, exactly as it would have with the
+            # pre-1.3.0a2 ``copy_videos=True`` flow. DLC stores
+            # video_sets entries in the same order as the input
+            # ``videos`` list, so pair by index rather than risking a
+            # string-key mismatch from path normalisation.
+            old_items = list(self.config["video_sets"].items())
+            assert len(old_items) == len(in_project_paths), (
+                f"DLC video_sets size {len(old_items)} != input videos "
+                f"{len(in_project_paths)}"
+            )
+            new_vs = {
+                str(in_proj): meta
+                for in_proj, (_, meta) in zip(in_project_paths, old_items)
+            }
+            self.edit_config(video_sets=new_vs)
 
         self.internal_to_dlc_labels = internal_to_dlc_labels
 
@@ -508,19 +551,40 @@ class DLCProject:
         self.current_iteration = "next"
         return self
 
-    def add_videos(self, videos: list[Path]):
+    def add_videos(self, videos: list[Path], link_videos: bool | None = None):
         """
         Add new videos to existing project and copy their annotations.
 
         Args:
             videos: List of video file paths to add.
+            link_videos: Placement mode for the new videos. ``None``
+                (default) hard-links with copy fallback on cross-volume.
+                ``True`` requires hard-linking. ``False`` always copies.
+                Same semantics as :meth:`DLCProject.__init__`.
 
         Returns:
             self: For method chaining.
         """
         if isinstance(videos, (str, Path)):
             videos = [videos]
-        _dlcloader.deeplabcut.add_new_videos(self.config_path, videos, copy_videos=True)
+        # 1.3.0a2: same flow as create -- DLC registers the videos
+        # without copying, we place hard-links (or copies) ourselves,
+        # then rewrite ``video_sets`` keys to be in-project.
+        _dlcloader.deeplabcut.add_new_videos(
+            self.config_path, videos, copy_videos=False
+        )
+        project_videos_dir = Path(self.config_path).parent / "videos"
+        in_project_paths = link_or_copy_videos_into_project(
+            project_videos_dir,
+            [Path(v) for v in videos],
+            link_videos=link_videos,
+        )
+        vs = dict(self.config["video_sets"])
+        for src, in_proj in zip(videos, in_project_paths):
+            src_key = str(src)
+            if src_key in vs and str(in_proj) != src_key:
+                vs[str(in_proj)] = vs.pop(src_key)
+        self.edit_config(video_sets=vs)
         self.copy_annotations(videos)
         return self
 
