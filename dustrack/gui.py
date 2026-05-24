@@ -2373,6 +2373,23 @@ class DUSTrack(VideoBrowser):
         source_ann = self.ann
         source_layer_name = source_ann.name
 
+        def _adopt_fresh_corrections(out):
+            """``_adopt_layer`` is idempotent on already-loaded names,
+            so on a re-run the existing layer keeps its stale
+            in-memory data even though the file on disk was
+            overwritten. Reload first to pull the fresh state into
+            the existing :class:`VideoAnnotation` in place (bumps
+            ``_revision`` so trace-pane caches invalidate)."""
+            layer_name = VideoFileManager.canonical_layer_name(out.fname)
+            if layer_name in self.annotations.names:
+                self.annotations[layer_name].reload()
+            self._adopt_layer(
+                out,
+                set_active=True,
+                set_overlay=source_layer_name,
+            )
+            self.update()
+
         qt_window = self._find_qt_window()
         if qt_window is None:
             # mpl-fallback: synchronous, default knobs, no modal.
@@ -2385,12 +2402,7 @@ class DUSTrack(VideoBrowser):
                 return None
             out = _blip.interpolate_blips(source_ann, report)
             out.save()
-            self._adopt_layer(
-                out,
-                set_active=True,
-                set_overlay=source_layer_name,
-            )
-            self.update()
+            _adopt_fresh_corrections(out)
             print(
                 f"[detect_blips] {len(report)} blips on layer "
                 f"{source_layer_name!r}; sparse corrections saved to "
@@ -2448,12 +2460,7 @@ class DUSTrack(VideoBrowser):
             return out
 
         def _on_success(out):
-            self._adopt_layer(
-                out,
-                set_active=True,
-                set_overlay=source_layer_name,
-            )
-            self.update()
+            _adopt_fresh_corrections(out)
 
         self._run_with_overlay(
             qt_window,

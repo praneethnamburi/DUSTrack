@@ -1202,11 +1202,19 @@ def _make_blip_options_class():
         ),
     }
 
-    def _labeled_row(text: str, widget):
-        """Helper: ``[QLabel(text)  widget  <stretch>]`` row layout."""
+    def _labeled_row(text: str, widget, tooltip: str = ""):
+        """Helper: ``[QLabel(text)  widget  <stretch>]`` row layout.
+
+        ``tooltip``, if non-empty, is attached to both the label and
+        the widget so hovering either surface explains the knob. Plain
+        text (no QSS); Qt renders it as a tooltip via the OS toolkit.
+        """
         row = QHBoxLayout()
         lbl = QLabel(text + ":")
         lbl.setMinimumWidth(180)
+        if tooltip:
+            lbl.setToolTip(tooltip)
+            widget.setToolTip(tooltip)
         row.addWidget(lbl)
         row.addWidget(widget)
         row.addStretch(1)
@@ -1286,24 +1294,47 @@ def _make_blip_options_class():
             # against unusual data (very noisy traces, sustained
             # model failures) may legitimately want larger values
             # than the defaults suggest. Lower bounds are physically
-            # meaningful: threshold_factor must be positive (0.1 lets
-            # the user explore very-permissive detection),
+            # meaningful: threshold_factor must be positive,
             # max_blip_length must be >=1 (single-frame blip),
             # return tolerance must be positive.
             self._threshold_spin = QDoubleSpinBox()
             self._threshold_spin.setRange(0.1, 1000.0)
             self._threshold_spin.setSingleStep(0.5)
             self._threshold_spin.setDecimals(1)
-            self._threshold_spin.setValue(5.0)
+            self._threshold_spin.setValue(150.0)
             content_layout.addLayout(
-                _labeled_row("Threshold factor", self._threshold_spin)
+                _labeled_row(
+                    "Threshold factor",
+                    self._threshold_spin,
+                    tooltip=(
+                        "How extreme a frame-to-frame jump has to be "
+                        "to count as the start of a blip, in units of "
+                        "robust sigma (1.4826 * MAD) above the per-"
+                        "label median displacement. Higher = stricter "
+                        "(fewer candidates flagged). The threshold is "
+                        "computed per label, so high-motion and low-"
+                        "motion labels get appropriately scaled cuts."
+                    ),
+                )
             )
 
             self._max_len_spin = QSpinBox()
             self._max_len_spin.setRange(1, 1000)
-            self._max_len_spin.setValue(5)
+            self._max_len_spin.setValue(50)
             content_layout.addLayout(
-                _labeled_row("Max blip length", self._max_len_spin)
+                _labeled_row(
+                    "Max blip length",
+                    self._max_len_spin,
+                    tooltip=(
+                        "Maximum number of consecutive bad frames a "
+                        "spike can span and still be bracketed as a "
+                        "blip. Spikes whose forward scan doesn't find "
+                        "a return-position anchor within this many "
+                        "frames are skipped (counted as 'long' in the "
+                        "results pane) -- they're usually sustained "
+                        "model failures, not transient blips."
+                    ),
+                )
             )
 
             self._return_factor_spin = QDoubleSpinBox()
@@ -1312,7 +1343,21 @@ def _make_blip_options_class():
             self._return_factor_spin.setDecimals(1)
             self._return_factor_spin.setValue(3.0)
             content_layout.addLayout(
-                _labeled_row("Return tolerance", self._return_factor_spin)
+                _labeled_row(
+                    "Return tolerance",
+                    self._return_factor_spin,
+                    tooltip=(
+                        "How close (in multiples of typical per-frame "
+                        "displacement) the position after the spike "
+                        "has to land near the position before the "
+                        "spike for the run to count as a blip. The "
+                        "tolerance scales with the run length, so a "
+                        "5-frame spike is allowed to land further "
+                        "from the pre-spike anchor than a 1-frame "
+                        "spike. Higher = more permissive (more spikes "
+                        "qualify as 'returning'); lower = stricter."
+                    ),
+                )
             )
 
             # Detect button (its own row, centered).

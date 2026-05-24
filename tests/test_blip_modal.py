@@ -118,6 +118,7 @@ def test_workflow_mpl_fallback_runs_detect_interpolate_and_adopts(
 
     stub = SimpleNamespace(
         ann=ann,
+        annotations=SimpleNamespace(names=[]),
         _find_qt_window=lambda: None,
         _adopt_layer=lambda layer, *, set_active, set_overlay: adopted.append(
             (layer, set_active, set_overlay)
@@ -135,6 +136,61 @@ def test_workflow_mpl_fallback_runs_detect_interpolate_and_adopts(
     assert set_overlay == ann.name
     # The sparse file should land on disk.
     assert Path(out.fname).exists()
+
+
+def test_workflow_mpl_fallback_reloads_existing_corrections_layer(
+    tmp_path, example_video
+):
+    """Re-run with an already-loaded corrections layer: reload() must be
+    called on the existing in-session annotation before _adopt_layer, or
+    the user sees stale data (the disk file is fresh but the in-memory
+    object holds the prior run's corrections).
+    """
+    ann = _make_synthetic_ann_with_blip(tmp_path, example_video)
+
+    # Stand-in "already loaded" corrections layer that records reload() calls.
+    reload_calls = []
+    existing = SimpleNamespace(reload=lambda: reload_calls.append(True))
+    # The canonical layer name for an annotation file follows
+    # VideoFileManager.canonical_layer_name; for our test file we just
+    # need names to include whatever _adopt_layer's source path would map to.
+    # Build it explicitly via the same helper the production code uses.
+    from dustrack._file_management import VideoFileManager
+
+    # Run once to produce a real corrections file so we know its layer name.
+    first_stub = SimpleNamespace(
+        ann=ann,
+        annotations=SimpleNamespace(names=[]),
+        _find_qt_window=lambda: None,
+        _adopt_layer=lambda *a, **k: None,
+        update=lambda: None,
+    )
+    first_out = DUSTrack.detect_blips_workflow(first_stub)
+    assert first_out is not None
+    corrections_layer_name = VideoFileManager.canonical_layer_name(first_out.fname)
+
+    # Now simulate the second run, with that layer "already loaded".
+    class _StubAnnotations:
+        def __init__(self, name, ann):
+            self.names = [name]
+            self._map = {name: ann}
+
+        def __getitem__(self, key):
+            return self._map[key]
+
+    second_stub = SimpleNamespace(
+        ann=ann,
+        annotations=_StubAnnotations(corrections_layer_name, existing),
+        _find_qt_window=lambda: None,
+        _adopt_layer=lambda *a, **k: None,
+        update=lambda: None,
+    )
+    second_out = DUSTrack.detect_blips_workflow(second_stub)
+    assert second_out is not None
+    assert reload_calls == [True], (
+        "Expected existing in-session corrections layer to be reloaded; "
+        "without it, the trace pane shows stale data."
+    )
 
 
 def test_workflow_mpl_fallback_short_circuits_when_no_blips(tmp_path, example_video):
@@ -160,6 +216,7 @@ def test_workflow_mpl_fallback_short_circuits_when_no_blips(tmp_path, example_vi
     adopted = []
     stub = SimpleNamespace(
         ann=ann,
+        annotations=SimpleNamespace(names=[]),
         _find_qt_window=lambda: None,
         _adopt_layer=lambda *a, **k: adopted.append(True),
         update=lambda: None,

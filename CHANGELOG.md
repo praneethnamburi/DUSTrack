@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Re-running Detect blip outliers with overwrite no longer shows
+  stale corrections.** After the user picked Overwrite on a second
+  run for the same source layer, the in-session corrections layer
+  kept showing the prior run's data even though the disk file was
+  freshly rewritten. Root cause: `_adopt_layer` is idempotent on
+  already-loaded names (a deliberate property mirroring the cold-open
+  / refresh paths), so the new VideoAnnotation built by
+  `interpolate_blips` was dropped on the floor — the existing
+  in-session annotation still held the old data dict. Fix: on
+  success, reload the existing layer in place via
+  `VideoAnnotation.reload()` before calling `_adopt_layer` (bumps
+  `_revision` so the trace-pane cache invalidates). Both the Qt
+  and mpl-fallback paths get the same treatment via a shared inline
+  helper. Regression test in `tests/test_blip_modal.py`.
+- **Modal knob defaults tuned to pia02-friendly values + tooltips
+  added to all three knobs.** Threshold factor 5.0 → 150.0,
+  max blip length 5 → 50 (both per user request after iterating on
+  real DLC traces; the algorithm's underlying defaults stay at 5.0
+  / 5 for the headless API to preserve sensitivity). Return tolerance
+  default stays at 3.0. Hover tooltips on the spinbox + label of
+  each knob explain what they do (threshold factor = robust σ above
+  per-label median displacement; max blip length = bracket scan
+  cap; return tolerance = how-close-to-pre-blip-anchor multiplier
+  on typical per-frame displacement, scales with run length).
 - **Detect blip outliers button gated on layer-name density category,
   not per-label coverage.** Two-step fix on 2026-05-24: (1) first
   removed the >=80% per-label coverage check because real DLC
