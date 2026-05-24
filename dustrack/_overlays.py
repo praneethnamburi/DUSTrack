@@ -1281,8 +1281,17 @@ def _make_blip_options_class():
             params_lbl.setStyleSheet("font-weight: bold;")
             content_layout.addWidget(params_lbl)
 
+            # Spinbox ranges are generous on the upper end -- the
+            # algorithm imposes no hard cap, and users iterating
+            # against unusual data (very noisy traces, sustained
+            # model failures) may legitimately want larger values
+            # than the defaults suggest. Lower bounds are physically
+            # meaningful: threshold_factor must be positive (0.1 lets
+            # the user explore very-permissive detection),
+            # max_blip_length must be >=1 (single-frame blip),
+            # return tolerance must be positive.
             self._threshold_spin = QDoubleSpinBox()
-            self._threshold_spin.setRange(0.5, 20.0)
+            self._threshold_spin.setRange(0.1, 1000.0)
             self._threshold_spin.setSingleStep(0.5)
             self._threshold_spin.setDecimals(1)
             self._threshold_spin.setValue(5.0)
@@ -1291,14 +1300,14 @@ def _make_blip_options_class():
             )
 
             self._max_len_spin = QSpinBox()
-            self._max_len_spin.setRange(1, 30)
+            self._max_len_spin.setRange(1, 1000)
             self._max_len_spin.setValue(5)
             content_layout.addLayout(
                 _labeled_row("Max blip length", self._max_len_spin)
             )
 
             self._return_factor_spin = QDoubleSpinBox()
-            self._return_factor_spin.setRange(0.5, 10.0)
+            self._return_factor_spin.setRange(0.1, 1000.0)
             self._return_factor_spin.setSingleStep(0.5)
             self._return_factor_spin.setDecimals(1)
             self._return_factor_spin.setValue(3.0)
