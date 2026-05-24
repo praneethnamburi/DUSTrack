@@ -209,6 +209,14 @@ def open(path=None, layer_name=None, **dustrack_kwargs):
         With UI options::
 
             tracker = dustrack.open('video.mp4', 'manual', dark_mode=True)
+
+        Telemed ultrasound recordings (``.tvd.h5`` sidecar) -- let the
+        Log helper plan + encode the per-panel mp4 on demand, then
+        hand the path here::
+
+            from immersionlab import telemed
+            lf = telemed.Log('M:/path/to/scan.tvd.h5')
+            tracker = dustrack.open(lf.ensure_mp4(panel=2))
     """
     if path is None:
         # No-arg form (1.2.0a3 seed-modal flow): construct DUSTrack
