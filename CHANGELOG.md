@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Detect blip outliers button no longer gates on >=80% per-label
+  coverage.** Real DLC predicted traces frequently have NaN gaps
+  where the model bailed, and those drop per-label coverage below
+  80% on otherwise-valid layers — the button would stay greyed out
+  even after switching the active layer to a dense `dlc_*` trace.
+  The detection algorithm itself is well-behaved on sparse input
+  (MAD threshold falls back cleanly; modal surfaces `0 blips found`
+  for too-sparse cases), so the coverage check was just keeping
+  useful work off-screen. The gate now disables only for the
+  degenerate cases (no active layer / no labels, or the layer is
+  already a `*_blip_corrections` output). Surfaced from a user
+  session on the s006/RFA pia02 project.
 - **`s` key on `.h5` layers no longer silent no-op.** Pressing `s` on a
   DLC trace / `labeled_data` `.h5` layer previously called
   `VideoAnnotation.save()`, which raises `ValueError("Supply a json file

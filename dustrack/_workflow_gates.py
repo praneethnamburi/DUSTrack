@@ -97,11 +97,20 @@ def evaluate_workflow_gates(dustrack) -> dict:
         gates["Apply manual corrections"] = (True, "")
 
     # --- Detect blip outliers ------------------------------------
-    # Data-property gate (per [[gate-on-data-not-naming]]): require at
-    # least 80% per-label coverage so the MAD-based threshold has
-    # enough finite displacements to be well-conditioned. Refuse to
-    # re-detect on a blip-corrections layer (would be sparse-on-sparse,
-    # and the output naming would self-collide).
+    # Disable only for the truly degenerate cases:
+    #   - no active layer / no labels (nothing to scan)
+    #   - layer is already a *_blip_corrections output (re-detecting
+    #     on the output is meaningless and would self-collide on the
+    #     output filename)
+    # An earlier iteration also gated on per-label coverage >= 0.8,
+    # but real DLC predicted traces often have NaN gaps where the
+    # model bailed and that drops the per-label coverage below 80%
+    # on otherwise-valid layers. The detection algorithm itself is
+    # well-behaved on sparse input -- the MAD threshold falls back
+    # cleanly and the modal surfaces "0 blips found" rather than
+    # crashing -- so the coverage gate was just keeping useful work
+    # off-screen. Removed 2026-05-24 after the user reported the
+    # button stayed gray on a real DLC layer in their s006 project.
     if ann is None or not getattr(ann, "labels", None):
         gates["Detect blip outliers"] = (False, "No active layer.")
     elif ann_name and ann_name.endswith("_blip_corrections"):
@@ -111,17 +120,7 @@ def evaluate_workflow_gates(dustrack) -> dict:
             "source DLC trace to re-run detection.",
         )
     else:
-        coverage = _min_label_coverage(ann)
-        if coverage < 0.8:
-            gates["Detect blip outliers"] = (
-                False,
-                "Detection needs a densely-labeled layer "
-                "(>=80% per-label coverage); the active layer "
-                f"is at {coverage:.0%}. Pick a DLC trace or the "
-                "post-Apply-manual-corrections layer.",
-            )
-        else:
-            gates["Detect blip outliers"] = (True, "")
+        gates["Detect blip outliers"] = (True, "")
 
     return gates
 
@@ -129,10 +128,11 @@ def evaluate_workflow_gates(dustrack) -> dict:
 def _min_label_coverage(ann) -> float:
     """Smallest per-label fraction of finite frames in an annotation.
 
-    Pure-data helper for the Detect-blip-outliers gate; returns 0.0 if
-    the annotation has no labels or no frames. Mirrors the calculation
-    :meth:`dustrack.blip.BlipReport.min_coverage` does post-detection,
-    but operates pre-detection so the gate is fast and decode-free.
+    Pure-data helper retained for diagnostics + post-detection
+    reporting; no longer gates the Detect blip outliers button (see
+    :func:`evaluate_workflow_gates` for the rationale). Mirrors
+    :meth:`dustrack.blip.BlipReport.min_coverage` but operates
+    pre-detection without decoding.
     """
     n_frames = int(getattr(ann, "n_frames", 0) or 0)
     if n_frames <= 0:

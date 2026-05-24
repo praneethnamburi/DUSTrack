@@ -271,7 +271,15 @@ def test_gate_enabled_for_dense_layer(monkeypatch):
     assert tooltip == ""
 
 
-def test_gate_disabled_for_sparse_layer(monkeypatch):
+def test_gate_enabled_for_sparse_layer(monkeypatch):
+    """Sparse layer (real-DLC NaN gaps, mid-edit manual layers) stays
+    enabled: the detection algorithm is well-behaved on sparse input,
+    the modal surfaces ``0 blips found`` for too-sparse cases, and
+    the previous 80% coverage threshold gated useful work off-screen
+    on otherwise-valid DLC traces. Replaces an earlier
+    ``test_gate_disabled_for_sparse_layer`` (gate was relaxed
+    2026-05-24).
+    """
     monkeypatch.setattr(
         "dustrack._dlc_paths._session_inside_dlc_project", lambda d: None
     )
@@ -279,9 +287,8 @@ def test_gate_disabled_for_sparse_layer(monkeypatch):
     gates = evaluate_workflow_gates(
         _stub_dustrack(ann_name="manual", coverage=0.5)
     )
-    enabled, tooltip = gates["Detect blip outliers"]
-    assert enabled is False
-    assert "densely-labeled" in tooltip
+    enabled, _tooltip = gates["Detect blip outliers"]
+    assert enabled is True
 
 
 def test_gate_disabled_for_blip_corrections_layer(monkeypatch):
