@@ -15,6 +15,14 @@ All notable changes to this project will be documented in this file.
   New ``TestDetectBlipGate`` class in
   ``tests/test_workflow_button_gates.py`` (5 cases incl. the
   Path-fname regression) -- the gate previously had zero coverage.
+- **``self.name`` now follows the active bundle on swap.**
+  ``_bundle_swap.attach_bundle`` updated ``self.fname`` but not
+  ``self.name``, so a welcome-modal swap (seed_video -> picked video)
+  left ``self.name`` frozen at ``"seed_video"`` -- which then leaked
+  into the DLC project name as ``seed_video_iteration-0`` instead of
+  ``pia02_..._iteration-0``. Now sets ``dustrack.name =
+  Path(bundle.fname).stem`` alongside the fname rebind. Regression
+  assertion added to ``tests/test_swap_to.py``.
 - **Re-running Detect blip outliers with overwrite no longer shows
   stale corrections.** After the user picked Overwrite on a second
   run for the same source layer, the in-session corrections layer

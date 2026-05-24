@@ -397,6 +397,13 @@ def attach_bundle(dustrack, bundle: _BundleState) -> None:
     the right value on the next paint.
     """
     dustrack.fname = str(bundle.fname)
+    # Keep ``self.name`` (the video stem, set at construction by
+    # VideoBrowser.__init__) in sync with the active bundle. Without
+    # this, a welcome-modal swap (seed_video -> picked video) leaves
+    # ``self.name`` frozen at "seed_video", which then leaks into the
+    # ``f"{self.name}_{self.ann.name}"`` DLC project name. Mirror the
+    # parent's derivation: stem of the (extension-stripped) filename.
+    dustrack.name = Path(bundle.fname).stem
     dustrack.data = bundle.reader
     dustrack.annotations = bundle.annotations
     dustrack._dlcproject = bundle.project

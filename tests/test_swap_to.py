@@ -426,6 +426,10 @@ class TestSwapToBehavior:
         assert shell._active_index == 1
         # Shell attrs rebind to b1.
         assert Path(shell.fname) == Path("/v1.mp4")
+        # ``self.name`` follows the active bundle (regression guard for
+        # the seed-modal "seed_video" leak: a swap left self.name frozen
+        # at construction-time, polluting the DLC project name).
+        assert shell.name == "v1"
         assert shell.annotations is b1.annotations
         assert shell._current_idx == 123
         # b0's artists hidden, b1's shown.
