@@ -27,6 +27,7 @@ from __future__ import annotations
 import traceback
 
 from .dlcloader import HAS_DLC, _dlc_load_state
+from ._layer_names import _is_dense_layer_name
 
 
 def evaluate_workflow_gates(dustrack) -> dict:
@@ -97,20 +98,31 @@ def evaluate_workflow_gates(dustrack) -> dict:
         gates["Apply manual corrections"] = (True, "")
 
     # --- Detect blip outliers ------------------------------------
-    # Disable only for the truly degenerate cases:
-    #   - no active layer / no labels (nothing to scan)
-    #   - layer is already a *_blip_corrections output (re-detecting
-    #     on the output is meaningless and would self-collide on the
-    #     output filename)
-    # An earlier iteration also gated on per-label coverage >= 0.8,
-    # but real DLC predicted traces often have NaN gaps where the
-    # model bailed and that drops the per-label coverage below 80%
-    # on otherwise-valid layers. The detection algorithm itself is
-    # well-behaved on sparse input -- the MAD threshold falls back
-    # cleanly and the modal surfaces "0 blips found" rather than
-    # crashing -- so the coverage gate was just keeping useful work
-    # off-screen. Removed 2026-05-24 after the user reported the
-    # button stayed gray on a real DLC layer in their s006 project.
+    # Gate on the conceptual fit: blip detection is meaningful only on
+    # dense per-frame trace layers -- DLC inference outputs (``dlc_*``),
+    # the ``dlccorr`` Apply-manual-corrections splice, and any LK-RSTC
+    # jitter-reduced output (``*_lkmovavg_*``). Sparse manual
+    # annotation layers have nothing for the per-label MAD threshold
+    # to chew on -- detection would either find nothing or surface
+    # noise as false positives.
+    #
+    # Uses the layer-name predicate ``_is_dense_layer_name`` (shared
+    # with the plot-type + overlay-pin logic in :func:`_adopt_layer`)
+    # rather than a data-coverage check, because real DLC traces
+    # frequently have NaN gaps that drop their per-label coverage
+    # below thresholds like 80% without changing their conceptual
+    # density. The dense/sparse distinction at the *naming* layer is
+    # the load-bearing signal; this is one of the few places where
+    # naming-based gating is right (cf. [[gate-on-data-not-naming]] --
+    # which applies when the data property is the truth and naming is
+    # only a correlated proxy; here the naming directly encodes the
+    # source-of-data category).
+    #
+    # Earlier iterations went through (a) >=80% coverage (turned off
+    # 2026-05-24 after a real DLC layer with NaN gaps stayed greyed
+    # out) and (b) no gate at all (also 2026-05-24, then walked back
+    # later the same day because sparse manual layers were enabled
+    # too).
     if ann is None or not getattr(ann, "labels", None):
         gates["Detect blip outliers"] = (False, "No active layer.")
     elif ann_name and ann_name.endswith("_blip_corrections"):
@@ -118,6 +130,15 @@ def evaluate_workflow_gates(dustrack) -> dict:
             False,
             "This is a blip-corrections output; switch to the "
             "source DLC trace to re-run detection.",
+        )
+    elif not ann_name or not _is_dense_layer_name(ann_name):
+        gates["Detect blip outliers"] = (
+            False,
+            "Blip detection runs on dense trace layers (DLC "
+            "predictions, 'dlccorr', or jitter-reduced outputs). "
+            "The active layer looks like a manual annotation layer; "
+            "switch to a 'dlc_*' / 'dlccorr' / '*_lkmovavg_*' "
+            "layer to enable.",
         )
     else:
         gates["Detect blip outliers"] = (True, "")

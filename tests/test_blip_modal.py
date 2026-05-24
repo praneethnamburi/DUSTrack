@@ -258,46 +258,64 @@ def _stub_dustrack(*, ann_name=None, coverage=1.0, dlcproject=None, overlay=None
     )
 
 
-def test_gate_enabled_for_dense_layer(monkeypatch):
+@pytest.fixture
+def _patch_dlc_state(monkeypatch):
+    """Patches the gates module's outside-world reads so the test stub
+    doesn't need to model a full session."""
     monkeypatch.setattr(
         "dustrack._dlc_paths._session_inside_dlc_project", lambda d: None
     )
     monkeypatch.setattr("dustrack.dlcloader._dlc_load_state", lambda: "done")
+
+
+def test_gate_enabled_for_dlc_layer(_patch_dlc_state):
+    """Layer name with ``dlc_*`` prefix is the canonical enable case."""
     gates = evaluate_workflow_gates(
-        _stub_dustrack(ann_name="dlc_iter1", coverage=1.0)
+        _stub_dustrack(ann_name="dlc_iteration-0_snapshot_300", coverage=1.0)
     )
     enabled, tooltip = gates["Detect blip outliers"]
     assert enabled is True
     assert tooltip == ""
 
 
-def test_gate_enabled_for_sparse_layer(monkeypatch):
-    """Sparse layer (real-DLC NaN gaps, mid-edit manual layers) stays
-    enabled: the detection algorithm is well-behaved on sparse input,
-    the modal surfaces ``0 blips found`` for too-sparse cases, and
-    the previous 80% coverage threshold gated useful work off-screen
-    on otherwise-valid DLC traces. Replaces an earlier
-    ``test_gate_disabled_for_sparse_layer`` (gate was relaxed
-    2026-05-24).
-    """
-    monkeypatch.setattr(
-        "dustrack._dlc_paths._session_inside_dlc_project", lambda d: None
-    )
-    monkeypatch.setattr("dustrack.dlcloader._dlc_load_state", lambda: "done")
+def test_gate_enabled_for_dlccorr_layer(_patch_dlc_state):
+    """Apply-manual-corrections output is dense; enable."""
     gates = evaluate_workflow_gates(
-        _stub_dustrack(ann_name="manual", coverage=0.5)
+        _stub_dustrack(ann_name="dlccorr", coverage=1.0)
     )
     enabled, _tooltip = gates["Detect blip outliers"]
     assert enabled is True
 
 
-def test_gate_disabled_for_blip_corrections_layer(monkeypatch):
-    monkeypatch.setattr(
-        "dustrack._dlc_paths._session_inside_dlc_project", lambda d: None
-    )
-    monkeypatch.setattr("dustrack.dlcloader._dlc_load_state", lambda: "done")
+def test_gate_enabled_for_lkmovavg_layer(_patch_dlc_state):
+    """Jitter-reduced layers (any source) carry the ``lkmovavg``
+    substring and are dense; enable."""
     gates = evaluate_workflow_gates(
-        _stub_dustrack(ann_name="snapshot_300_blip_corrections", coverage=0.01)
+        _stub_dustrack(ann_name="dlccorr_lkmovavg_0.500", coverage=1.0)
+    )
+    enabled, _tooltip = gates["Detect blip outliers"]
+    assert enabled is True
+
+
+def test_gate_disabled_for_manual_layer(_patch_dlc_state):
+    """Manual annotation layers (typical name: ``iteration-N`` or
+    user-chosen) are sparse; disable with the dense-layer hint."""
+    gates = evaluate_workflow_gates(
+        _stub_dustrack(ann_name="iteration-4", coverage=0.05)
+    )
+    enabled, tooltip = gates["Detect blip outliers"]
+    assert enabled is False
+    assert "dense" in tooltip
+    assert "dlc_" in tooltip
+
+
+def test_gate_disabled_for_blip_corrections_layer(_patch_dlc_state):
+    """Blip-corrections is a sparse output of this very workflow;
+    disable so re-detection on the output doesn't self-collide."""
+    gates = evaluate_workflow_gates(
+        _stub_dustrack(
+            ann_name="snapshot_300_blip_corrections", coverage=0.01
+        )
     )
     enabled, tooltip = gates["Detect blip outliers"]
     assert enabled is False

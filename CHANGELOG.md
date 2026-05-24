@@ -4,18 +4,22 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- **Detect blip outliers button no longer gates on >=80% per-label
-  coverage.** Real DLC predicted traces frequently have NaN gaps
-  where the model bailed, and those drop per-label coverage below
-  80% on otherwise-valid layers — the button would stay greyed out
-  even after switching the active layer to a dense `dlc_*` trace.
-  The detection algorithm itself is well-behaved on sparse input
-  (MAD threshold falls back cleanly; modal surfaces `0 blips found`
-  for too-sparse cases), so the coverage check was just keeping
-  useful work off-screen. The gate now disables only for the
-  degenerate cases (no active layer / no labels, or the layer is
-  already a `*_blip_corrections` output). Surfaced from a user
-  session on the s006/RFA pia02 project.
+- **Detect blip outliers button gated on layer-name density category,
+  not per-label coverage.** Two-step fix on 2026-05-24: (1) first
+  removed the >=80% per-label coverage check because real DLC
+  predicted traces frequently have NaN gaps that drop coverage on
+  otherwise-valid layers (surfaced from a user session on the
+  s006/RFA pia02 project). (2) Then re-introduced gating on the
+  layer-name density category via `_is_dense_layer_name` (shared
+  with the plot-type + overlay-pin logic): enabled only for `dlc_*`
+  traces, the `dlccorr` Apply-manual-corrections splice, and any
+  `*_lkmovavg_*` jitter-reduced output. Manual annotation layers
+  stay disabled (the per-label MAD threshold has nothing to chew
+  on, so detection on them would either find nothing or surface
+  noise as false positives). This is one of the few places where
+  naming-based gating is right (cf. [[gate-on-data-not-naming]] —
+  the naming directly encodes the source-of-data category here,
+  not just a correlated proxy).
 - **`s` key on `.h5` layers no longer silent no-op.** Pressing `s` on a
   DLC trace / `labeled_data` `.h5` layer previously called
   `VideoAnnotation.save()`, which raises `ValueError("Supply a json file
