@@ -22,7 +22,11 @@ dependencies = [
     "pysampled",
     "pyfilemanager",
     "pyyaml",
-    "datanavigator>=1.5.1"
+    # [qt] pulls a Qt binding (PyQt6) via datanavigator's extra. DUSTrack is a
+    # Qt GUI app -- even the standalone no-DLC path (GUI + LK) needs a binding,
+    # so it's a hard dependency here, not opt-in as in datanavigator. qtpy
+    # still picks up any pre-existing binding (e.g. PySide6 in a DLC env).
+    "datanavigator[qt]>=1.5.1"
 ]
 license = {file = "LICENSE"}
 classifiers = [

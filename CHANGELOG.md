@@ -3,6 +3,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-07-13
+
+Patch release: a clean `pip install dustrack` is now GUI-capable out of the box.
+
+### Changed
+- **A Qt binding is now a default dependency** via `datanavigator[qt]` (pulls
+  PyQt6). DUSTrack is a Qt GUI application -- even the standalone no-DLC path
+  (GUI + LK optical flow) needs a binding to launch -- so it's a hard
+  dependency rather than the opt-in extra it is in datanavigator. `qtpy` still
+  picks up any binding already present (e.g. PySide6 in a DeepLabCut env, which
+  sets `QT_API=pyside6`). Removes the "install a Qt binding yourself" step that
+  otherwise bit fresh installs.
+
 ## [1.3.1] - 2026-07-13
 
 Patch release: `import dustrack` now works on a standalone (no-DeepLabCut)
