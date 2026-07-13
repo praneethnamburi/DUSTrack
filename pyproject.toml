@@ -21,6 +21,7 @@ dependencies = [
     "opencv-python",
     "pysampled",
     "pyfilemanager",
+    "pyyaml",
     "datanavigator>=1.5.1"
 ]
 license = {file = "LICENSE"}
