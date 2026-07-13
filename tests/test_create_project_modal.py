@@ -21,8 +21,10 @@ from dustrack import _config
 
 class TestDefaultOptions:
     def test_name_is_stem_underscore_layer(self):
+        # Forward slashes so Path().stem is portable: on POSIX a backslash
+        # isn't a separator, so r"M:\vids\x.mp4" would be one filename.
         opts = _default_create_project_options(
-            video_fname=r"M:\vids\pia02_s001_006_RFA2.mp4",
+            video_fname="M:/vids/pia02_s001_006_RFA2.mp4",
             layer_name="iteration-0",
             experimenter="praneeth",
         )
@@ -30,12 +32,12 @@ class TestDefaultOptions:
 
     def test_path_falls_back_to_video_parent_when_no_last_root(self):
         opts = _default_create_project_options(
-            video_fname=r"M:\vids\v0.mp4",
+            video_fname="M:/vids/v0.mp4",
             layer_name="manual",
             experimenter="x",
             last_project_root=None,
         )
-        assert Path(opts["path"]) == Path(r"M:\vids")
+        assert Path(opts["path"]) == Path("M:/vids")
 
     def test_path_uses_last_project_root_when_supplied(self):
         opts = _default_create_project_options(

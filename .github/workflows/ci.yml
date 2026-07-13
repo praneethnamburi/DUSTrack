@@ -15,18 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        # Windows only for now (dustrack's primary platform). Linux + macOS
-        # are deferred: PyQt6 under QT_QPA_PLATFORM=offscreen segfaults on the
-        # Linux runner, and test_convert_to_mono depends on ffmpeg behavior
-        # that differs there. The OS-conditional steps below are kept so the
-        # matrix can be re-expanded to [ubuntu-22.04, macos-latest] once those
-        # two are resolved.
-        platform: [windows-latest]
+        platform: [ubuntu-22.04, windows-latest, macos-latest]
 
     env:
       # Headless: matplotlib on Agg, Qt on the offscreen platform plugin so
-      # qtpy-touching tests run without a display. deeplabcut is deliberately
-      # NOT installed -- DLC-dependent tests skip via HAS_DLC.
+      # qtpy-touching tests run without a display. (offscreen is more stable
+      # than xcb-under-xvfb under xdist parallelism -- xcb crashes workers.)
+      # deeplabcut is deliberately NOT installed -- DLC tests skip via HAS_DLC.
       MPLBACKEND: Agg
       QT_QPA_PLATFORM: offscreen
 
@@ -40,11 +35,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install ffmpeg (Linux)
+      # Ubuntu's apt ffmpeg lacks libx265 monochrome, so convert_to_mono
+      # (h265 gray output) fails on it. Use a static build that has it.
+      - name: Install ffmpeg (Linux, static build with libx265 monochrome)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ff.tar.xz
+          mkdir -p /tmp/ffbin
+          tar -xf /tmp/ff.tar.xz -C /tmp/ffbin --strip-components=1
+          /tmp/ffbin/ffmpeg -hide_banner -version | head -1
+          echo "/tmp/ffbin" >> "$GITHUB_PATH"
 
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
@@ -54,11 +54,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ffmpeg
 
-      - name: Install Linux Qt/xcb system libs
+      - name: Install Linux Qt (offscreen) system libs
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - name: Install dustrack (editable) + test + Qt deps
         run: |
@@ -71,5 +71,13 @@ jobs:
       - name: Show installed package versions
         run: python -m pip list
 
+      # Retry once: PyQt6 under offscreen very occasionally segfaults a worker
+      # under xdist (seen ~1/9 jobs, not reproducible locally). A real failure
+      # fails both attempts; the retry only absorbs the rare infra flake.
       - name: Run pytest
-        run: python -m pytest tests/ -q
+        shell: bash
+        run: |
+          python -m pytest tests/ -q || {
+            echo "::warning::pytest failed; retrying once to absorb a possible PyQt6-offscreen worker segfault"
+            python -m pytest tests/ -q
+          }
