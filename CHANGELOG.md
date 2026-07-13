@@ -3,6 +3,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-13
+
+Second minor release on top of 1.2.0, consolidating the locally-tagged
+`1.3.0a2` band into a single PyPI cut. The theme is **DLC-project
+workflow ergonomics for the pia02 corpus**: a Create-DLC-Project options
+modal, hard-linking videos into projects instead of copying (the telemed
+`process()` pipeline emits ~1-2 GB h265 mp4s that don't scale to a
+copy-per-project), the blip-outlier detect/remove workflow, and a
+batch-process modal (`convert_to_mono` + `build_toc`) for warming the
+master corpus. Moves the `datanavigator` floor to `>=1.5.1`
+(`dustrack.batch.build_toc` delegates to
+`datanavigator.precompute_toc_folder`, new in dnav 1.5.1). The DINOv3
+general-model workflow (roadmap #1: image-similarity infrastructure
+feeding decimation / CFCA / conflict-detector) remains out of scope and
+is deferred to a later release; the `Decimate annotations` button ships
+as the starter form.
+
 ### Added
 - **Create DLC Project options modal** (Qt path, 1.3.0a2). Clicking
   Create DLC Project now opens a small modal with three editable,
