@@ -3,6 +3,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-13
+
+Patch release: `import dustrack` now works on a standalone (no-DeepLabCut)
+install again. Both fixes were surfaced by the new CI, which installs the
+package without deeplabcut.
+
+### Fixed
+- **`import dustrack` no longer hard-requires the torch stack.**
+  `dustrack/dlcpatch.py` did a module-level `import torch` and
+  `dustrack/__init__.py` imports `dlcpatch` eagerly, so a clean standalone
+  install (the paper's "Option 1": GUI + LK optical flow, no DLC) failed with
+  `ModuleNotFoundError: No module named 'torch'`. torch is now imported
+  optionally (every use lives inside a DLC-only code path), so the standalone
+  path imports without the DeepLabCut/torch stack.
+- **Declared `pyyaml` as a runtime dependency.** `dustrack.seed` imports it;
+  it was previously present only transitively via deeplabcut in dev
+  environments, so a standalone install could not import the seed module.
+
+### Infrastructure
+- Added GitHub Actions CI (`.github/workflows/ci.yml`): pytest on
+  windows-latest for Python 3.10/3.11/3.12, headless (Agg + Qt offscreen),
+  deeplabcut omitted so the DLC-dependent tests skip via `HAS_DLC`.
+
 ## [1.3.0] - 2026-07-13
 
 Second minor release on top of 1.2.0, consolidating the locally-tagged
