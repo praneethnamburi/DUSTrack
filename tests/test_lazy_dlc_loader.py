@@ -133,6 +133,10 @@ class TestAsyncLoader:
         def _block_until_gate():
             gate.wait(timeout=5.0)
 
+        # This "return the already-running loader thread" path only applies
+        # when DLC is importable; a no-DLC env short-circuits to None. Force
+        # HAS_DLC True so the test is env-independent (_reset_loader restores).
+        dlcloader.HAS_DLC = True
         dlcloader._DLC_LOAD_STATE = "pending"
         dlcloader._DLC_LOAD_THREAD = threading.Thread(target=_block_until_gate)
         dlcloader._DLC_LOAD_THREAD.start()

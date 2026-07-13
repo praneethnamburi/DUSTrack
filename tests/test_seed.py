@@ -21,6 +21,7 @@ from dustrack import (
     set_seed_bundles_root,
 )
 from dustrack._layer_names import _dlc_bodyparts_to_layer_labels
+from dustrack.dlcinterface import HAS_DLC
 from dustrack.seed import extract_snapshot_for_seeding as _extract_direct
 
 
@@ -576,6 +577,9 @@ _REAL_SEED_BUNDLE = Path(
 )
 
 
+@pytest.mark.skipif(
+    not HAS_DLC, reason="drives real DLC inference; deeplabcut not installed"
+)
 @pytest.mark.slow
 def test_seed_bundle_drives_iteration_0_inference(tmp_path):
     """Empirically verify the seeding contract: building a DLC

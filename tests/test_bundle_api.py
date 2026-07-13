@@ -272,10 +272,11 @@ class TestReplaceActiveWith:
         # final_indices points at the new bundle's post-removal index.
         assert final_indices == [0]
 
-    def test_multi_video_replace(self, stub_tracker, tmp_path):
+    def test_multi_video_replace(self, stub_tracker, tmp_path, force_has_dlc):
         # Replace seed with two videos -- requires Phase 2 (DLC project),
         # so the validation path will reject bare videos with a clear
-        # message. Verify that.
+        # message. Verify that. force_has_dlc bypasses the pre-validation
+        # HAS_DLC guard so the intended ValueError (not ImportError) fires.
         v0 = tmp_path / "a.mp4"
         v1 = tmp_path / "b.mp4"
         v0.write_bytes(b"")

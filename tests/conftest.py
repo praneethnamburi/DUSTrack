@@ -18,6 +18,29 @@ import datanavigator
 
 
 @pytest.fixture
+def force_has_dlc(monkeypatch):
+    """Force ``HAS_DLC`` True on every dustrack module that snapshotted it.
+
+    The multi-video dispatch (``dustrack.open`` / ``_resolve_multi_video_from_list``)
+    guards ``if not HAS_DLC: raise ImportError`` **before** it constructs the
+    test-stubbed ``DLCProject``. So dispatch/validation tests that mean to run
+    without a real deeplabcut install must bypass that guard, otherwise they
+    pass only in a DLC env (dlc3rc14) and fail on a no-DLC runner -- which is
+    exactly how the suite broke on CI. Iterating ``sys.modules`` keeps this
+    robust to future ``HAS_DLC`` binding sites. Not autouse: tests that verify
+    the no-DLC ImportError path (e.g. ``test_lazy_dlc_loader``) must not get it.
+    """
+    import sys
+
+    import dustrack  # noqa: F401 -- ensure submodules are loaded before patching
+
+    for name, mod in list(sys.modules.items()):
+        if name == "dustrack" or name.startswith("dustrack."):
+            if hasattr(mod, "HAS_DLC"):
+                monkeypatch.setattr(mod, "HAS_DLC", True, raising=False)
+
+
+@pytest.fixture
 def matplotlib_figure():
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1])

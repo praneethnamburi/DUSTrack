@@ -50,10 +50,12 @@ def _make_project(tmp_path: Path, name: str = "proj", videos: list = None):
 
 
 @pytest.fixture
-def fake_dlcproject(monkeypatch):
+def fake_dlcproject(monkeypatch, force_has_dlc):
     """Patch :class:`DLCProject` so construction returns a tiny stub
     exposing the attributes the multi-video dispatch reads
-    (``config_path``, ``video_list``, ``video_names``)."""
+    (``config_path``, ``video_list``, ``video_names``). ``force_has_dlc``
+    bypasses the dispatch's pre-construction ``HAS_DLC`` guards so the stub
+    is reached without a real deeplabcut install."""
     calls = []
 
     class _StubProject:
@@ -78,13 +80,20 @@ def fake_dlcproject(monkeypatch):
             tracker._init_bundles_calls = []
             return tracker
 
-    # Patch at every resolution point. Post-1.2.0rc1, DLCProject is
-    # imported at module-load from dustrack.dlcinterface into both
-    # dustrack._open and dustrack.gui as a snapshot binding -- patching
-    # dlcinterface alone doesn't affect their locals.
-    monkeypatch.setattr("dustrack._open.DLCProject", _StubProject)
-    monkeypatch.setattr("dustrack.gui.DLCProject", _StubProject)
-    monkeypatch.setattr("dustrack.dlcinterface.DLCProject", _StubProject)
+    # Patch DLCProject at every resolution point. Post-1.2.0rc1 it is
+    # imported at module-load from dustrack.dlcinterface into
+    # dustrack._open / dustrack.gui / etc. as snapshot bindings -- patching
+    # dlcinterface alone doesn't affect their locals. Iterating sys.modules
+    # keeps this robust to future binding sites. (HAS_DLC is forced True by
+    # the force_has_dlc fixture so the pre-construction guards pass first.)
+    import sys
+
+    import dustrack  # noqa: F401 -- ensure submodules are loaded before patching
+
+    for _name, _mod in list(sys.modules.items()):
+        if _name == "dustrack" or _name.startswith("dustrack."):
+            if getattr(_mod, "DLCProject", None) is not None:
+                monkeypatch.setattr(_mod, "DLCProject", _StubProject, raising=False)
     _StubProject._calls = calls
     return _StubProject
 

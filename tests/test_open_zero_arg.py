@@ -170,6 +170,7 @@ class TestOpenNoArg:
 
     def test_picker_multi_pick_bare_videos_rejected(
         self, monkeypatch, tmp_path, fake_dustrack, force_legacy_fallback,
+        force_has_dlc,
     ):
         """1.2.0a3 contract: multi-video sessions require every entry
         to belong to a single DLC project. Bare videos in tmp_path
@@ -356,7 +357,7 @@ class TestOpenListForm:
         assert tracker_list._video_queue == []
 
     def test_multi_element_list_bare_videos_rejected(
-        self, tmp_path, fake_dustrack
+        self, tmp_path, fake_dustrack, force_has_dlc
     ):
         """1.2.0a3: bare-video multi-video lists raise (must share a
         single DLC project). See ``test_open_multi_video.py`` for the
@@ -372,7 +373,7 @@ class TestOpenListForm:
         assert fake_dustrack.calls == []
 
     def test_mixed_str_and_path_entries_rejected_for_bare(
-        self, tmp_path, fake_dustrack
+        self, tmp_path, fake_dustrack, force_has_dlc
     ):
         """Mixed str/Path entries don't bypass the single-project
         validation."""
@@ -386,7 +387,7 @@ class TestOpenListForm:
         assert fake_dustrack.calls == []
 
     def test_tuple_form_bare_videos_rejected(
-        self, tmp_path, fake_dustrack
+        self, tmp_path, fake_dustrack, force_has_dlc
     ):
         """Tuple shape (vs. list) gets the same validation."""
         v0 = tmp_path / "a.mp4"

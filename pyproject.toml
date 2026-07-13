@@ -66,6 +66,9 @@ target-version = ['py37', 'py38', 'py39', 'py310', 'py311', 'py312', 'py313']
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: end-to-end tests needing the M: corpus and/or a real deeplabcut install (auto-skipped where unavailable, e.g. CI)",
+]
 # Default: parallel via pytest-xdist (declared in the ``test`` extra).
 # Serial debugging: ``pytest -n0``. Disable parallelism entirely with
 # ``pytest -p no:xdist`` if xdist output ordering gets in the way.
