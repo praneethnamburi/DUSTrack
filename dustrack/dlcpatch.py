@@ -49,7 +49,17 @@ import threading
 from queue import Empty, Queue
 
 import numpy as np
-import torch
+
+try:
+    import torch
+except ModuleNotFoundError:  # pragma: no cover
+    # torch ships with the deeplabcut (DLC) stack. dustrack runs standalone
+    # without DLC (the paper's "Option 1" install: GUI + LK optical flow), and
+    # ``import dustrack`` eagerly imports this module. Every ``torch`` use here
+    # lives inside a function that only runs while patching DLC inference --
+    # i.e. only when DLC (and therefore torch) is installed -- so a None
+    # placeholder keeps import working in the no-DLC environment.
+    torch = None
 
 
 _PATCHED = False
