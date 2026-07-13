@@ -15,7 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        platform: [ubuntu-22.04, windows-latest, macos-latest]
+        # Windows only for now (dustrack's primary platform). Linux + macOS
+        # are deferred: PyQt6 under QT_QPA_PLATFORM=offscreen segfaults on the
+        # Linux runner, and test_convert_to_mono depends on ffmpeg behavior
+        # that differs there. The OS-conditional steps below are kept so the
+        # matrix can be re-expanded to [ubuntu-22.04, macos-latest] once those
+        # two are resolved.
+        platform: [windows-latest]
 
     env:
       # Headless: matplotlib on Agg, Qt on the offscreen platform plugin so
