@@ -122,16 +122,37 @@ def make_predictor(n_frames=1000, n_bodyparts=2, runner=None):
 # --------------------------------------------------------------------- #
 # Standalone-import invariant                                           #
 # --------------------------------------------------------------------- #
-def test_module_imports_without_dlc():
+def test_no_module_level_dlc_or_torch_import():
     """``import dustrack.predict`` must not require the torch stack.
 
     Same invariant 1.3.1 restored for ``dustrack`` as a whole: every DLC
-    import in this module is deferred into a function body.
-    """
-    import importlib
+    import here is deferred into a function body. Asserted by walking the
+    module's own top-level statements, which holds regardless of whether
+    the running env happens to have deeplabcut installed.
 
-    mod = importlib.reload(dpredict)
-    assert hasattr(mod, "RangePredictor")
+    Deliberately *not* done with ``importlib.reload``: reloading a module
+    under test rebinds its classes, so anything holding a reference to
+    the pre-reload ``PredictionCancelled`` (this test module, at import
+    time) then compares against a stale object. That made
+    ``test_predict_frames_cancel_before_start_raises`` fail on CI under
+    random test ordering while passing locally in file order.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(dpredict.__file__).read_text(encoding="utf-8")
+    banned = ("deeplabcut", "torch")
+    offenders = []
+    for node in ast.parse(src).body:  # top level only
+        if isinstance(node, ast.Import):
+            offenders += [
+                a.name for a in node.names if a.name.split(".")[0] in banned
+            ]
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in banned:
+                offenders.append(node.module)
+    assert not offenders, f"module-level heavy imports: {offenders}"
 
 
 def test_constructing_predictor_does_not_load_model():
