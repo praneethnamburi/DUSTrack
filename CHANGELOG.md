@@ -3,6 +3,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`dustrack.predict.RangePredictor` -- range-restricted inference with a
+  cached model.** `analyze_videos` is whole-video only (its one subsetting
+  axis is *which files*, never *which frames*) and rebuilds the pose model
+  on every call, so asking "what does the model predict right here?" costs
+  a multi-minute pass. `RangePredictor` holds the model open and runs
+  inference on an arbitrary frame list: **~4.5 s one-time load, then
+  ~165 fps -- a 200-frame range in ~1.2 s** (interosseous s001, ResNet-50
+  BU, 706x558, RTX 4090, `batchsize=4`). This is the engine for
+  incremental refinement; no GUI wiring yet.
+
+  Deliberately thin: `FrameListIterator` subclasses DLC's own
+  `VideoIterator` and changes *only which frames are yielded*. Decode,
+  preprocessing, batching and the forward pass stay DLC's, reached through
+  the same `PoseInferenceRunner` `analyze_videos` builds, so parity is
+  structural rather than hoped-for. `test_predict.py` pins it against a
+  real `analyze_videos` h5 (agreement to 0.0036 px; not bit-exact because
+  `dlcpatch` forces AMP autocast and chunked batches change float
+  reduction order).
+
+  Results return **in memory** as a sparse `VideoAnnotation`, mirroring
+  `blip.interpolate_blips` -- nothing is written to `videos/iteration-{N}/`,
+  so a range prediction cannot collide with the h5 files
+  `_refresh_dlc_layers` globs. It also never touches the project
+  `config.yaml`, whose non-re-entrant `snapshotindex` save/restore in
+  `analyze_videos` would corrupt model selection under concurrency.
+
+  Contiguous ranges seek once and then read sequentially; seeking per
+  frame forces a keyframe re-decode each time and measured 56 fps vs
+  165 fps. Supports per-frame cooperative cancellation and per-chunk
+  progress callbacks. `import dustrack.predict` works without the
+  DeepLabCut/torch stack (every DLC import is deferred into a function
+  body), preserving the 1.3.1 standalone-import invariant.
+
 ## [1.3.2] - 2026-07-13
 
 Patch release: a clean `pip install dustrack` is now GUI-capable out of the box.
