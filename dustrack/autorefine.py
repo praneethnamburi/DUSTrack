@@ -398,6 +398,41 @@ def gaps_from_blips(
     return report
 
 
+def sample_gaps(report: GapReport, max_gaps: int) -> GapReport:
+    """Thin a report to at most ``max_gaps``, spread over the video.
+
+    Repair costs an LK pass per gap (~300 ms), and a refinement round
+    only needs a couple of labels per video -- repairing 2000 candidate
+    blips to then select two is most of a day's compute for nothing.
+    Sampling evenly across the timeline rather than taking the first N
+    keeps the candidates representative of the whole video.
+    """
+    if len(report.gaps) <= max_gaps:
+        return report
+    by_label: dict[str, list[Gap]] = {}
+    for g in report.gaps:
+        by_label.setdefault(g.label, []).append(g)
+
+    kept: list[Gap] = []
+    share = max(1, max_gaps // max(1, len(by_label)))
+    for label, gaps in by_label.items():
+        gaps.sort(key=lambda g: g.start)
+        if len(gaps) <= share:
+            kept.extend(gaps)
+            continue
+        idx = np.linspace(0, len(gaps) - 1, share).round().astype(int)
+        kept.extend(gaps[i] for i in sorted(set(idx.tolist())))
+
+    thinned = GapReport(
+        gaps=sorted(kept, key=lambda g: (g.label, g.start)),
+        rejected=report.rejected,
+        per_label=report.per_label,
+        params={**report.params, "sampled_from": len(report.gaps)},
+        n_frames=report.n_frames,
+    )
+    return thinned
+
+
 def repair(
     report: GapReport,
     ann: VideoAnnotation,
