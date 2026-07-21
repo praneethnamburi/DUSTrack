@@ -34,7 +34,7 @@ from ._file_management import (
     make_annotation_file_name,
     rebase_to_config,
 )
-from ._dlc_paths import link_or_copy_videos_into_project
+from ._dlc_paths import link_or_copy_videos_into_project, symlink_as_hardlink
 
 
 EXPERIMENTER = _config.EXPERIMENTER
@@ -226,9 +226,17 @@ class DLCProject:
             # disk when source + project share a volume (the typical case
             # for telemed h265 outputs on M:\). Sidecars (.dnav-toc)
             # ride along.
-            config_path = _dlcloader.deeplabcut.create_new_project(
-                name, experimenter, videos, working_directory=path, copy_videos=False
-            )
+            # ``copy_videos=False`` makes DLC try os.symlink -> mklink ->
+            # *copy*; on Windows the first two need a privilege the user
+            # usually lacks, so the copy is the normal path and we then
+            # replace it with a hard link below. ``symlink_as_hardlink``
+            # lets DLC's first attempt succeed instead, which skips a
+            # full copy of every video (3-16 GB apiece on pia02).
+            with symlink_as_hardlink():
+                config_path = _dlcloader.deeplabcut.create_new_project(
+                    name, experimenter, videos, working_directory=path,
+                    copy_videos=False,
+                )
             project_videos_dir = Path(config_path).parent / "videos"
             in_project_paths = link_or_copy_videos_into_project(
                 project_videos_dir,

@@ -240,3 +240,117 @@ class TestMultipleVideos:
         assert result == []
         # Still creates the directory (downstream caller expects it)
         assert proj_videos.is_dir()
+
+
+class TestDestNames:
+    """Renaming at link time.
+
+    A hard link is a second directory entry for the same bytes, so the
+    in-project name is free to differ from the source's -- no copy, no
+    extra storage. pia02 needs this: its telemed exports carry spaces
+    and long descriptive names, and DLC appends ~58 characters of
+    scorer/snapshot suffix on top, which crowds Windows' 260-character
+    path limit.
+    """
+
+    def test_renames_video_and_sidecar(self, tmp_path):
+        src = _make_video(tmp_path / "src" / "pia02_s061_003 fav piece_b2.mp4")
+        (tmp_path / "src" / "pia02_s061_003 fav piece_b2.mp4.dnav-toc").write_bytes(
+            b"toc"
+        )
+        proj_videos = tmp_path / "proj" / "videos"
+        result = link_or_copy_videos_into_project(
+            proj_videos, [src], dest_names=["pia02_s061_003_LFAc.mp4"]
+        )
+        assert [p.name for p in result] == ["pia02_s061_003_LFAc.mp4"]
+        assert (proj_videos / "pia02_s061_003_LFAc.mp4").exists()
+        # The TOC follows the *destination* name, else the reader rebuilds it.
+        assert (proj_videos / "pia02_s061_003_LFAc.mp4.dnav-toc").read_bytes() == b"toc"
+
+    def test_content_is_the_source_content(self, tmp_path):
+        src = _make_video(tmp_path / "src" / "long name.mp4", payload=b"REAL")
+        proj_videos = tmp_path / "proj" / "videos"
+        result = link_or_copy_videos_into_project(
+            proj_videos, [src], dest_names=["short.mp4"]
+        )
+        assert result[0].read_bytes() == b"REAL"
+
+    def test_order_is_positional(self, tmp_path):
+        srcs = [
+            _make_video(tmp_path / "src" / f"v{i}.mp4", payload=f"v{i}".encode())
+            for i in range(3)
+        ]
+        proj_videos = tmp_path / "proj" / "videos"
+        result = link_or_copy_videos_into_project(
+            proj_videos, srcs, dest_names=["c.mp4", "a.mp4", "b.mp4"]
+        )
+        assert [p.name for p in result] == ["c.mp4", "a.mp4", "b.mp4"]
+        # Positional, not sorted: v0 -> c.mp4.
+        assert (proj_videos / "c.mp4").read_bytes() == b"v0"
+
+    def test_length_mismatch_raises(self, tmp_path):
+        srcs = [_make_video(tmp_path / "src" / f"v{i}.mp4") for i in range(2)]
+        proj_videos = tmp_path / "proj" / "videos"
+        with pytest.raises(ValueError, match="1:1"):
+            link_or_copy_videos_into_project(
+                proj_videos, srcs, dest_names=["only_one.mp4"]
+            )
+
+    def test_none_keeps_source_names(self, tmp_path):
+        src = _make_video(tmp_path / "src" / "keepme.mp4")
+        proj_videos = tmp_path / "proj" / "videos"
+        result = link_or_copy_videos_into_project(proj_videos, [src], dest_names=None)
+        assert [p.name for p in result] == ["keepme.mp4"]
+
+
+class TestSymlinkAsHardlink:
+    """DLC's create_new_project falls back to copying; this makes its
+    first attempt (os.symlink) succeed as a hard link instead."""
+
+    def test_symlink_becomes_a_hardlink(self, tmp_path):
+        from dustrack._dlc_paths import symlink_as_hardlink
+
+        src = _make_video(tmp_path / "src.mp4", payload=b"BYTES")
+        dst = tmp_path / "dst.mp4"
+        with symlink_as_hardlink():
+            os.symlink(str(src), str(dst))
+        assert dst.read_bytes() == b"BYTES"
+        assert not dst.is_symlink()          # a real directory entry
+        assert os.stat(src).st_ino == os.stat(dst).st_ino
+
+    def test_restores_os_symlink_afterwards(self, tmp_path):
+        from dustrack._dlc_paths import symlink_as_hardlink
+
+        original = os.symlink
+        with symlink_as_hardlink():
+            assert os.symlink is not original
+        assert os.symlink is original
+
+    def test_restores_even_on_exception(self, tmp_path):
+        from dustrack._dlc_paths import symlink_as_hardlink
+
+        original = os.symlink
+        with pytest.raises(RuntimeError):
+            with symlink_as_hardlink():
+                raise RuntimeError("boom")
+        assert os.symlink is original
+
+    def test_falls_back_to_real_symlink_when_link_fails(self, tmp_path):
+        """Cross-volume os.link genuinely cannot work -- DLC's original
+        ladder must still be reachable."""
+        from dustrack._dlc_paths import symlink_as_hardlink
+
+        called = {}
+
+        def fake_symlink(src, dst, *a, **k):
+            called["yes"] = (src, dst)
+
+        with patch("dustrack._dlc_paths.os.link", side_effect=OSError("xdev")):
+            real = os.symlink
+            os.symlink = fake_symlink
+            try:
+                with symlink_as_hardlink():
+                    os.symlink("a", "b")
+            finally:
+                os.symlink = real
+        assert called["yes"] == ("a", "b")

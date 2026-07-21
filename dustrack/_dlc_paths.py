@@ -22,11 +22,51 @@ Extracted from ``dlcinterface.py`` in the 1.2.0rc1 follow-up.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
+
+
+@contextlib.contextmanager
+def symlink_as_hardlink():
+    """Make ``os.symlink`` hard-link instead, for the duration of the block.
+
+    DLC's ``create_new_project(copy_videos=False)`` places videos by
+    trying ``os.symlink``, then ``mklink``, and **falling back to a full
+    copy**. On Windows both link attempts need a privilege the user
+    typically doesn't have, so the copy is the normal path -- which
+    defeats the whole point of
+    :func:`link_or_copy_videos_into_project`. DUSTrack does eventually
+    notice the copy, delete it, and hard-link over it, so the end state
+    was always correct; the cost was paying a full copy first.
+
+    That cost is not academic at pia02 scale: its telemed exports run
+    3-16 GB each, so a 10-video project wrote ~65 GB and took ~10
+    minutes before being replaced by links. Across a 61-participant
+    cohort that is multiple TB of pointless I/O.
+
+    A hard link satisfies DLC's need (a real file at the destination
+    path) strictly better than a symlink would, so this simply lets its
+    first attempt succeed. Cross-volume -- where ``os.link`` genuinely
+    cannot work -- falls through to the real ``os.symlink`` and DLC's
+    original ladder.
+    """
+    real_symlink = os.symlink
+
+    def _link_instead(src, dst, *args, **kwargs):
+        try:
+            os.link(src, dst)
+        except OSError:
+            real_symlink(src, dst, *args, **kwargs)
+
+    os.symlink = _link_instead
+    try:
+        yield
+    finally:
+        os.symlink = real_symlink
 
 
 def _is_dlc_config_yaml(path) -> bool:
@@ -204,6 +244,7 @@ def link_or_copy_videos_into_project(
     source_videos: Sequence[Path],
     link_videos: Optional[bool] = None,
     link_sidecars: tuple[str, ...] = _DEFAULT_LINK_SIDECARS,
+    dest_names: Optional[Sequence[str]] = None,
 ) -> list[Path]:
     """Place each source video inside ``<project>/videos/`` and return the
     new in-project paths (suitable for rewriting DLC's ``video_sets``).
@@ -233,6 +274,20 @@ def link_or_copy_videos_into_project(
             to look for sidecars (e.g. ``("video.mp4", ".dnav-toc")``
             picks up ``video.mp4.dnav-toc``). Sidecars use the same
             link/copy policy as the video; absence is silent.
+        dest_names: Optional in-project filenames, 1:1 with
+            ``source_videos``. ``None`` (default) keeps each source's own
+            name. Renaming at link time exists because a hard link is
+            just a second directory entry for the same bytes -- the
+            in-project name is free to differ from the source's, at no
+            storage cost and with no copy.
+
+            The pia02 case is why: its telemed exports are named
+            ``pia02_s061_003 fav piece 20251210 145114_b2.mp4`` --
+            spaces, and long enough that DLC's ~58-character prediction
+            suffix pushes the full path toward Windows' 260-character
+            limit. Linking them in as ``pia02_s061_003_LFAc.mp4`` keeps
+            the corpus convention and the path budget without touching
+            the source tree.
 
     Returns:
         In-project paths corresponding 1:1 to ``source_videos``. Caller
@@ -251,10 +306,15 @@ def link_or_copy_videos_into_project(
     """
     project_videos_dir = Path(project_videos_dir)
     project_videos_dir.mkdir(parents=True, exist_ok=True)
+    if dest_names is not None and len(dest_names) != len(source_videos):
+        raise ValueError(
+            f"dest_names has {len(dest_names)} entries for "
+            f"{len(source_videos)} source videos -- they must correspond 1:1"
+        )
     in_project_paths: list[Path] = []
-    for src in source_videos:
+    for i, src in enumerate(source_videos):
         src = Path(src)
-        dst = project_videos_dir / src.name
+        dst = project_videos_dir / (src.name if dest_names is None else dest_names[i])
         _place_one(src, dst, link_videos=link_videos)
         for ext in link_sidecars:
             sidecar_src = src.with_name(src.name + ext)
