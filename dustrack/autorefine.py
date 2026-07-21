@@ -1,0 +1,481 @@
+"""Repair the model's *own* uncertainty, without a human in the loop.
+
+A trained model tells you where it is lost: prediction likelihood
+collapses. On a fresh pia02 participant, ~8% of frames fall below 0.6
+while the video median is 1.000. Most of that is short -- median run 6
+frames -- and sits between stretches the model is completely sure about.
+
+Those short runs have their answer sitting next to them. Track across
+the gap from both confident sides with LK-RSTC, and the corrected path
+becomes training data for the next iteration. That is the same lever
+:mod:`dustrack.blip` pulls (teach the model the temporally-consistent
+answer over the visually-strongest one), driven by the model's own
+confidence rather than by position spikes -- the two are complementary,
+because a *confidently wrong* prediction has a high likelihood and a
+low jerk, and neither detector sees it.
+
+The bracket requirement is what makes this safe to automate, and it is
+self-selecting. A gap with confident track on both sides has an answer
+available from its neighbours. A gap that runs for thousands of frames
+has no bracket, so it is excluded by construction -- and that is
+precisely the bistable case, where the model oscillates between two
+locally-plausible lanes and *neither* is obviously right. Those need a
+human, and this module's job is to hand them over rather than guess.
+
+Guessing is not a neutral failure here. Auto-generated labels that are
+wrong are worse than no labels: the diagnosis of bistability is that it
+accrues from cumulative training over labels that disagree across
+non-adjacent repeats. A repair pass that quietly invents labels in the
+ambiguous places would manufacture exactly the pathology it is meant to
+relieve. So every gate below is written to *refuse* rather than
+approximate.
+
+The refusal that matters most is mid-gap drift. RSTC pins its output to
+the anchors at both ends by construction, so endpoint error is
+structurally near-zero and proves nothing. What does prove something is
+running the forward and reverse tracks independently and asking whether
+they agree in the middle: convergence means the answer is determined,
+divergence means it is not -- however smooth the blended path looks.
+
+Typical use::
+
+    from dustrack import autorefine
+    report = autorefine.find_gaps(h5_path)          # no video decode
+    print(report.summary())
+    result = autorefine.repair(report, ann)         # LK across each gap
+    layer = autorefine.select_training_frames(result)
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterable, Sequence
+
+import numpy as np
+import pandas as pd
+
+from dustrack.annotations import VideoAnnotation
+from dustrack.lk_opticalflow import lucas_kanade_rstc
+
+__all__ = [
+    "Gap",
+    "GapReport",
+    "RepairResult",
+    "find_gaps",
+    "repair",
+    "select_training_frames",
+]
+
+#: Below this, the model is treated as lost.
+LOW_LIKELIHOOD = 0.6
+
+#: A bracket frame must be at least this confident to anchor a repair.
+HIGH_LIKELIHOOD = 0.9
+
+#: Confident frames required on *each* side of a gap.
+BRACKET_FRAMES = 5
+
+#: Longest gap to attempt. LK is anchored at both ends, but the middle
+#: of a long gap is unconstrained and drift grows with distance from
+#: both anchors. ~0.7 s at pia02's 67 fps.
+MAX_GAP = 45
+
+#: Maximum forward-vs-reverse disagreement (px) for a repair to be
+#: trusted. The interosseous points move slowly -- the median
+#: frame-to-frame step on a confident stretch is ~0.05 px -- so tracks
+#: that agree are agreeing tightly, and several px of divergence is a
+#: real disagreement rather than noise.
+MAX_TRACK_DISAGREEMENT = 5.0
+
+
+@dataclass
+class Gap:
+    """A low-likelihood run with confident track on both sides."""
+
+    label: str
+    start: int              # first uncertain frame, inclusive
+    end: int                # last uncertain frame, inclusive
+    anchor_before: tuple[float, float]
+    anchor_after: tuple[float, float]
+    min_likelihood: float
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start + 1
+
+    @property
+    def anchor_travel(self) -> float:
+        """How far the point moved across the gap, per the anchors."""
+        return float(
+            np.linalg.norm(
+                np.asarray(self.anchor_after) - np.asarray(self.anchor_before)
+            )
+        )
+
+
+@dataclass
+class GapReport:
+    """What :func:`find_gaps` found, and what it declined."""
+
+    gaps: list[Gap] = field(default_factory=list)
+    #: Runs rejected, by reason -- the interesting half of the output.
+    rejected: dict[str, list[tuple[str, int, int]]] = field(default_factory=dict)
+    per_label: dict[str, dict] = field(default_factory=dict)
+    params: dict = field(default_factory=dict)
+    n_frames: int = 0
+
+    def by_label(self) -> dict[str, list[Gap]]:
+        out: dict[str, list[Gap]] = {}
+        for g in self.gaps:
+            out.setdefault(g.label, []).append(g)
+        return out
+
+    def summary(self) -> str:
+        lines = [f"{self.n_frames} frames, {len(self.gaps)} repairable gap(s)"]
+        for label, stats in sorted(self.per_label.items()):
+            lines.append(
+                f"  label {label}: {stats['n_low']} uncertain frames "
+                f"({100 * stats['n_low'] / max(self.n_frames, 1):.2f}%) in "
+                f"{stats['n_runs']} run(s); {stats['n_gaps']} repairable"
+            )
+        for reason, items in sorted(self.rejected.items()):
+            frames = sum(e - s + 1 for _, s, e in items)
+            lines.append(f"  declined [{reason}]: {len(items)} run(s), {frames} frames")
+        return "\n".join(lines)
+
+
+@dataclass
+class RepairResult:
+    """Outcome of :func:`repair`.
+
+    ``corrections`` holds every repaired frame, for inspection.
+    ``disagreement`` carries the per-frame forward-vs-reverse distance,
+    and that is what decides which of them may become training data.
+
+    Trust is per *frame*, not per gap, because it varies systematically
+    within one: the two tracks are pinned together at the anchors and
+    drift apart toward the middle. Measured on s061 trial 001, gap-level
+    rejection at 5 px discarded 43% of gaps wholesale -- including the
+    well-determined frames near their edges. Those edge frames are the
+    valuable ones: the model was unsure there, yet the temporal evidence
+    is unambiguous, which is precisely the lesson worth training on.
+    """
+
+    corrections: VideoAnnotation | None = None
+    repaired: list[Gap] = field(default_factory=list)
+    #: ``{label: {frame: forward-vs-reverse distance in px}}``.
+    disagreement: dict[str, dict[int, float]] = field(default_factory=dict)
+    #: Gaps rejected outright -- the two tracks never converged at all.
+    untrusted: list[tuple[Gap, float]] = field(default_factory=list)
+
+    def frame_disagreements(self) -> np.ndarray:
+        return np.array(
+            [d for per in self.disagreement.values() for d in per.values()]
+        )
+
+    def n_trusted(self, max_disagreement: float) -> int:
+        return int((self.frame_disagreements() <= max_disagreement).sum())
+
+    def summary(self) -> str:
+        n = sum(
+            len(v) for v in (self.corrections.data.values() if self.corrections else [])
+        )
+        lines = [
+            f"repaired {len(self.repaired)} gap(s) -> {n} corrected frame(s)",
+            f"rejected {len(self.untrusted)} gap(s) outright",
+        ]
+        d = self.frame_disagreements()
+        if d.size:
+            lines.append(
+                "  per-frame forward/reverse disagreement: median "
+                f"{np.median(d):.2f} px, p90 {np.percentile(d, 90):.2f}, "
+                f"max {d.max():.2f}"
+            )
+            for thr in (1.0, 2.0, 5.0):
+                lines.append(
+                    f"    <= {thr:.0f} px: {int((d <= thr).sum())}/{d.size} frames"
+                )
+        return "\n".join(lines)
+
+
+def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Contiguous True regions as inclusive (start, end) pairs."""
+    idx = np.flatnonzero(mask)
+    if not idx.size:
+        return []
+    breaks = np.flatnonzero(np.diff(idx) > 1)
+    starts = np.r_[idx[0], idx[breaks + 1]]
+    ends = np.r_[idx[breaks], idx[-1]]
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def find_gaps(
+    predictions,
+    *,
+    low: float = LOW_LIKELIHOOD,
+    high: float = HIGH_LIKELIHOOD,
+    bracket: int = BRACKET_FRAMES,
+    max_gap: int = MAX_GAP,
+    labels: Sequence[str] | None = None,
+) -> GapReport:
+    """Find low-likelihood runs that confident track brackets on both sides.
+
+    Pure numpy over the prediction table -- no video decode, so this is
+    cheap enough to run over a whole cohort.
+
+    Args:
+        predictions: A DLC prediction ``DataFrame`` or a path to its h5.
+            Likelihood is required, which is why this reads predictions
+            rather than a :class:`VideoAnnotation` -- the annotation
+            format keeps only ``[x, y]``.
+        low: At or below this likelihood the model is treated as lost.
+        high: Bracket frames must be at least this confident.
+        bracket: Confident frames required on each side.
+        max_gap: Longest run to attempt.
+        labels: Restrict to these bodyparts (default: all).
+
+    Returns:
+        A :class:`GapReport`. Its ``rejected`` map is the load-bearing
+        half: runs declined for want of a bracket are the ones a human
+        has to look at, and quietly dropping them would hide the work.
+    """
+    df = pd.read_hdf(predictions) if isinstance(predictions, (str, Path)) else predictions
+    scorer = df.columns.levels[0][0]
+    bodyparts = list(labels) if labels else list(df.columns.levels[1])
+
+    report = GapReport(
+        n_frames=len(df),
+        params=dict(low=low, high=high, bracket=bracket, max_gap=max_gap),
+    )
+    frames = df.index.to_numpy()
+
+    for bp in bodyparts:
+        lik = df.loc[:, (scorer, bp, "likelihood")].to_numpy()
+        xs = df.loc[:, (scorer, bp, "x")].to_numpy()
+        ys = df.loc[:, (scorer, bp, "y")].to_numpy()
+        # Layer labels are the annotation-side names ('0'), not the
+        # DLC bodypart names ('point0'), so a repaired layer lines up
+        # with the rest of the session.
+        label = bp[len("point"):] if bp.startswith("point") else bp
+        confident = lik >= high
+
+        # A gap is a maximal run of *non-confident* frames, so its
+        # neighbours are confident by construction. Defining the gap by
+        # one threshold and the bracket by another leaves a middle band
+        # (here 0.6-0.9) that satisfies neither, which splits one real
+        # problem into many runs that each fail to find an anchor: on
+        # s061 trial 001 that yielded 6 repairable gaps out of 1353.
+        # ``low`` is now a *severity* filter instead -- a gap has to
+        # contain a genuinely lost frame to be worth repairing, rather
+        # than merely a mediocre one.
+        runs = _runs(~confident)
+        n_gaps = 0
+        for s, e in runs:
+            if lik[s : e + 1].min() > low:
+                report.rejected.setdefault("not_severe", []).append((label, s, e))
+                continue
+            if e - s + 1 > max_gap:
+                # No confident bracket within reach. Long runs of this
+                # are the bistable case: the model oscillates between
+                # two locally-plausible lanes for a sustained stretch
+                # and neither is obviously right. Hand it to a human.
+                report.rejected.setdefault("too_long", []).append((label, s, e))
+                continue
+            if s - bracket < 0 or e + bracket >= len(lik):
+                report.rejected.setdefault("at_video_edge", []).append((label, s, e))
+                continue
+            pre = slice(s - bracket, s)
+            post = slice(e + 1, e + 1 + bracket)
+            if not (confident[pre].all() and confident[post].all()):
+                # Should be rare now that runs are defined by confidence
+                # -- happens when the confident stretch either side is
+                # shorter than ``bracket``.
+                report.rejected.setdefault("bracket_too_short", []).append(
+                    (label, s, e)
+                )
+                continue
+            report.gaps.append(
+                Gap(
+                    label=label,
+                    start=int(frames[s]),
+                    end=int(frames[e]),
+                    anchor_before=(float(xs[s - 1]), float(ys[s - 1])),
+                    anchor_after=(float(xs[e + 1]), float(ys[e + 1])),
+                    min_likelihood=float(lik[s : e + 1].min()),
+                )
+            )
+            n_gaps += 1
+
+        report.per_label[label] = dict(
+            n_low=int((lik <= low).sum()),
+            n_unconfident=int((~confident).sum()),
+            n_runs=len(runs),
+            n_gaps=n_gaps,
+            n_gap_frames=sum(
+                g.length for g in report.gaps if g.label == label
+            ),
+            mean_likelihood=float(lik.mean()),
+        )
+
+    report.gaps.sort(key=lambda g: (g.label, g.start))
+    return report
+
+
+def repair(
+    report: GapReport,
+    ann: VideoAnnotation,
+    *,
+    max_disagreement: float = MAX_TRACK_DISAGREEMENT,
+    progress_callback: Callable[[int, int], None] | None = None,
+    lk_config: dict | None = None,
+) -> RepairResult:
+    """LK-RSTC across each bracketed gap, keeping only trusted repairs.
+
+    The forward and reverse tracks are run independently and compared.
+    RSTC's blend pins both ends to the anchors whatever happens in
+    between, so a smooth-looking path is not evidence of anything; two
+    independent tracks landing on the same mid-gap answer is. Gaps whose
+    tracks diverge past ``max_disagreement`` are returned in
+    ``untrusted`` rather than corrected -- a wrong auto-label is worse
+    than an unrepaired gap, because it teaches the model a lane that
+    isn't there.
+
+    Args:
+        report: From :func:`find_gaps`.
+        ann: Annotation supplying the video reader (``ann.video``).
+        max_disagreement: Forward/reverse tolerance, px.
+        progress_callback: ``(done, total)``, fired per gap.
+        lk_config: Passed through to ``lucas_kanade_rstc``.
+    """
+    if ann.video is None:
+        raise ValueError("repair needs a video reader (ann.video is None)")
+    lk_kwargs = dict(lk_config or {})
+    sparse: dict[str, dict[int, list[float]]] = {
+        label: {} for label in ann.labels
+    }
+    for g in report.gaps:
+        sparse.setdefault(g.label, {})
+
+    result = RepairResult()
+    total = len(report.gaps)
+    for done, gap in enumerate(report.gaps, start=1):
+        start_pts = np.array([gap.anchor_before], dtype=np.float32)
+        end_pts = np.array([gap.anchor_after], dtype=np.float32)
+        rstc, fwd, rev = lucas_kanade_rstc(
+            ann.video,
+            gap.start - 1,
+            gap.end + 1,
+            start_pts,
+            end_pts,
+            return_paths=True,
+            **lk_kwargs,
+        )
+        # Compare only the interior; the endpoints are the anchors
+        # themselves and agree trivially.
+        per_frame = np.linalg.norm(
+            fwd[1:-1, 0] - rev[1:-1, 0], axis=-1
+        )
+        worst = float(per_frame.max()) if per_frame.size else 0.0
+
+        if worst > max_disagreement:
+            # The two tracks never converged anywhere in this gap --
+            # nothing here is worth keeping, not even near the anchors.
+            result.untrusted.append((gap, worst))
+        else:
+            per = result.disagreement.setdefault(gap.label, {})
+            for offset, xy in enumerate(rstc[1:-1, 0, :]):
+                frame = gap.start + offset
+                sparse[gap.label][frame] = [float(xy[0]), float(xy[1])]
+                per[frame] = float(per_frame[offset])
+            result.repaired.append(gap)
+
+        if progress_callback is not None:
+            progress_callback(done, total)
+
+    stem = Path(ann.fname).stem if ann.fname else "autorefine"
+    result.corrections = VideoAnnotation(
+        fname=f"{stem}_autorefine.json",
+        vname=None,
+        n_labels=max(1, len(sparse)),
+        preloaded_json=sparse,
+        video=ann.video,
+    )
+    return result
+
+
+def select_training_frames(
+    result: RepairResult,
+    *,
+    max_disagreement: float = 2.0,
+    per_gap: int = 2,
+    max_frames: int | None = 150,
+    min_spacing: int = 10,
+) -> VideoAnnotation:
+    """Thin the trusted repairs down to a training set worth adding.
+
+    Two filters, in order.
+
+    **Trust.** Only frames whose forward and reverse tracks landed
+    within ``max_disagreement`` are eligible. This is the gate that
+    keeps a wrong label out of the training set, and it is deliberately
+    tighter than the gap-level cap in :func:`repair`: a label carrying
+    several px of error teaches the model a position that is not there,
+    and the failure mode being mitigated -- bistability -- is caused by
+    exactly that kind of inconsistency accumulating.
+
+    **Redundancy.** Consecutive frames within a gap are near-duplicates;
+    they inflate the training set without adding information. Take
+    ``per_gap`` evenly spaced survivors, drop anything within
+    ``min_spacing`` of a frame already chosen, and cap the total at
+    ``max_frames`` by thinning uniformly -- a budget spent entirely on
+    the first minute would leave the rest of the video unrefined.
+    """
+    corr = result.corrections
+    if corr is None:
+        raise ValueError("nothing to select from; run repair first")
+
+    chosen: dict[str, list[int]] = {}
+    for gap in result.repaired:
+        per = result.disagreement.get(gap.label, {})
+        frames = [
+            f
+            for f in sorted(corr.data.get(gap.label, {}))
+            if gap.start <= f <= gap.end and per.get(f, np.inf) <= max_disagreement
+        ]
+        if not frames:
+            continue
+        if per_gap >= len(frames):
+            picks = frames
+        else:
+            idx = np.linspace(0, len(frames) - 1, per_gap).round().astype(int)
+            picks = [frames[i] for i in sorted(set(idx.tolist()))]
+        kept = chosen.setdefault(gap.label, [])
+        for f in picks:
+            if not kept or f - kept[-1] >= min_spacing:
+                kept.append(f)
+
+    if max_frames is not None:
+        total = sum(len(v) for v in chosen.values())
+        if total > max_frames:
+            # Thin uniformly across the video, per label, so coverage
+            # stays spread rather than front-loaded.
+            for label, frames in chosen.items():
+                keep_n = max(1, round(len(frames) * max_frames / total))
+                idx = np.linspace(0, len(frames) - 1, keep_n).round().astype(int)
+                chosen[label] = [frames[i] for i in sorted(set(idx.tolist()))]
+
+    data = {
+        label: {f: corr.data[label][f] for f in frames}
+        for label, frames in chosen.items()
+    }
+    for label in corr.labels:
+        data.setdefault(label, {})
+
+    stem = Path(corr.fname).stem if corr.fname else "autorefine"
+    return VideoAnnotation(
+        fname=f"{stem}_training.json",
+        vname=None,
+        n_labels=max(1, len(data)),
+        preloaded_json=data,
+        video=corr.video,
+    )

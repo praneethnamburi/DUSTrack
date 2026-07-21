@@ -169,6 +169,7 @@ def lucas_kanade_rstc(
     start_points: np.ndarray,
     end_points: np.ndarray,
     target_frame: int = None,
+    return_paths: bool = False,
     **lk_config,
 ) -> np.ndarray:
     """Track points in a video using Lucas-Kanade algorithm,
@@ -182,10 +183,21 @@ def lucas_kanade_rstc(
         start_points (np.ndarray): n_points x 2. Locations to be tracked at start_frame.
         end_points (np.ndarray): n_points x 2. Locations to be tracked at end_frame.
         target_frame (int, optional): Target frame for direct mode. Defaults to None.
+        return_paths (bool, optional): Also return the two unblended
+            tracks as ``(rstc, forward, reverse)``, both on the forward
+            time axis. Their *disagreement* is the honest confidence
+            signal for a bracketed gap: RSTC pins the result to the
+            anchors at both ends by construction, so endpoint error says
+            nothing, but two independent tracks converging on the same
+            mid-gap path means the answer is determined -- and diverging
+            means it is not, however smooth the blend looks. Used by
+            :mod:`dustrack.autorefine` to decide when a repair is
+            trustworthy enough to become training data.
         **lk_config: Additional configuration for Lucas-Kanade algorithm.
 
     Returns:
-        np.ndarray: Corrected tracking path.
+        np.ndarray: Corrected tracking path. With ``return_paths``, a
+        ``(rstc, forward, reverse)`` tuple.
     """
     assert end_frame > start_frame
 
@@ -242,4 +254,10 @@ def lucas_kanade_rstc(
     np.multiply(forward_path, s_f, out=rstc_path)
     np.multiply(reverse_path[::-1], s_r, out=tmp)
     rstc_path += tmp
+    if return_paths:
+        # ``reverse_path`` is tracked backwards; hand it back on the
+        # forward axis (a copy, not the ``[::-1]`` view, so callers can
+        # hold it safely) so the two are directly comparable frame by
+        # frame.
+        return rstc_path, forward_path, reverse_path[::-1].copy()
     return rstc_path
