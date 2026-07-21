@@ -269,25 +269,59 @@ class DLCProject:
         self.internal_to_dlc_labels = internal_to_dlc_labels
 
         if new_project:
-            annotation_file_names = self.copy_annotations(videos)
-            n_annotations_set = {
-                len(VideoAnnotation(fname, vname).labels)
-                for fname, vname in zip(annotation_file_names, videos)
-            }
-            assert (
-                len(n_annotations_set) == 1
-            )  # number of annotations in all the files should match
-            annotation_names = [
-                set(VideoAnnotation(fname, vname).labels)
-                for fname, vname in zip(annotation_file_names, videos)
+            # ``bodyparts`` are derived from the labels the user declared
+            # in the GUI -- DUSTrack's annotate-first assumption: you
+            # choose how many points to track, and the DLC project
+            # follows.
+            #
+            # Pair each video with its own annotation file *by position*.
+            # ``copy_annotations`` returns only the files it found, so
+            # zipping that list against ``videos`` mis-pairs whenever
+            # some videos are unannotated -- annotations for video 3
+            # would be read against video 1, silently deriving bodyparts
+            # from a subset while appearing to check them all.
+            annotated = [
+                (fname, vname)
+                for fname, vname in ((self.copy_annotations(v), v) for v in videos)
+                if fname is not None
             ]
-            common_labels = functools.reduce(
-                lambda x, y: x.intersection(y), annotation_names
-            )
-            all_labels = functools.reduce(lambda x, y: x.union(y), annotation_names)
-            assert common_labels == all_labels
-            annotation_names = sorted(list(common_labels))
-            bodyparts = [f"point{x}" for x in annotation_names]
+            label_sets = [
+                set(VideoAnnotation(fname, vname).labels)
+                for fname, vname in annotated
+            ]
+
+            if label_sets:
+                n_annotations_set = {len(s) for s in label_sets}
+                assert len(n_annotations_set) == 1, (
+                    "every annotated video must declare the same number of "
+                    f"labels; found {sorted(n_annotations_set)} across "
+                    f"{len(annotated)} annotation file(s)"
+                )
+                common_labels = functools.reduce(
+                    lambda x, y: x.intersection(y), label_sets
+                )
+                all_labels = functools.reduce(lambda x, y: x.union(y), label_sets)
+                assert common_labels == all_labels, (
+                    "annotated videos must declare the same label *names*; "
+                    f"{sorted(all_labels - common_labels)} are missing from at "
+                    "least one file"
+                )
+                annotation_names = sorted(list(common_labels))
+                bodyparts = [f"point{x}" for x in annotation_names]
+            else:
+                # No annotation files at all. That is not a broken
+                # project -- it is the seed-bundle path, where the model
+                # already knows its own output channels and
+                # ``import_seed_bundle_into_project`` overwrites
+                # ``bodyparts`` from the bundle's metadata. Deriving
+                # them from annotations that do not exist would be
+                # guessing. Left empty for the bundle to fill.
+                #
+                # (The GUI reaches the same place from the other side:
+                # it saves its empty active layer first, so there *is* a
+                # file, declaring labels but holding no annotations.)
+                bodyparts = []
+
             self.edit_config(bodyparts=bodyparts, skeleton=None)
             self.edit_config(snapshotindex="all")  # evaluate all snapshots
             if not os.path.exists(self.paths["models"]):
