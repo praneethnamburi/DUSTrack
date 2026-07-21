@@ -141,6 +141,20 @@ class DUSTrack(VideoBrowser):
     # source.
     CORRECTIONS_LAYER_NAME = "dlccorr"
 
+    # Scratch layer for range predictions (``z z e``). The ``dlc_``
+    # prefix is load-bearing, not cosmetic: ``_layer_names`` treats
+    # anything starting with ``dlc`` as non-manual, which keeps this
+    # layer out of the close guard's unsaved-work prompt, the Train
+    # pre-flight scan, and ``_normalize_empty_manual_layer_labels``'s
+    # relabel-and-save. That last one matters most -- ``extract_frames``
+    # globs ``{video_stem}*_annotations*.json`` and filters only
+    # ``_dlccorr``, so any annotation JSON that reaches the project
+    # videos folder becomes DLC training input. A saved prediction layer
+    # would train the next model on its own output. This layer is
+    # therefore in-memory only (``fname`` cleared at creation) and is
+    # cheap to regenerate -- roughly a second for a few hundred frames.
+    PREDICT_LAYER_NAME = "dlc_predict"
+
     def __init__(
         self,
         vid_name,
@@ -404,6 +418,10 @@ class DUSTrack(VideoBrowser):
             ann.__class__ = VideoAnnotation
 
         self._dlcproject = None
+        # Cached RangePredictor for ``z z e``. Holds a loaded model, so
+        # it must be dropped whenever training produces a new snapshot --
+        # see the invalidation in _refresh_dlc_layers.
+        self._range_predictor = None
         self._ax_lims = {
             "state": False,
             "x": [None, None],
@@ -1782,6 +1800,12 @@ class DUSTrack(VideoBrowser):
         the new-iteration layer is only requested if the iteration
         suffix isn't already in the session.
         """
+        # A new snapshot may have just landed, so any model cached for
+        # range prediction is now stale. Dropping it here (rather than
+        # polling at press time) makes the next ``z z e`` reload, at the
+        # cost of one model load only when training actually happened.
+        self._invalidate_range_predictor()
+
         # Mirror annotate()'s suffix logic: after a successful training,
         # latest_iteration_is_trained() is True so we want N+1; if
         # training is partial / not yet done, fall back to the current
@@ -3727,6 +3751,15 @@ class DUSTrack(VideoBrowser):
             "Decimate in selected interval -- drop incomplete, then halve",
             group=sec5b,
         )
+        # Left-hand key: the refine loop runs with the right hand on the
+        # mouse, and this group's other members (z / a / x) are all
+        # left-hand too.
+        self.add_key_binding(
+            "e",
+            self.predict_range_with_dlc,
+            "Predict (DLC) in selected interval -> dlc_predict overlay",
+            group=sec5b,
+        )
         self.add_key_binding(
             "ctrl+d",
             (lambda s: s.interpolate_with_lk_norstc(all_labels=True)).__get__(self),
@@ -4692,6 +4725,111 @@ class DUSTrack(VideoBrowser):
             for label_count, label in enumerate(label_list):
                 location = list(rstc_path[frame_count, label_count, :])
                 self._add_annotation(location, frame_number, label)
+        self.update()
+
+    def _invalidate_range_predictor(self) -> None:
+        """Drop the cached model so the next ``z z e`` reloads it.
+
+        Called after training. The predictor resolves its snapshot once,
+        at construction, and then holds the loaded weights -- which is
+        the whole point, but it means a post-training press would
+        otherwise return *old-model* predictions while looking perfectly
+        healthy. Since the entire use case is "I corrected some frames,
+        retrained, what changed?", a stale model here is not a
+        performance wart, it is a wrong answer.
+        """
+        if self._range_predictor is not None:
+            self._range_predictor.close()
+            self._range_predictor = None
+
+    def _get_range_predictor(self):
+        """The cached :class:`~dustrack.predict.RangePredictor`.
+
+        Built on first use (~4.5 s: the model load). Subsequent presses
+        reuse it, which is what makes a range prediction interactive.
+        """
+        if self._range_predictor is None:
+            from dustrack.predict import RangePredictor
+
+            print("Loading DLC model for range prediction (one time)...")
+            self._range_predictor = RangePredictor(self._dlcproject.config_path)
+        return self._range_predictor
+
+    def _ensure_predict_layer(self):
+        """Create-or-get the in-memory scratch layer for predictions.
+
+        Kept file-less on purpose: ``fname`` is cleared so an accidental
+        ``save()`` raises instead of quietly dropping a prediction JSON
+        into the project videos folder, where ``extract_frames`` would
+        pick it up as training data (see :attr:`PREDICT_LAYER_NAME`).
+        """
+        name = self.PREDICT_LAYER_NAME
+        if name not in self.annotations.names:
+            self.add_annotation_layers({name: None})
+            layer = self.annotations[name]
+            # Mirror _adopt_layer: add_annotation_layers builds the base
+            # class, the dustrack subclass is applied afterwards.
+            layer.__class__ = VideoAnnotation
+            layer.fname = None
+            layer.fstem = None
+            layer.set_plot_type("line", draw=False)
+        return self.annotations[name]
+
+    def predict_range_with_dlc(self) -> None:
+        """Run DLC inference over the selected interval (``z z e``).
+
+        The fast half of the refine loop: rather than a whole-video
+        ``analyze_videos`` pass, this asks the current model what it
+        predicts *right here*, in the interval just marked with ``z``.
+        Results land in the :attr:`PREDICT_LAYER_NAME` overlay so they
+        render against the primary layer instead of overwriting it --
+        the point is to see what changed, which is lost if the
+        prediction clobbers the trace being compared.
+
+        Synchronous, like its ``a`` / ``x`` siblings in this group.
+        """
+        if self._dlcproject is None:
+            print("No DLC project for this session -- nothing to predict with.")
+            return
+
+        # get_selected_interval indexes the interval store by
+        # (video, layer, label) and takes the last pair -- with nothing
+        # marked it raises rather than returning None, so catch that and
+        # say what to do instead of surfacing a traceback.
+        try:
+            start_frame, end_frame = self.get_selected_interval()
+        except (KeyError, IndexError):
+            print("Select an interval first: press z at the start, z at the end.")
+            return
+
+        predictor = self._get_range_predictor()
+        video_path = getattr(self.data, "fname", None) or self.fname
+        df = predictor.predict_range(
+            video_path, start_frame, end_frame, annotation=False
+        )
+        if len(df) == 0:
+            print(f"No predictions returned for frames {start_frame}-{end_frame}.")
+            return
+
+        data = VideoAnnotation._dlc_trace_to_annotation_dict(df)
+        layer = self._ensure_predict_layer()
+        for label, frames in data.items():
+            if label not in layer.data:
+                layer.add_label(label)
+            for frame_number, location in frames.items():
+                layer.add(list(location), label, int(frame_number))
+
+        self.statevariables["annotation_overlay"].set_state(self.PREDICT_LAYER_NAME)
+        # Naming the snapshot is the cheap guard against a stale model:
+        # after a retrain this line changes, so a prediction that
+        # silently came from the previous weights is visible rather than
+        # inferred.
+        print(
+            f"Predicted frames {start_frame}-{end_frame} "
+            f"({len(df)} frames, {len(data)} labels) using "
+            f"{Path(predictor.snapshot_path).name} "
+            f"-> overlay '{self.PREDICT_LAYER_NAME}'"
+        )
         self.update()
 
     def interpolate_with_lk_norstc(self, all_labels: bool = False) -> None:
