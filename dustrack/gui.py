@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import sys
 import threading
 import traceback
@@ -456,7 +457,7 @@ class DUSTrack(VideoBrowser):
         if HAS_DLC:
             self.buttons.add(
                 text="Create DLC Project",
-                action_func=self.create_dlc_project,
+                action_func=self._create_or_open_dlc_project,
                 style_tag="workflow",
             )
             self.buttons.add(
@@ -4726,6 +4727,54 @@ class DUSTrack(VideoBrowser):
                 location = list(rstc_path[frame_count, label_count, :])
                 self._add_annotation(location, frame_number, label)
         self.update()
+
+    def _create_or_open_dlc_project(self, *args, **kwargs):
+        """Dispatch for the dual-purpose Workflow button.
+
+        Outside a project the button creates one. Inside a project
+        creating another is meaningless, so it becomes "Open DLC
+        Folder" instead of dead greyed-out space -- see
+        :func:`._workflow_gates.evaluate_workflow_gates`, which supplies
+        the caption. The two must agree on the same condition, so both
+        ask :func:`._dlc_paths._session_inside_dlc_project`.
+        """
+        from ._dlc_paths import _session_inside_dlc_project
+
+        if _session_inside_dlc_project(self) is not None:
+            return self.open_dlc_folder()
+        return self.create_dlc_project(*args, **kwargs)
+
+    def open_dlc_folder(self):
+        """Reveal the current DLC project folder in the OS file browser.
+
+        The useful destination once a project exists: predictions live
+        under ``videos/iteration-N/``, training frames under
+        ``labeled-data/``, snapshots under ``dlc-models-pytorch/``.
+        Returns the path opened, or ``None`` when the session is not
+        inside a project.
+        """
+        from ._dlc_paths import _session_inside_dlc_project
+
+        proj_root = _session_inside_dlc_project(self)
+        if proj_root is None:
+            print("Not inside a DLC project -- nothing to open.")
+            return None
+
+        target = str(proj_root)
+        try:
+            if sys.platform == "win32":
+                # startfile handles UNC paths, which project roots on a
+                # mounted share resolve to.
+                os.startfile(target)  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as e:  # noqa: BLE001 -- surfacing beats crashing the GUI
+            print(f"Could not open {target}: {e}")
+            return None
+        print(f"Opened {target}")
+        return proj_root
 
     def _invalidate_range_predictor(self) -> None:
         """Drop the cached model so the next ``z z e`` reloads it.

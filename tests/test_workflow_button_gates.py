@@ -105,15 +105,40 @@ class TestCreateDLCProjectGate:
         assert enabled is True
         assert tooltip == ""
 
-    def test_video_inside_project_disabled(self, tmp_path):
+    def test_video_inside_project_becomes_open_folder(self, tmp_path):
+        """Inside a project the button repurposes rather than greys out.
+
+        Creating a nested project is still meaningless, but a
+        permanently-disabled button is dead sidebar space; the thing
+        actually wanted at that point is to get at the project on disk.
+        The gate carries a third element overriding the caption.
+        """
         root = _make_dlc_root(tmp_path / "proj")
         vid = root / "videos" / "sample.mp4"
         vid.write_bytes(b"")
         stub = _Stub(fname=str(vid), active_layer_name="manual")
-        enabled, tooltip = stub.evaluate()["Create DLC Project"]
-        assert enabled is False
-        assert "Already inside DLC project" in tooltip
-        assert "proj" in tooltip  # project root name surfaces in the tip
+        gate = stub.evaluate()["Create DLC Project"]
+        enabled, tooltip, text = gate
+        assert enabled is True
+        assert text == "Open DLC Folder"
+        assert "proj" in tooltip  # the destination surfaces in the tip
+
+    def test_gate_key_stays_the_registration_label(self, tmp_path):
+        """Only the Qt caption changes -- the registry key must not, or
+        gating and button lookup would stop finding it."""
+        root = _make_dlc_root(tmp_path / "proj")
+        vid = root / "videos" / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(fname=str(vid), active_layer_name="manual")
+        assert "Create DLC Project" in stub.evaluate()
+        assert "Open DLC Folder" not in stub.evaluate()
+
+    def test_outside_project_keeps_two_tuple_gate(self, tmp_path):
+        """No caption override when the button means what it says."""
+        vid = tmp_path / "sample.mp4"
+        vid.write_bytes(b"")
+        stub = _Stub(fname=str(vid), active_layer_name="manual")
+        assert len(stub.evaluate()["Create DLC Project"]) == 2
 
     def test_dlcproject_set_disables_even_outside_tree(self, tmp_path):
         """Defensive: post-create / Phase-2-open state where
@@ -129,8 +154,10 @@ class TestCreateDLCProjectGate:
             dlcproject=proj,
             active_layer_name="manual",
         )
-        enabled, _ = stub.evaluate()["Create DLC Project"]
-        assert enabled is False
+        gate = stub.evaluate()["Create DLC Project"]
+        # Repurposed to Open DLC Folder rather than disabled.
+        assert gate[0] is True
+        assert gate[2] == "Open DLC Folder"
 
 
 class TestTrainDLCModelGate:
@@ -274,18 +301,20 @@ class TestCreateDLCProjectGateDuringLoad:
         assert "DeepLabCut failed to load" in tooltip
 
     def test_project_membership_wins_over_loading(self, tmp_path):
-        """When the session is already inside a DLC project, the
-        "Already inside" tooltip takes precedence over "Loading…"
-        -- the click would refuse on the membership ground first.
+        """Membership still takes precedence over the loading state.
+
+        Opening the project folder needs no DeepLabCut import, so the
+        button is usable while DLC is still loading -- it must not fall
+        through to the "Loading…" branch.
         """
         root = _make_dlc_root(tmp_path / "proj")
         vid = root / "videos" / "sample.mp4"
         vid.write_bytes(b"")
         stub = _Stub(fname=str(vid), active_layer_name="manual")
-        enabled, tooltip = stub.evaluate()["Create DLC Project"]
-        assert enabled is False
-        assert "Already inside DLC project" in tooltip
-        assert "Loading DeepLabCut" not in tooltip
+        gate = stub.evaluate()["Create DLC Project"]
+        assert gate[0] is True
+        assert gate[2] == "Open DLC Folder"
+        assert "Loading DeepLabCut" not in gate[1]
 
 
 class TestDetectBlipGate:

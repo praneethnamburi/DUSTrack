@@ -47,12 +47,17 @@ def evaluate_workflow_gates(dustrack) -> dict:
     proj_root = _session_inside_dlc_project(dustrack)
     dlc_state = _dlc_load_state()
     if proj_root is not None:
-        # "Inside a project" wins over "still loading" -- the click
-        # would refuse on that ground first.
+        # Inside a project, creating another one is meaningless -- but a
+        # permanently greyed-out button is dead space in the sidebar.
+        # Repurpose it: the thing you actually want at that point is to
+        # get at the project on disk (predictions, labeled-data,
+        # snapshots). Third element overrides the button's displayed
+        # text; the registry key stays "Create DLC Project", so gating
+        # and lookup are unaffected.
         gates["Create DLC Project"] = (
-            False,
-            f"Already inside DLC project {proj_root.name!r} — "
-            "use Train DLC model to extend it.",
+            True,
+            f"Open {proj_root} in the file browser",
+            "Open DLC Folder",
         )
     elif dlc_state in ("pending", "loading"):
         gates["Create DLC Project"] = (
@@ -204,15 +209,23 @@ def refresh_workflow_button_state(dustrack) -> None:
         # deeplabcut is missing; nothing to gate.
         return
     gates = evaluate_workflow_gates(dustrack)
-    for label, (enabled, tooltip) in gates.items():
+    for label, gate in gates.items():
         if label not in dustrack.buttons:
             continue
         btn = dustrack.buttons[label]
         qt_btn = getattr(btn, "_qt_btn", None)
         if qt_btn is None:
             continue
+        # A gate is (enabled, tooltip) or (enabled, tooltip, text). The
+        # optional text lets one button change what it offers with the
+        # session state -- only the Qt widget's caption changes, never
+        # the registry key it is looked up by.
+        enabled, tooltip = gate[0], gate[1]
+        text = gate[2] if len(gate) > 2 else label
         qt_btn.setEnabled(enabled)
         qt_btn.setToolTip(tooltip)
+        if qt_btn.text() != text:
+            qt_btn.setText(text)
 
 
 def install_dlc_load_gate_refresh(dustrack) -> None:
