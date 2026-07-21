@@ -62,7 +62,9 @@ __all__ = [
     "GapReport",
     "RepairResult",
     "find_gaps",
+    "gaps_from_blips",
     "repair",
+    "select_across_videos",
     "select_training_frames",
 ]
 
@@ -321,6 +323,81 @@ def find_gaps(
     return report
 
 
+def gaps_from_blips(
+    blip_report,
+    predictions=None,
+    *,
+    confident_only: bool = True,
+    high: float = HIGH_LIKELIHOOD,
+) -> GapReport:
+    """Adapt :mod:`dustrack.blip`'s detections into a :class:`GapReport`.
+
+    Likelihood finds where the model knows it is lost; it is blind to
+    where the model is *confidently wrong*, which scores high and moves
+    smoothly. ``blip`` finds those from the geometry instead. On s061
+    trial 001 the two barely overlap: of 3308 detected blips, **2120 sit
+    at likelihood >= 0.80** -- many at exactly 1.00 -- so the confidence
+    pass never sees them. They are not a mop-up round, they are a peer.
+
+    Routing them through here means both detectors share one repair path
+    and one trust metric, rather than the blip path trusting its own
+    output by default.
+
+    Args:
+        blip_report: A ``dustrack.blip.BlipReport``.
+        predictions: Optional prediction table (or h5 path) used to
+            record each blip's minimum likelihood and, with
+            ``confident_only``, to filter.
+        confident_only: Keep only blips the confidence pass would miss,
+            so the two rounds do not relabel the same frames.
+        high: The confidence bar that defines "would have been caught".
+    """
+    df = (
+        pd.read_hdf(predictions)
+        if isinstance(predictions, (str, Path))
+        else predictions
+    )
+    lik = {}
+    if df is not None:
+        scorer = df.columns.levels[0][0]
+        for bp in df.columns.levels[1]:
+            label = bp[len("point"):] if bp.startswith("point") else bp
+            lik[label] = df.loc[:, (scorer, bp, "likelihood")].to_numpy()
+
+    report = GapReport(
+        n_frames=len(df) if df is not None else 0,
+        params=dict(source="blip", confident_only=confident_only, high=high),
+    )
+    for b in blip_report.blips:
+        series = lik.get(b.label)
+        min_lik = (
+            float(series[b.start : b.end + 1].min()) if series is not None else float("nan")
+        )
+        if confident_only and series is not None and min_lik < high:
+            # The confidence pass already owns this one.
+            report.rejected.setdefault("also_low_likelihood", []).append(
+                (b.label, b.start, b.end)
+            )
+            continue
+        report.gaps.append(
+            Gap(
+                label=b.label,
+                start=b.start,
+                end=b.end,
+                anchor_before=tuple(b.anchor_before),
+                anchor_after=tuple(b.anchor_after),
+                min_likelihood=min_lik,
+            )
+        )
+    for label in {g.label for g in report.gaps}:
+        report.per_label[label] = dict(
+            n_gaps=sum(1 for g in report.gaps if g.label == label),
+            n_gap_frames=sum(g.length for g in report.gaps if g.label == label),
+        )
+    report.gaps.sort(key=lambda g: (g.label, g.start))
+    return report
+
+
 def repair(
     report: GapReport,
     ann: VideoAnnotation,
@@ -401,6 +478,81 @@ def repair(
         video=ann.video,
     )
     return result
+
+
+def select_across_videos(
+    results: dict,
+    *,
+    n: int = 20,
+    max_disagreement: float = 4.0,
+    min_spacing: int = 10,
+    per_video_cap: int | None = None,
+) -> dict[str, dict[str, dict[int, list[float]]]]:
+    """Pick this round's ``n`` best labels, spread across videos.
+
+    Rank-based rather than threshold-based: take the ``n`` most
+    trustworthy candidates and let the threshold *emerge*, with
+    ``max_disagreement`` only as a floor on acceptable quality. The
+    round is finished not when a fixed number is reached but when
+    nothing under the floor remains -- which is also the natural stop
+    for the whole curriculum.
+
+    The per-video quota matters because one model serves every trial of
+    an arm. Pure global ranking would hand a whole round's budget to
+    whichever video happens to have the tightest LK, teaching the model
+    that trial's appearance and no other. The quota is a ceiling, not
+    a reservation: a video with nothing good to offer forfeits its share
+    to the others rather than dragging in weak labels to fill it.
+
+    Args:
+        results: ``{video_key: RepairResult}``.
+        n: Total labels wanted this round.
+        max_disagreement: Quality floor, px.
+        min_spacing: Minimum frame gap between two picks in one video.
+        per_video_cap: Override the default ``ceil(n / n_videos)``.
+
+    Returns:
+        ``{video_key: {label: {frame: [x, y]}}}`` -- only videos that
+        contributed.
+    """
+    if not results:
+        return {}
+    cap = per_video_cap or int(np.ceil(n / len(results)))
+
+    # (disagreement, video, label, frame) for everything eligible.
+    pool: list[tuple[float, str, str, int]] = []
+    for key, res in results.items():
+        for label, per in res.disagreement.items():
+            for frame, d in per.items():
+                if d <= max_disagreement:
+                    pool.append((d, key, label, frame))
+    pool.sort()
+
+    picked: dict[str, dict[str, dict[int, list[float]]]] = {}
+    per_video_count: dict[str, int] = {}
+
+    def _take(enforce_cap: bool) -> None:
+        for d, key, label, frame in pool:
+            if sum(per_video_count.values()) >= n:
+                return
+            if enforce_cap and per_video_count.get(key, 0) >= cap:
+                continue
+            kept = picked.setdefault(key, {}).setdefault(label, {})
+            if frame in kept or any(abs(frame - f) < min_spacing for f in kept):
+                continue
+            kept[frame] = results[key].corrections.data[label][frame]
+            per_video_count[key] = per_video_count.get(key, 0) + 1
+
+    _take(enforce_cap=True)
+    # Second pass without the cap: a video with nothing under the floor
+    # forfeits its share rather than reserving it. Holding the budget
+    # back would leave the round underfilled -- if only 3 of 10 trials
+    # have good candidates, a strict cap would spend 3/10 of the round
+    # and stop.
+    if sum(per_video_count.values()) < n:
+        _take(enforce_cap=False)
+
+    return {k: v for k, v in picked.items() if any(v.values())}
 
 
 def select_training_frames(

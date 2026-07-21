@@ -329,3 +329,138 @@ class TestSelectTrainingFrames:
     def test_nothing_to_select_from_raises(self):
         with pytest.raises(ValueError, match="run repair first"):
             ar.select_training_frames(ar.RepairResult())
+
+
+# --------------------------------------------------------------------- #
+# Blip adapter -- the confidently-wrong half                            #
+# --------------------------------------------------------------------- #
+class _FakeBlip:
+    def __init__(self, label, start, end):
+        self.label = label
+        self.start = start
+        self.end = end
+        self.anchor_before = (1.0, 2.0)
+        self.anchor_after = (3.0, 4.0)
+
+
+class _FakeBlipReport:
+    def __init__(self, blips):
+        self.blips = blips
+
+
+class TestGapsFromBlips:
+    def test_confident_blips_are_kept(self):
+        """The whole point: likelihood cannot see these.
+
+        On real data 2120 of 3308 blips sat at likelihood >= 0.80, many
+        at exactly 1.00 -- the confidence pass is blind to every one.
+        """
+        df = make_predictions({"point0": np.full(200, 1.0)})
+        rep = ar.gaps_from_blips(_FakeBlipReport([_FakeBlip("0", 100, 102)]), df)
+        assert len(rep.gaps) == 1
+        assert rep.gaps[0].min_likelihood == 1.0
+
+    def test_low_likelihood_blips_deferred_to_the_confidence_pass(self):
+        """Both detectors firing on one run must not relabel it twice."""
+        df = make_predictions({"point0": lik_with_gap(200, 100, 102)})
+        rep = ar.gaps_from_blips(_FakeBlipReport([_FakeBlip("0", 100, 102)]), df)
+        assert rep.gaps == []
+        assert "also_low_likelihood" in rep.rejected
+
+    def test_confident_only_can_be_disabled(self):
+        df = make_predictions({"point0": lik_with_gap(200, 100, 102)})
+        rep = ar.gaps_from_blips(
+            _FakeBlipReport([_FakeBlip("0", 100, 102)]), df, confident_only=False
+        )
+        assert len(rep.gaps) == 1
+
+    def test_anchors_carry_over(self):
+        df = make_predictions({"point0": np.full(200, 1.0)})
+        g = ar.gaps_from_blips(_FakeBlipReport([_FakeBlip("0", 50, 51)]), df).gaps[0]
+        assert g.anchor_before == (1.0, 2.0)
+        assert g.anchor_after == (3.0, 4.0)
+
+    def test_works_without_predictions(self):
+        rep = ar.gaps_from_blips(_FakeBlipReport([_FakeBlip("0", 5, 6)]))
+        assert len(rep.gaps) == 1
+        assert np.isnan(rep.gaps[0].min_likelihood)
+
+
+# --------------------------------------------------------------------- #
+# Cross-video selection                                                 #
+# --------------------------------------------------------------------- #
+def _res(frames_and_d, label="0"):
+    res = ar.RepairResult()
+    res.disagreement = {label: dict(frames_and_d)}
+
+    class _Corr:
+        data = {label: {f: [float(f), 0.0] for f in frames_and_d}}
+        labels = [label]
+        fname = "x.json"
+        video = None
+
+    res.corrections = _Corr()
+    return res
+
+
+class TestSelectAcrossVideos:
+    def test_ranks_by_trust(self):
+        results = {"a": _res({10: 5.0, 20: 0.1, 30: 2.0})}
+        out = ar.select_across_videos(results, n=2, max_disagreement=10.0)
+        assert sorted(out["a"]["0"]) == [20, 30]
+
+    def test_quality_floor_excludes_the_rest(self):
+        results = {"a": _res({10: 9.0, 20: 0.1})}
+        out = ar.select_across_videos(results, n=5, max_disagreement=4.0)
+        assert sorted(out["a"]["0"]) == [20]
+
+    def test_budget_spreads_across_videos(self):
+        """One model serves every trial; a round spent inside one video
+        teaches that trial's appearance and no other."""
+        results = {
+            "a": _res({f: 0.01 for f in range(0, 500, 50)}),   # all excellent
+            "b": _res({f: 1.0 for f in range(0, 500, 50)}),    # all merely good
+        }
+        out = ar.select_across_videos(results, n=4, max_disagreement=4.0)
+        assert set(out) == {"a", "b"}
+        assert len(out["b"]["0"]) >= 1     # b gets a share despite worse trust
+
+    def test_a_video_with_nothing_good_forfeits_its_share(self):
+        """The quota is a ceiling, not a reservation."""
+        results = {
+            "a": _res({f: 0.01 for f in range(0, 500, 50)}),
+            "b": _res({10: 99.0}),          # nothing under the floor
+        }
+        out = ar.select_across_videos(results, n=4, max_disagreement=4.0)
+        assert "b" not in out
+        assert len(out["a"]["0"]) == 4      # a takes the whole budget
+
+    def test_respects_min_spacing(self):
+        results = {"a": _res({100: 0.1, 101: 0.1, 200: 0.1})}
+        out = ar.select_across_videos(
+            results, n=5, max_disagreement=4.0, min_spacing=10
+        )
+        assert sorted(out["a"]["0"]) == [100, 200]
+
+    def test_returns_positions_not_just_frames(self):
+        results = {"a": _res({42: 0.1})}
+        out = ar.select_across_videos(results, n=1, max_disagreement=4.0)
+        assert out["a"]["0"][42] == [42.0, 0.0]
+
+    def test_empty_input(self):
+        assert ar.select_across_videos({}, n=10) == {}
+
+    def test_nothing_under_the_floor_is_an_empty_round(self):
+        """Which is also the curriculum's natural stopping condition."""
+        results = {"a": _res({10: 50.0})}
+        assert ar.select_across_videos(results, n=10, max_disagreement=4.0) == {}
+
+    def test_redistribution_still_respects_the_floor(self):
+        """Forfeited quota must not drag in labels below the floor."""
+        results = {
+            "a": _res({f: 0.01 for f in range(0, 200, 50)}),   # 4 good
+            "b": _res({10: 99.0}),                             # nothing usable
+        }
+        out = ar.select_across_videos(results, n=20, max_disagreement=4.0)
+        assert "b" not in out
+        assert len(out["a"]["0"]) == 4        # all of a's, and no more
