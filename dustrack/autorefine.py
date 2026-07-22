@@ -61,8 +61,10 @@ __all__ = [
     "Gap",
     "GapReport",
     "RepairResult",
+    "complete_frames",
     "find_gaps",
     "gaps_from_blips",
+    "nudge_labels",
     "repair",
     "select_across_videos",
     "select_training_frames",
@@ -88,6 +90,25 @@ MAX_GAP = 45
 #: that agree are agreeing tightly, and several px of divergence is a
 #: real disagreement rather than noise.
 MAX_TRACK_DISAGREEMENT = 5.0
+
+#: A prediction is "converged" when it moves less than this (px) between
+#: the last two iterations at that frame. Two independently-trained
+#: snapshots landing together is the evidence that the position is
+#: determined -- the same logic as repair's forward/reverse agreement,
+#: across training rather than across time.
+CONVERGE_TOL = 1.0
+
+#: A label already this close (px) to the converged prediction needs no
+#: nudge.
+NUDGE_MIN = 1.0
+
+#: Past this label-vs-prediction distance (px) the two disagree for a
+#: reason -- a genuine ambiguity or a bistable lane the model settled on
+#: confidently-but-wrongly -- so the label is *flagged*, not moved.
+#: Confidence alone never earns a large move, because a confidently wrong
+#: prediction is exactly the failure this module exists to avoid feeding
+#: back into training.
+NUDGE_MAX = 8.0
 
 
 @dataclass
@@ -668,6 +689,112 @@ def complete_frames(
             stats["dropped"] += 1
 
     return completed, stats
+
+
+def _label_arrays(df, scorer):
+    """``{label: (xy Nx2, likelihood N)}`` keyed by the annotation name."""
+    out = {}
+    for bp in df.columns.levels[1]:
+        label = bp[len("point"):] if bp.startswith("point") else bp
+        xy = df.loc[:, (scorer, bp, ["x", "y"])].to_numpy()
+        lik = df.loc[:, (scorer, bp, "likelihood")].to_numpy()
+        out[label] = (xy, lik)
+    return out
+
+
+def nudge_labels(
+    labels: dict[str, dict[int, list[float]]],
+    pred_latest,
+    pred_prev,
+    *,
+    high: float = HIGH_LIKELIHOOD,
+    converge_tol: float = CONVERGE_TOL,
+    nudge_min: float = NUDGE_MIN,
+    nudge_max: float = NUDGE_MAX,
+    alpha: float = 1.0,
+) -> tuple[dict[str, dict[int, list[float]]], dict]:
+    """Nudge training labels toward where the model has *converged*.
+
+    After a few iterations the model's predictions on the training frames
+    settle to a consistent sub-pixel position, and a label placed by hand
+    or by an earlier LK pass can sit a pixel or two off that consensus.
+    Moving the label onto the converged prediction sharpens the training
+    target -- self-distillation, but gated so it can only ever refine, not
+    invent.
+
+    "Converged" is deliberately the same standard :func:`repair` uses for
+    a trusted track, moved from the time axis to the training axis: the
+    last two snapshots must land within ``converge_tol`` of each other at
+    that frame *and* the latest must be confident there (likelihood >=
+    ``high``). Two independently-trained models agreeing is the evidence
+    that the position is determined.
+
+    Then, by how far the label sits from that converged point:
+
+    * below ``nudge_min`` -- already on target, left alone;
+    * within ``[nudge_min, nudge_max]`` -- an outlier worth correcting;
+      moved a fraction ``alpha`` of the way (``1.0`` snaps onto the
+      prediction);
+    * beyond ``nudge_max`` -- *flagged, never moved*. A label that far
+      from a converged prediction disagrees for a reason, and confidence
+      is not licence to drag it: a confidently-wrong bistable lane scores
+      exactly here, and feeding the label to it would manufacture the
+      pathology. Those are the ones a human should look at.
+
+    Returns the nudged ``{label: {frame: [x, y]}}`` and a tally
+    (``nudged`` / ``flagged`` / ``unconverged`` / ``on_target``), plus the
+    flagged frames per label under ``flagged_frames`` so a caller can
+    surface them.
+    """
+    df_l = pd.read_hdf(pred_latest) if isinstance(pred_latest, (str, Path)) else pred_latest
+    df_p = pd.read_hdf(pred_prev) if isinstance(pred_prev, (str, Path)) else pred_prev
+    scorer = df_l.columns.levels[0][0]
+    arr_l = _label_arrays(df_l, scorer)
+    arr_p = _label_arrays(df_p, scorer)
+    idx_l = {int(f): i for i, f in enumerate(df_l.index.to_numpy())}
+    idx_p = {int(f): i for i, f in enumerate(df_p.index.to_numpy())}
+
+    out: dict[str, dict[int, list[float]]] = {}
+    stats = dict(nudged=0, flagged=0, unconverged=0, on_target=0)
+    flagged_frames: dict[str, list[int]] = {}
+
+    for label, per in labels.items():
+        out[label] = {}
+        xy_l, lik_l = arr_l.get(label, (None, None))
+        xy_p, _ = arr_p.get(label, (None, None))
+        for f, xy in per.items():
+            xy = [float(xy[0]), float(xy[1])]
+            il, ip = idx_l.get(int(f)), idx_p.get(int(f))
+            if xy_l is None or il is None or ip is None:
+                out[label][f] = xy
+                stats["unconverged"] += 1
+                continue
+            p_now = xy_l[il]
+            p_was = xy_p[ip]
+            converged = (
+                lik_l[il] >= high
+                and float(np.linalg.norm(p_now - p_was)) <= converge_tol
+                and np.isfinite(p_now).all()
+            )
+            if not converged:
+                out[label][f] = xy
+                stats["unconverged"] += 1
+                continue
+            d = float(np.linalg.norm(np.asarray(xy) - p_now))
+            if d < nudge_min:
+                out[label][f] = xy
+                stats["on_target"] += 1
+            elif d > nudge_max:
+                out[label][f] = xy                 # flagged, not moved
+                stats["flagged"] += 1
+                flagged_frames.setdefault(label, []).append(int(f))
+            else:
+                moved = np.asarray(xy) + alpha * (p_now - np.asarray(xy))
+                out[label][f] = [float(moved[0]), float(moved[1])]
+                stats["nudged"] += 1
+
+    stats["flagged_frames"] = flagged_frames
+    return out, stats
 
 
 def select_across_videos(

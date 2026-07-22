@@ -539,3 +539,57 @@ class TestCompleteFrames:
         sel = {"0": {50: [1.0, 2.0]}}
         out, st = ar.complete_frames(sel, df, FakeAnn(("0", "1")))
         assert out["1"] == {} and st["dropped"] == 1
+
+
+# --------------------------------------------------------------------- #
+# nudge_labels -- refine toward a converged model, never chase a lane   #
+# --------------------------------------------------------------------- #
+class TestNudgeLabels:
+    def _pred(self, x, y, lik, n=100, f=50):
+        la = np.ones(n)
+        la[f] = lik
+        return make_predictions(
+            {"point0": la}, xy={"point0": (np.full(n, x), np.full(n, y))}
+        )
+
+    def test_outlier_label_moves_onto_converged_prediction(self):
+        lat = self._pred(100.0, 100.0, 1.0)
+        prev = self._pred(100.2, 100.0, 1.0)          # within converge_tol
+        out, st = ar.nudge_labels({"0": {50: [103.0, 100.0]}}, lat, prev)
+        assert st["nudged"] == 1
+        assert out["0"][50] == [100.0, 100.0]          # snapped (alpha=1)
+
+    def test_partial_nudge_respects_alpha(self):
+        lat = self._pred(100.0, 100.0, 1.0)
+        prev = self._pred(100.0, 100.0, 1.0)
+        out, _ = ar.nudge_labels(
+            {"0": {50: [104.0, 100.0]}}, lat, prev, alpha=0.5
+        )
+        assert out["0"][50] == [102.0, 100.0]
+
+    def test_label_already_on_target_is_left_alone(self):
+        lat = self._pred(100.0, 100.0, 1.0)
+        prev = self._pred(100.0, 100.0, 1.0)
+        out, st = ar.nudge_labels({"0": {50: [100.3, 100.0]}}, lat, prev)
+        assert st["on_target"] == 1 and out["0"][50] == [100.3, 100.0]
+
+    def test_far_outlier_is_flagged_not_moved(self):
+        """Confidence is not licence to drag a label a long way -- a
+        confidently-wrong bistable lane scores exactly here."""
+        lat = self._pred(100.0, 100.0, 1.0)
+        prev = self._pred(100.0, 100.0, 1.0)
+        out, st = ar.nudge_labels({"0": {50: [120.0, 100.0]}}, lat, prev)
+        assert st["flagged"] == 1 and out["0"][50] == [120.0, 100.0]
+        assert st["flagged_frames"] == {"0": [50]}
+
+    def test_disagreeing_snapshots_are_not_converged(self):
+        lat = self._pred(100.0, 100.0, 1.0)
+        prev = self._pred(106.0, 100.0, 1.0)          # 6 px apart -> not converged
+        out, st = ar.nudge_labels({"0": {50: [103.0, 100.0]}}, lat, prev)
+        assert st["unconverged"] == 1 and out["0"][50] == [103.0, 100.0]
+
+    def test_low_confidence_is_not_converged(self):
+        lat = self._pred(100.0, 100.0, 0.5)           # unsure
+        prev = self._pred(100.0, 100.0, 1.0)
+        out, st = ar.nudge_labels({"0": {50: [103.0, 100.0]}}, lat, prev)
+        assert st["unconverged"] == 1 and out["0"][50] == [103.0, 100.0]
