@@ -40,7 +40,20 @@ jobs:
       - name: Install ffmpeg (Linux, static build with libx265 monochrome)
         if: runner.os == 'Linux'
         run: |
-          curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ff.tar.xz
+          url=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          # johnvansickle.com intermittently serves a rate-limit/error page
+          # with a 200, which -sL saves and tar then rejects with a cryptic
+          # "not a tar archive". Retry, and validate the body is really xz
+          # before extracting, so a bad response is ridden out or fails loud.
+          for i in 1 2 3 4 5; do
+            curl -fL --retry 3 --retry-delay 3 --retry-all-errors "$url" -o /tmp/ff.tar.xz \
+              && file /tmp/ff.tar.xz | grep -q 'XZ compressed' && break
+            echo "attempt $i: ffmpeg download not an xz archive, retrying..."
+            file /tmp/ff.tar.xz 2>/dev/null || true
+            sleep 10
+          done
+          file /tmp/ff.tar.xz | grep -q 'XZ compressed' \
+            || { echo "::error::ffmpeg static build could not be fetched"; head -c 300 /tmp/ff.tar.xz; exit 1; }
           mkdir -p /tmp/ffbin
           tar -xf /tmp/ff.tar.xz -C /tmp/ffbin --strip-components=1
           /tmp/ffbin/ffmpeg -hide_banner -version | head -1
