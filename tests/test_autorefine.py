@@ -464,3 +464,78 @@ class TestSelectAcrossVideos:
         out = ar.select_across_videos(results, n=20, max_disagreement=4.0)
         assert "b" not in out
         assert len(out["a"]["0"]) == 4        # all of a's, and no more
+
+
+# --------------------------------------------------------------------- #
+# Confident-neighbour lookup                                            #
+# --------------------------------------------------------------------- #
+class TestConfidentRuns:
+    def test_before_and_after(self):
+        conf = np.array([False, True, False, False, True, False])
+        before, after = ar._confident_runs(conf)
+        assert before.tolist() == [-1, -1, 1, 1, 1, 4]
+        assert after.tolist() == [1, 4, 4, 4, 6, 6]
+
+    def test_none_confident(self):
+        before, after = ar._confident_runs(np.zeros(4, dtype=bool))
+        assert before.tolist() == [-1, -1, -1, -1]
+        assert after.tolist() == [4, 4, 4, 4]
+
+
+# --------------------------------------------------------------------- #
+# complete_frames -- no half-labelled training frames                  #
+# --------------------------------------------------------------------- #
+class TestCompleteFrames:
+    """A frame chosen for one point's gap reaches DLC with the other point
+    NaN, which DLC trains toward low confidence -- the mechanism that
+    collapsed s061 point0's likelihood to ~0.60 while its position held.
+    Every selected frame must leave here carrying both points, filled from
+    a confident prediction or a trusted LK estimate, or dropped."""
+
+    def _df(self, n=200, *, p1_lik=1.0, p1_xy=(7.0, 8.0)):
+        x1 = np.full(n, p1_xy[0])
+        y1 = np.full(n, p1_xy[1])
+        return make_predictions(
+            {"point0": np.full(n, 1.0),
+             "point1": np.asarray(p1_lik) if np.ndim(p1_lik) else np.full(n, p1_lik)},
+            xy={"point1": (x1, y1)},
+        )
+
+    def test_already_complete_frame_is_kept_verbatim(self):
+        sel = {"0": {50: [1.0, 2.0]}, "1": {50: [3.0, 4.0]}}
+        out, st = ar.complete_frames(sel, self._df(), FakeAnn(("0", "1")))
+        assert out["0"][50] == [1.0, 2.0] and out["1"][50] == [3.0, 4.0]
+        assert st["kept"] == 1 and st["by_prediction"] == 0
+
+    def test_missing_co_label_filled_from_confident_prediction(self):
+        sel = {"0": {50: [1.0, 2.0]}}            # only point0 repaired
+        out, st = ar.complete_frames(sel, self._df(), FakeAnn(("0", "1")))
+        assert out["0"][50] == [1.0, 2.0]
+        assert out["1"][50] == [7.0, 8.0]        # from the prediction
+        assert st["kept"] == 1 and st["by_prediction"] == 1 and st["dropped"] == 0
+
+    def test_frame_dropped_when_co_label_has_no_trustworthy_value(self):
+        # point1 never confident -> no bracket -> LK refuses -> drop.
+        df = self._df(p1_lik=0.1)
+        sel = {"0": {50: [1.0, 2.0]}}
+        out, st = ar.complete_frames(sel, df, FakeAnn(("0", "1")))
+        assert out["0"] == {} and out["1"] == {}
+        assert st["dropped"] == 1 and st["kept"] == 0
+
+    def test_co_label_filled_by_trusted_lk_when_prediction_unsure(self, monkeypatch):
+        monkeypatch.setattr(ar, "lucas_kanade_rstc", fake_lk(0.5))
+        lik = np.full(200, 1.0)
+        lik[50] = 0.1                            # point1 unsure only at 50
+        df = self._df(p1_lik=lik)
+        sel = {"0": {50: [1.0, 2.0]}}
+        out, st = ar.complete_frames(sel, df, FakeAnn(("0", "1")))
+        assert 50 in out["1"] and st["by_lk"] == 1 and st["kept"] == 1
+
+    def test_frame_dropped_when_lk_tracks_disagree(self, monkeypatch):
+        monkeypatch.setattr(ar, "lucas_kanade_rstc", fake_lk(10.0))
+        lik = np.full(200, 1.0)
+        lik[50] = 0.1
+        df = self._df(p1_lik=lik)
+        sel = {"0": {50: [1.0, 2.0]}}
+        out, st = ar.complete_frames(sel, df, FakeAnn(("0", "1")))
+        assert out["1"] == {} and st["dropped"] == 1

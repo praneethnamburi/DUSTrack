@@ -515,6 +515,161 @@ def repair(
     return result
 
 
+def _confident_runs(confident: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Nearest confident frame before / after each index.
+
+    Returns two arrays the length of ``confident``: for position ``i``,
+    the index of the closest confident frame strictly before ``i`` (or
+    ``-1``) and strictly after (or ``len``). Precomputed once so a
+    co-label's LK bracket is a lookup rather than a scan per frame.
+    """
+    n = len(confident)
+    before = np.full(n, -1, dtype=int)
+    after = np.full(n, n, dtype=int)
+    last = -1
+    for i in range(n):
+        before[i] = last
+        if confident[i]:
+            last = i
+    nxt = n
+    for i in range(n - 1, -1, -1):
+        after[i] = nxt
+        if confident[i]:
+            nxt = i
+    return before, after
+
+
+def _lk_estimate_at(
+    ann: VideoAnnotation,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    before: np.ndarray,
+    after: np.ndarray,
+    frame: int,
+    *,
+    max_gap: int,
+    max_disagreement: float,
+    lk_kwargs: dict,
+) -> list[float] | None:
+    """LK-RSTC one label across ``frame`` from its confident neighbours.
+
+    A single-frame version of :func:`repair`, used to fill a co-label
+    that the model is *not* confident about at a selected frame. Returns
+    ``None`` -- refuse -- when there is no confident bracket within
+    ``max_gap`` or the forward/reverse tracks disagree past
+    ``max_disagreement``, so a co-label is never invented.
+    """
+    if ann.video is None:
+        return None
+    a, b = int(before[frame]), int(after[frame])
+    if a < 0 or b >= len(xs) or (b - a) > max_gap:
+        return None
+    start_pts = np.array([[xs[a], ys[a]]], dtype=np.float32)
+    end_pts = np.array([[xs[b], ys[b]]], dtype=np.float32)
+    rstc, fwd, rev = lucas_kanade_rstc(
+        ann.video, a, b, start_pts, end_pts, return_paths=True, **lk_kwargs
+    )
+    i = frame - a
+    if not (0 <= i < len(rstc)):
+        return None
+    if float(np.linalg.norm(fwd[i, 0] - rev[i, 0])) > max_disagreement:
+        return None
+    return [float(rstc[i, 0, 0]), float(rstc[i, 0, 1])]
+
+
+def complete_frames(
+    selected: dict[str, dict[int, list[float]]],
+    predictions,
+    ann: VideoAnnotation,
+    *,
+    high: float = HIGH_LIKELIHOOD,
+    max_gap: int = MAX_GAP,
+    max_disagreement: float = MAX_TRACK_DISAGREEMENT,
+    lk_config: dict | None = None,
+) -> tuple[dict[str, dict[int, list[float]]], dict]:
+    """Make every selected frame carry *all* labels before it is trained on.
+
+    A frame is chosen because *one* point had a repairable gap, so the
+    other point is absent from ``selected`` there. Written out that way it
+    reaches DLC's ``CollectedData`` as a NaN, and DLC reads an absent
+    bodypart as an occluded keypoint -- training its confidence head
+    *down* on that appearance. Half-labelled frames therefore teach the
+    model to be unsure, the opposite of the intent. (Measured: retraining
+    s061 on gaps that were almost all point1's collapsed point0's
+    likelihood to ~0.60 across every video while its tracked position
+    barely moved -- a confidence artifact, not a track that improved.)
+
+    Each label missing at a selected frame is filled, in order:
+
+    * the model's own prediction, when it is confident there
+      (likelihood >= ``high``) -- "the other point seems good";
+    * else a short bracketed LK-RSTC estimate, kept only if forward and
+      reverse agree within ``max_disagreement``;
+    * else the whole frame is dropped -- one fewer training frame beats a
+      guessed co-label, which is the exact input that breeds bistability.
+
+    Returns the completed ``{label: {frame: [x, y]}}`` (every frame now
+    present under every label) and a small tally of how each hole was
+    filled.
+    """
+    df = (
+        pd.read_hdf(predictions)
+        if isinstance(predictions, (str, Path))
+        else predictions
+    )
+    scorer = df.columns.levels[0][0]
+    labels = [bp[len("point"):] if bp.startswith("point") else bp
+              for bp in df.columns.levels[1]]
+    bp_of = {lab: bp for lab, bp in zip(labels, df.columns.levels[1])}
+
+    lik = {lab: df.loc[:, (scorer, bp_of[lab], "likelihood")].to_numpy()
+           for lab in labels}
+    xs = {lab: df.loc[:, (scorer, bp_of[lab], "x")].to_numpy() for lab in labels}
+    ys = {lab: df.loc[:, (scorer, bp_of[lab], "y")].to_numpy() for lab in labels}
+    frame_index = {int(f): i for i, f in enumerate(df.index.to_numpy())}
+    brackets = {lab: _confident_runs(lik[lab] >= high) for lab in labels}
+    lk_kwargs = dict(lk_config or {})
+
+    frameset = sorted({f for per in selected.values() for f in per})
+    completed: dict[str, dict[int, list[float]]] = {lab: {} for lab in labels}
+    stats = dict(kept=0, dropped=0, by_prediction=0, by_lk=0, given=0)
+
+    for f in frameset:
+        row: dict[str, list[float]] = {}
+        ok = True
+        i = frame_index.get(int(f))
+        for lab in labels:
+            if f in selected.get(lab, {}):
+                row[lab] = selected[lab][f]
+                stats["given"] += 1
+            elif i is not None and lik[lab][i] >= high:
+                row[lab] = [float(xs[lab][i]), float(ys[lab][i])]
+                stats["by_prediction"] += 1
+            elif i is not None:
+                bef, aft = brackets[lab]
+                est = _lk_estimate_at(
+                    ann, xs[lab], ys[lab], bef, aft, i,
+                    max_gap=max_gap, max_disagreement=max_disagreement,
+                    lk_kwargs=lk_kwargs,
+                )
+                if est is None:
+                    ok = False
+                    break
+                row[lab] = est
+                stats["by_lk"] += 1
+            else:
+                ok = False
+                break
+        if ok:
+            for lab, xy in row.items():
+                completed[lab][int(f)] = xy
+            stats["kept"] += 1
+        else:
+            stats["dropped"] += 1
+
+    return completed, stats
+
+
 def select_across_videos(
     results: dict,
     *,
