@@ -23,6 +23,8 @@ handled separately in :mod:`dustrack.flow_consistency`.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 __all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
@@ -34,17 +36,30 @@ __all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
 #: token unlocks it.
 DINOV3_SMALL = "facebook/dinov3-vits16-pretrain-lvd1689m"
 
-#: Non-gated, same-size (22M), same API drop-in. Use it to run the pipeline
-#: while DINOv3 access is pending -- switching back is one argument.
+#: Non-gated, same-size (22M), same API drop-in -- the fallback when no local
+#: DINOv3 weights are present (e.g. CI, or a machine without the share).
 DINOV2_SMALL = "facebook/dinov2-small"
 
-#: The model :func:`dino_embed` uses when a caller doesn't name one. It is
-#: **DINOv2 while DINOv3 access is pending** -- flip this one line to
-#: ``DINOV3_SMALL`` the moment access lands. Kept as an explicit constant
-#: rather than a silent try-v3-fall-back-to-v2 so a set of embeddings always
-#: has an unambiguous provenance (v2 and v3 are different variants, and the
-#: general-model M3 comparison depends on knowing which produced it).
-ACTIVE_MODEL = DINOV2_SMALL
+#: Local Meta-native DINOv3 weights (a ``.pth`` state dict, loaded via
+#: torch.hub's ``facebookresearch/dinov3`` -- NOT the transformers format).
+#: Defaults to Corazon's ViT-B/16 on the P: share; override with the
+#: ``DUSTRACK_DINOV3_WEIGHTS`` env var. The gated HF path (:data:`DINOV3_SMALL`)
+#: is no longer needed while this is available.
+DINOV3_LOCAL_WEIGHTS = os.environ.get(
+    "DUSTRACK_DINOV3_WEIGHTS",
+    r"P:\Roger\dino\dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
+)
+
+#: torch.hub model id for the local DINOv3-B -- the ``dinov3:<entry>`` scheme
+#: :func:`dino_embed` routes to the hub loader.
+DINOV3_B_LOCAL = "dinov3:vitb16"
+
+#: The model :func:`dino_embed` uses when a caller doesn't name one: the local
+#: **DINOv3-B** (the production ultrasound feature space) when its weights are
+#: present, else non-gated **DINOv2-Small**. Resolved once at import from the
+#: weights file's existence, so a set of embeddings has unambiguous provenance
+#: (the two are different variants; the M3 comparison depends on knowing which).
+ACTIVE_MODEL = DINOV3_B_LOCAL if os.path.exists(DINOV3_LOCAL_WEIGHTS) else DINOV2_SMALL
 
 #: (processor, model, device) memoized per model id so a batch job loads once.
 _MODEL_CACHE: dict = {}
@@ -80,6 +95,55 @@ def _load(model_id: str, device: str):
     return _MODEL_CACHE[key]
 
 
+def _load_hub(entry: str, weights_path: str, device: str):
+    key = ("hub", entry, str(weights_path), device)
+    if key not in _MODEL_CACHE:
+        from pathlib import Path
+
+        import torch
+
+        url = "file:///" + Path(weights_path).as_posix()
+        model = torch.hub.load(
+            "facebookresearch/dinov3", entry, weights=url, trust_repo=True
+        ).eval().to(device)
+        _MODEL_CACHE[key] = model
+    return _MODEL_CACHE[key]
+
+
+def _embed_hub(images, *, model_id, batch_size, device, normalize):
+    """Embed via a Meta-native DINOv3 loaded through torch.hub (local weights).
+
+    ``model_id`` is ``dinov3:<entry>`` (e.g. ``dinov3:vitb16``); weights come
+    from :data:`DINOV3_LOCAL_WEIGHTS`. The native model ships no processor, so
+    preprocessing is here: RGB, resize 224, ImageNet-normalize; the forward
+    returns the global (class) token.
+    """
+    import cv2
+    import torch
+
+    entry = "dinov3_" + str(model_id).split(":", 1)[1]
+    model = _load_hub(entry, DINOV3_LOCAL_WEIGHTS, device)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+    feats = []
+    with torch.no_grad():
+        for i in range(0, len(images), batch_size):
+            arrs = []
+            for im in images[i : i + batch_size]:
+                a = np.asarray(im)
+                if a.dtype != np.uint8:
+                    a = (a * 255 if a.max() <= 1.5 else a).clip(0, 255).astype(np.uint8)
+                if a.ndim == 2:
+                    a = cv2.cvtColor(a, cv2.COLOR_GRAY2RGB)
+                arrs.append(cv2.resize(a, (224, 224)).astype(np.float32) / 255.0)
+            t = torch.from_numpy(np.stack(arrs)).permute(0, 3, 1, 2).to(device)
+            out = model((t - mean) / std)
+            feats.append(out.float().cpu().numpy())
+    out = np.concatenate(feats, axis=0) if feats else np.empty((0, 0))
+    return _l2_normalized(out) if normalize and len(out) else out
+
+
 def dino_embed(
     images,
     *,
@@ -108,6 +172,9 @@ def dino_embed(
 
     model_id = model_id or ACTIVE_MODEL
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if str(model_id).startswith("dinov3:"):        # local Meta-native via torch.hub
+        return _embed_hub(images, model_id=model_id, batch_size=batch_size,
+                          device=device, normalize=normalize)
     proc, model = _load(model_id, device)
 
     imgs = [_to_pil(im) for im in images]

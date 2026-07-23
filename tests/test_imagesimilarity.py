@@ -136,8 +136,9 @@ class TestDinoEmbed:
     are available (the full-featured env); skips in CI / the DLC-only env."""
 
     def test_active_model_is_a_known_default(self):
-        # DINOv2 while DINOv3 access is pending; flip in one place.
-        assert ims.ACTIVE_MODEL in (ims.DINOV2_SMALL, ims.DINOV3_SMALL)
+        # local DINOv3-B when its weights are present, else DINOv2.
+        assert ims.ACTIVE_MODEL in (
+            ims.DINOV2_SMALL, ims.DINOV3_SMALL, ims.DINOV3_B_LOCAL)
 
     def test_embeds_a_batch(self):
         pytest.importorskip("transformers")
@@ -151,6 +152,20 @@ class TestDinoEmbed:
             pytest.skip(f"DINO weights unavailable: {e}")
         assert f.shape == (3, 384)
         assert np.allclose(np.linalg.norm(f, axis=1), 1.0, atol=1e-5)
+
+    def test_local_dinov3_path(self):
+        """Runs where Corazon's local DINOv3-B weights are present; skips in CI."""
+        import os
+        if not os.path.exists(ims.DINOV3_LOCAL_WEIGHTS):
+            pytest.skip("local DINOv3 weights not present")
+        pytest.importorskip("torch")
+        rng = np.random.default_rng(0)
+        imgs = [(rng.random((160, 160)) * 255).astype(np.uint8) for _ in range(3)]
+        try:
+            f = ims.dino_embed(imgs, model_id=ims.DINOV3_B_LOCAL, device="cpu")
+        except Exception as e:                                  # hub fetch / deps
+            pytest.skip(f"DINOv3 hub load failed: {e}")
+        assert f.shape == (3, 768)
 
 
 class TestCluster:
