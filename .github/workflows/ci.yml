@@ -40,24 +40,34 @@ jobs:
       - name: Install ffmpeg (Linux, static build with libx265 monochrome)
         if: runner.os == 'Linux'
         run: |
-          url=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-          # johnvansickle.com intermittently serves a rate-limit/error page
-          # with a 200, which -sL saves and tar then rejects with a cryptic
-          # "not a tar archive". Retry, and validate the body is really xz
-          # before extracting, so a bad response is ridden out or fails loud.
-          for i in 1 2 3 4 5; do
-            curl -fL --retry 3 --retry-delay 3 --retry-all-errors "$url" -o /tmp/ff.tar.xz \
-              && file /tmp/ff.tar.xz | grep -q 'XZ compressed' && break
-            echo "attempt $i: ffmpeg download not an xz archive, retrying..."
-            file /tmp/ff.tar.xz 2>/dev/null || true
-            sleep 10
-          done
-          file /tmp/ff.tar.xz | grep -q 'XZ compressed' \
-            || { echo "::error::ffmpeg static build could not be fetched"; head -c 300 /tmp/ff.tar.xz; exit 1; }
+          # Primary: BtbN/FFmpeg-Builds -- static GPL builds on GitHub
+          # releases, reliable and carrying a full libx265 (i400/monochrome).
+          # Fallback: johnvansickle, which intermittently serves a 4xx /
+          # rate-limit page a curl -f rejects (the historical CI flake). Each
+          # body is validated as real xz before extract, so a bad response is
+          # ridden out across sources or fails loud.
+          btbn=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          jvs=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           mkdir -p /tmp/ffbin
+          ok=""
+          for url in "$btbn" "$jvs"; do
+            for i in 1 2 3; do
+              curl -fL --retry 3 --retry-delay 3 --retry-all-errors "$url" -o /tmp/ff.tar.xz \
+                && file /tmp/ff.tar.xz | grep -q 'XZ compressed' && { ok=1; break; }
+              echo "attempt $i on $url: download not an xz archive, retrying..."
+              file /tmp/ff.tar.xz 2>/dev/null || true
+              sleep 5
+            done
+            [ -n "$ok" ] && { echo "fetched ffmpeg from $url"; break; }
+          done
+          [ -n "$ok" ] || { echo "::error::ffmpeg static build could not be fetched from any source"; exit 1; }
           tar -xf /tmp/ff.tar.xz -C /tmp/ffbin --strip-components=1
-          /tmp/ffbin/ffmpeg -hide_banner -version | head -1
-          echo "/tmp/ffbin" >> "$GITHUB_PATH"
+          # BtbN nests the binaries under bin/; johnvansickle puts them at root.
+          ffbin=$(dirname "$(find /tmp/ffbin -type f -name ffmpeg | head -1)")
+          echo "$ffbin" >> "$GITHUB_PATH"
+          "$ffbin/ffmpeg" -hide_banner -version | head -1
+          "$ffbin/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q libx265 \
+            || { echo "::error::static ffmpeg lacks libx265 (needed for mono h265)"; exit 1; }
 
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
