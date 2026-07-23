@@ -2534,3 +2534,178 @@ def _prompt_for_videos(parent=None):
     if not paths:
         return None
     return [Path(p) for p in paths]
+
+
+def _make_decimate_gallery_class():
+    """Build the diverse-frame selection review modal lazily (qtpy on demand).
+
+    A two-stage overlay in the house style (mirrors ``BlipOptionsDialog``):
+    the frames are embedded off-thread *before* this opens, so here the user
+    sets a target count + an auto-balance toggle, clicks Re-select to re-run
+    :func:`dustrack.imagesimilarity.select_diverse` over the cached embeddings
+    (cheap -- no re-embed), and reviews the picks as a thumbnail gallery
+    before committing. ``exec_()`` returns the selected row indices (into the
+    embedded frame set) on confirm, ``None`` on cancel.
+    """
+    import numpy as np
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtGui import QImage, QPixmap
+    from qtpy.QtWidgets import (
+        QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+        QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    )
+
+    _PRIMARY = (
+        "QPushButton { background-color: #3a86ff; color: white; "
+        "border: 1px solid #2a76ef; padding: 6px 24px; font-size: 11pt; "
+        "font-weight: bold; } QPushButton:hover { background-color: #4a96ff; }"
+    )
+    _NEUTRAL = (
+        "QPushButton { background-color: #4a4a4a; color: white; "
+        "border: 1px solid #3a3a3a; padding: 6px 24px; font-size: 11pt; } "
+        "QPushButton:hover { background-color: #5a5a5a; }"
+    )
+
+    def _to_pixmap(arr, size):
+        a = np.ascontiguousarray(np.asarray(arr, dtype=np.uint8))
+        h, w = a.shape[:2]
+        if a.ndim == 2:
+            img = QImage(a.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            img = QImage(a.data, w, h, 3 * w, QImage.Format_RGB888)
+        return QPixmap.fromImage(img.copy()).scaled(
+            size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    class DecimateGalleryDialog(QObject):
+        def __init__(self, main_window, *, total, thumbs, select_fn, default_count):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._thumbs = thumbs
+            self._select_fn = select_fn
+            self._result = None
+            self._picks = np.array([], dtype=int)
+            self._loop = QEventLoop()
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_decimate_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_decimate_overlay { background-color: rgba(0,0,0,205); }"
+                "QLabel { color: white; }"
+                "#dustrack_decimate_title { color: white; font-size: 22pt; "
+                "  font-weight: bold; }"
+            )
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setContentsMargins(40, 24, 40, 24)
+
+            title = QLabel("Select diverse frames for training")
+            title.setObjectName("dustrack_decimate_title")
+            title.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title)
+
+            controls = QHBoxLayout()
+            controls.setAlignment(Qt.AlignCenter)
+            controls.addWidget(QLabel("Keep"))
+            self._count_spin = QSpinBox()
+            self._count_spin.setRange(1, int(total))
+            self._count_spin.setValue(int(default_count))
+            controls.addWidget(self._count_spin)
+            controls.addWidget(QLabel(f"of {total} frames"))
+            self._balance_chk = QCheckBox("Auto-balance cluster sizes")
+            controls.addWidget(self._balance_chk)
+            self._reselect_btn = QPushButton("Re-select")
+            self._reselect_btn.setStyleSheet(_PRIMARY)
+            self._reselect_btn.clicked.connect(self._reselect)
+            controls.addWidget(self._reselect_btn)
+            outer.addLayout(controls)
+
+            self._status = QLabel("")
+            self._status.setAlignment(Qt.AlignCenter)
+            outer.addWidget(self._status)
+
+            self._scroll = QScrollArea()
+            self._scroll.setWidgetResizable(True)
+            self._scroll.setStyleSheet(
+                "QScrollArea { border: none; background: transparent; }")
+            self._grid_host = QWidget()
+            self._grid = QGridLayout(self._grid_host)
+            self._grid.setSpacing(4)
+            self._scroll.setWidget(self._grid_host)
+            outer.addWidget(self._scroll, stretch=1)
+
+            btns = QHBoxLayout()
+            btns.setAlignment(Qt.AlignCenter)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setStyleSheet(_NEUTRAL)
+            self._cancel_btn.clicked.connect(self._on_cancel)
+            self._confirm_btn = QPushButton("Create pruned layer →")
+            self._confirm_btn.setStyleSheet(_PRIMARY)
+            self._confirm_btn.clicked.connect(self._on_confirm)
+            btns.addWidget(self._cancel_btn)
+            btns.addWidget(self._confirm_btn)
+            outer.addLayout(btns)
+
+            main_window.installEventFilter(self)
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+            self._reselect()
+
+        def _reselect(self):
+            count = int(self._count_spin.value())
+            balance = bool(self._balance_chk.isChecked())
+            try:
+                self._picks = np.asarray(self._select_fn(count, balance), dtype=int)
+            except Exception as exc:  # noqa: BLE001
+                self._status.setText(f"Selection failed: {exc}")
+                return
+            self._status.setText(
+                f"{len(self._picks)} frames selected"
+                + ("  ·  cluster-balanced" if balance else ""))
+            self._render()
+
+        def _render(self):
+            while self._grid.count():
+                w = self._grid.takeAt(0).widget()
+                if w is not None:
+                    w.deleteLater()
+            cols, thumb = 8, 130
+            for k, idx in enumerate(self._picks):
+                lbl = QLabel()
+                lbl.setPixmap(_to_pixmap(self._thumbs[int(idx)], thumb))
+                lbl.setAlignment(Qt.AlignCenter)
+                self._grid.addWidget(lbl, k // cols, k % cols)
+
+        def _on_confirm(self):
+            self._result = [int(i) for i in self._picks]
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            self._loop.exec_()
+            return self._result
+
+    return DecimateGalleryDialog

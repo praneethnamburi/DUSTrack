@@ -466,6 +466,11 @@ class DUSTrack(VideoBrowser):
                 style_tag="workflow",
             )
             self.buttons.add(
+                text="Select diverse frames",
+                action_func=self.select_diverse_frames_workflow,
+                style_tag="workflow",
+            )
+            self.buttons.add(
                 text="Apply manual corrections",
                 action_func=self.apply_manual_corrections,
                 style_tag="workflow",
@@ -4639,6 +4644,134 @@ class DUSTrack(VideoBrowser):
             for label in label_list:
                 self.ann.remove(label, frame_number)
         self.update()
+
+    def select_diverse_frames_workflow(self, event=None, *args, **kwargs) -> None:
+        """Embed the annotated frames, farthest-point-select a diverse subset,
+        review it in a gallery, and materialize it as a pruned layer.
+
+        The DINOv3-feature variant of decimation (spec roadmap #1): the
+        reusable embed + cluster + select machinery lives in
+        :mod:`dustrack.imagesimilarity`; this only supplies the frame set (the
+        active layer's completed frames -- a *generator* that other sources can
+        later replace) and consumes the picks (a pruned layer here; a new
+        project via a fresh instance next). The embed runs off-thread under a
+        ProgressOverlay; the review modal then re-selects over the cached
+        embeddings without re-embedding.
+        """
+        from . import _decimate_modal
+
+        qt_window = self._find_qt_window()
+        frames, meta = self._gather_frames_for_selection()
+        if len(frames) < 8:
+            print(
+                f"Diverse selection needs >= 8 completed frames; "
+                f"found {len(frames)} on layer {self.ann.name!r}."
+            )
+            return
+
+        def work():
+            from dustrack import imagesimilarity as ims
+
+            imgs = [np.asarray(self.data[f]) for f in frames]
+            print(f"Embedding {len(imgs)} frames with {ims.ACTIVE_MODEL} ...")
+            feats = ims.dino_embed(imgs, normalize=True)
+            thumbs = [self._frame_thumbnail(im) for im in imgs]
+            return feats, thumbs
+
+        def on_success(res):
+            from dustrack import imagesimilarity as ims
+
+            feats, thumbs = res
+
+            def select_fn(count, balance):
+                return ims.select_diverse(
+                    feats, int(count), cluster_balance=bool(balance))
+
+            picks = _decimate_modal.prompt_decimate_gallery(
+                qt_window,
+                total=len(frames),
+                thumbs=thumbs,
+                select_fn=select_fn,
+                default_count=max(1, len(frames) // 2),
+            )
+            if picks is None:
+                return
+            self._materialize_pruned_layer(meta, [frames[i] for i in picks])
+
+        self._run_with_overlay(
+            qt_window,
+            work_fn=work,
+            on_success=on_success,
+            title="Selecting diverse frames",
+            initial_phase="Embedding frames (DINO)",
+            success_summary="Embedded -- review the selection.",
+        )
+
+    def _gather_frames_for_selection(self):
+        """Completed frames of the active layer + their per-label positions.
+
+        The frame-set *generator* for the diverse-selection machinery, kept
+        separate from it so other sources (a blip set, a series of videos) can
+        feed the same modal later. "Completed" uses the same required-label
+        rule as the Train preflight (:func:`_preflight.scan_incomplete_frames`).
+        """
+        labels = list(self.ann.labels)
+        target_labels = None
+        if self._dlcproject is not None:
+            bodyparts = self._dlcproject.config.get("bodyparts") or []
+            if bodyparts:
+                target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
+        incomplete = set(
+            _preflight.scan_incomplete_frames(
+                self.ann.data, target_labels=target_labels)
+        )
+        all_frames = sorted(
+            {f for label in labels for f in self.ann.get_frames(label)}
+        )
+        complete = [f for f in all_frames if f not in incomplete]
+        meta = {
+            f: {label: self.ann.data[label][f]
+                for label in labels if f in self.ann.data[label]}
+            for f in complete
+        }
+        return complete, meta
+
+    def _frame_thumbnail(self, im, size: int = 150):
+        """A small ``uint8`` gray thumbnail of a decoded frame, for the gallery."""
+        a = np.asarray(im)
+        gray = a if a.ndim == 2 else cv.cvtColor(a, cv.COLOR_RGB2GRAY)
+        h, w = gray.shape[:2]
+        scale = size / max(h, w)
+        out = cv.resize(gray, (max(1, int(w * scale)), max(1, int(h * scale))))
+        return out.astype(np.uint8)
+
+    def _materialize_pruned_layer(self, meta, kept_frames) -> None:
+        """Write the selected frames' labels as a new manual layer and adopt it.
+
+        Named ``<source>_decimated`` -- deliberately *not* starting with
+        ``dlc`` so it feeds DLC training -- with the dense source kept visible
+        as an overlay QA reference.
+        """
+        from .annotations import VideoAnnotation
+        from ._layer_names import get_fname_annotations
+
+        source = self.ann.name
+        new_name = f"{source}_decimated"
+        labels = list(self.ann.labels)
+        data = {label: {} for label in labels}
+        for f in kept_frames:
+            for label, xy in meta[f].items():
+                data[label][int(f)] = xy
+        fname = get_fname_annotations(self.fname, new_name)
+        ann = VideoAnnotation(
+            fname=fname, vname=self.fname, n_labels=len(labels),
+            preloaded_json=data, video=self.data,
+        )
+        ann.save()
+        self._adopt_layer(fname, set_active=True, set_overlay=source)
+        self.update()
+        print(f"Diverse selection: kept {len(kept_frames)} frames "
+              f"-> layer {new_name!r}.")
 
     def decimate_annotations_in_interval(self) -> None:
         """Prune incomplete frames, then drop every other complete frame in the selected interval.
