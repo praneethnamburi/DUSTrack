@@ -4804,9 +4804,82 @@ class DUSTrack(VideoBrowser):
             qt_window,
             entries=entries,
             load_image=load_image,
-            materialize=lambda kept: self._write_across_labeled_data(kept, readers),
+            materialize=lambda kept: self._finalize_across(kept, readers),
             phase_label="Embedding across-videos sources (DINO)",
         )
+
+    def _finalize_across(self, kept, readers):
+        """Write the confirmed picks as a pruned ``labeled-data`` tree, then
+        turn it into a new DLC project + launch a fresh instance on it. The
+        tree is written first (the essential artifact), so a failure in the
+        project/launch step just prints guidance and leaves the tree intact.
+        """
+        pruned_root = self._write_across_labeled_data(kept, readers)
+        try:
+            config_path, open_video = self._create_project_from_pruned(pruned_root)
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[across] pruned labeled-data is at {pruned_root}; "
+                  f"auto-creating a project from it failed ({exc}). You can "
+                  f"point a new DLC project at that labeled-data by hand.")
+            return
+        print(f"[across] new project created at {config_path}")
+        self._launch_new_instance(open_video)
+
+    def _create_project_from_pruned(self, pruned_root):
+        """Scaffold a new DLC project from the pruned ``labeled-data`` tree,
+        reusing :class:`DLCProject` (which hard-links the source videos in --
+        no multi-GB copies -- and tolerates the no-annotation-files case with
+        empty bodyparts). Copies the pruned labeled data in and sets bodyparts
+        from it. Returns ``(config_path, in_project_video_to_open)``.
+        """
+        import shutil
+
+        proj = self._dlcproject
+        proj_root = Path(proj.config["project_path"])
+        name = f"{proj_root.name}_diverse"
+        experimenter = proj.config.get("scorer") or _config.EXPERIMENTER
+        new_proj = DLCProject(
+            path=str(proj_root.parent),
+            videos=[str(v) for v in proj.video_list],
+            name=name,
+            experimenter=experimenter,
+            link_videos=True,
+        )
+        src_ld = Path(pruned_root) / "labeled-data"
+        dst_ld = Path(new_proj.paths["labels"])
+        for vdir in sorted(p for p in src_ld.iterdir() if p.is_dir()):
+            shutil.copytree(vdir, dst_ld / vdir.name, dirs_exist_ok=True)
+        bodyparts = self._pruned_bodyparts(src_ld)
+        if bodyparts:
+            new_proj.edit_config(bodyparts=bodyparts)
+        in_project = sorted(Path(new_proj.paths["videos"]).glob("*.mp4"))
+        open_video = str(in_project[0]) if in_project else str(proj.video_list[0])
+        return new_proj.config_path, open_video
+
+    def _pruned_bodyparts(self, labeled_data_dir):
+        """The bodypart names from the pruned tree's CollectedData (to set the
+        new project's ``bodyparts``)."""
+        import pandas as pd
+
+        for vdir in sorted(p for p in Path(labeled_data_dir).iterdir() if p.is_dir()):
+            for csv in vdir.glob("CollectedData_*.csv"):
+                df = pd.read_csv(csv, header=[0, 1, 2])
+                return list(dict.fromkeys(c[1] for c in df.columns[3:]))
+        return []
+
+    def _launch_new_instance(self, video_path):
+        """Open the new project in a fresh, detached DUSTrack process on one of
+        its in-project videos (``_open.open`` auto-resolves the project from a
+        video inside its ``videos/`` dir)."""
+        script = ("import sys, matplotlib.pyplot as plt;"
+                  "from dustrack._open import open as _o;"
+                  "_o(sys.argv[1]); plt.show(block=True)")
+        try:
+            subprocess.Popen([sys.executable, "-c", script, str(video_path)])
+            print(f"[across] launching a new DUSTrack instance on {video_path}")
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[across] couldn't auto-launch ({exc}); open {video_path} in "
+                  f"a new DUSTrack session to work in the new project.")
 
     def _decode_across_frame(self, entry, readers):
         """Decode one error-frame's image via a per-video-path VideoReader cache
@@ -4932,6 +5005,7 @@ class DUSTrack(VideoBrowser):
                        mode="w")
         print(f"Across-videos diverse selection: kept {n_written} frames across "
               f"{len(by_video)} video(s) -> {out_root}")
+        return out_root.parent          # the <project>_decimated root
 
     def _prediction_base_layers(self):
         """Base DLC prediction layers (``iteration-N``) with per-video
