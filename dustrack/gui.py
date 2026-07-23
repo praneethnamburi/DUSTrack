@@ -4709,12 +4709,14 @@ class DUSTrack(VideoBrowser):
             layer_names=list(self.annotations.names),
             current_layer=self.ann.name,
             has_project=self._dlcproject is not None,
+            base_layers=self._prediction_base_layers(),
         )
         if choice is None:
             return
 
         if choice["scope"] == "across":
-            self._diverse_across_videos(qt_window, choice.get("sources", []))
+            self._diverse_across_videos(
+                qt_window, choice.get("sources", []), choice.get("base_layer"))
             return
 
         layer_name = choice["layer"]
@@ -4738,33 +4740,213 @@ class DUSTrack(VideoBrowser):
             phase_label=f"Embedding {layer_name} frames (DINO)",
         )
 
-    def _diverse_across_videos(self, qt_window, sources) -> None:
-        """The across-videos branch: union the chosen project-wide sources,
-        embed, review, and write a pruned ``labeled-data`` tree (the training
-        feed for a new project). Labeled data is wired; blips + low-confidence
-        (from the autorefine machinery) are the next sources on this path.
+    #: Across-videos error-frame gather knobs. Low-confidence = worst-point
+    #: likelihood below this; blips = confidently-wrong (model vs next-frame LK,
+    #: the standardized basis). Per-video caps bound the cost of an unbounded
+    #: prediction table.
+    ACROSS_LOWCONF_THR = 0.6
+    ACROSS_MAX_PER_VIDEO = 200
+
+    def _diverse_across_videos(self, qt_window, sources, base_layer=None) -> None:
+        """The across-videos branch: union the chosen project-wide sources into
+        one pool, embed, review, and write a pruned ``labeled-data`` tree (the
+        training feed for a new project). Sources: labeled data (human labels);
+        blips + low-confidence (found against ``base_layer``'s predictions,
+        seeded with the model's -- or the flow-corrected -- positions so the
+        frames land as editable training labels).
         """
-        if "labeled_data" not in sources:
-            print("Across-videos selection: tick at least one source "
-                  "(labeled data). Blips + low-confidence are coming soon.")
-            return
         if self._dlcproject is None:
-            print("Across-videos labeled data needs a DLC project -- create or "
+            print("Across-videos selection needs a DLC project -- create or "
                   "open one first.")
             return
-        entries = self._gather_labeled_data()          # (png, video, {bp:[x,y]})
-        if len(entries) < 8:
-            print(f"Across-videos diverse selection needs >= 8 labeled frames; "
-                  f"the project's labeled data has {len(entries)}.")
+        if not sources:
+            print("Across-videos selection: tick at least one source.")
             return
+
+        entries = []                       # uniform dicts (see _make_across_entry)
+        if "labeled_data" in sources:
+            for png, video, labels in self._gather_labeled_data():
+                entries.append({"video": video, "png": png, "video_path": None,
+                                "frame": None, "labels": labels})
+        error_kinds = {k for k in ("blips", "low_confidence") if k in sources}
+        if error_kinds:
+            if not base_layer:
+                print("Blips / low-confidence need a base DLC layer; none chosen.")
+            else:
+                entries.extend(
+                    self._gather_error_frames_across(base_layer, error_kinds))
+
+        # De-dup a frame that two sources both surfaced (keep the first, which
+        # is labeled-data > blips > low-confidence by insertion order).
+        seen, uniq = set(), []
+        for e in entries:
+            key = (e["video"], e.get("png"), e.get("frame"))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(e)
+        entries = uniq
+
+        if len(entries) < 8:
+            print(f"Across-videos diverse selection needs >= 8 source frames; "
+                  f"the chosen sources yielded {len(entries)}.")
+            return
+
+        readers = {}                       # video_path -> VideoReader (reused)
+
+        def load_image(e):
+            if e.get("png"):
+                return cv.imread(str(e["png"]), cv.IMREAD_GRAYSCALE)
+            arr = self._decode_across_frame(e, readers)
+            return arr if arr.ndim == 2 else cv.cvtColor(arr, cv.COLOR_RGB2GRAY)
 
         self._run_diverse_review(
             qt_window,
             entries=entries,
-            load_image=lambda e: cv.imread(str(e[0]), cv.IMREAD_GRAYSCALE),
-            materialize=self._write_pruned_labeled_data,
-            phase_label="Embedding labeled data across videos (DINO)",
+            load_image=load_image,
+            materialize=lambda kept: self._write_across_labeled_data(kept, readers),
+            phase_label="Embedding across-videos sources (DINO)",
         )
+
+    def _decode_across_frame(self, entry, readers):
+        """Decode one error-frame's image via a per-video-path VideoReader cache
+        (shared between the embed pass and the writer)."""
+        vp = entry["video_path"]
+        reader = readers.get(vp)
+        if reader is None:
+            from datanavigator.video_reader import VideoReader
+            reader = VideoReader(vp)
+            readers[vp] = reader
+        frame = reader[entry["frame"]]
+        return np.asarray(
+            frame.asnumpy() if hasattr(frame, "asnumpy") else frame)
+
+    def _gather_error_frames_across(self, base_layer, kinds):
+        """Per project video, load ``base_layer``'s predictions and flag frames
+        to add to training -- blips (model vs next-frame LK disagreement, the
+        standardized basis) and/or low-confidence (worst-point likelihood below
+        ACROSS_LOWCONF_THR). Returns uniform entry dicts seeded with labels for
+        BOTH points (the co-label invariant): the flow-corrected position at a
+        blipped point, the model prediction elsewhere. Mirrors mithic's tested
+        ``_flow_blips_for_video`` per-video call.
+        """
+        import pandas as pd
+        from dustrack import blip as _blip
+        from dustrack import flow_consistency as fc
+
+        proj = self._dlcproject
+        it = str(base_layer).split("-")[-1]
+        pred_dir = Path(proj.paths["videos"]) / f"iteration-{it}"
+        entries = []
+        for vpath in proj.video_list:
+            vpath = Path(vpath)
+            stem = vpath.stem
+            hits = sorted(pred_dir.glob(f"{stem}DLC*.h5"))
+            if not hits:
+                print(f"[across] no {base_layer} prediction for {stem}; skipping.")
+                continue
+            df = pd.read_hdf(hits[0])
+            pos, labels = fc.dlc_positions(df)             # (N,P,2), ["0","1",...]
+            scorer = df.columns.levels[0][0]
+            bodyparts = list(df.columns.levels[1])         # point0, point1, ...
+            lik = np.stack([df.loc[:, (scorer, bp, "likelihood")].to_numpy()
+                            for bp in bodyparts], axis=1)   # (N, P)
+
+            def model_labels(f):
+                return {bodyparts[j]: [float(pos[f, j, 0]), float(pos[f, j, 1])]
+                        for j in range(len(bodyparts))}
+
+            seed = {}                                      # frame -> {bp: [x,y]}
+            if "low_confidence" in kinds:
+                for f in _blip.low_confidence_frames(
+                        lik, self.ACROSS_LOWCONF_THR,
+                        max_frames=self.ACROSS_MAX_PER_VIDEO):
+                    seed.setdefault(int(f), model_labels(f))
+            if "blips" in kinds:
+                res = _blip.flow_blips(
+                    pos, str(vpath), labels=labels, likelihood=lik,
+                    confident_high=0.9, detect_min=3.0, confirm_thr=5.0,
+                    trust_tol=3.0, max_candidates=self.ACROSS_MAX_PER_VIDEO)
+                lab_to_bp = dict(zip(labels, bodyparts))
+                for lab, fr_map in res.corrections.items():
+                    bp = lab_to_bp.get(lab, lab)
+                    for f, xy in fr_map.items():
+                        d = seed.setdefault(int(f), model_labels(int(f)))
+                        d[bp] = [float(xy[0]), float(xy[1])]  # flow's answer wins
+            for f, lbls in seed.items():
+                entries.append({"video": stem, "png": None,
+                                "video_path": str(vpath), "frame": int(f),
+                                "labels": lbls})
+        return entries
+
+    def _write_across_labeled_data(self, kept, readers):
+        """Write the confirmed across-videos picks as a pruned ``labeled-data``
+        tree beside the project (``<project>_decimated/labeled-data/``). Labeled
+        frames hard-link their existing PNG; error frames decode + write theirs.
+        Both carry (seed) labels, so the tree is a ready DLC training feed.
+        """
+        import shutil
+        import pandas as pd
+
+        proj = self._dlcproject
+        scorer = proj.config["scorer"]
+        out_root = Path(proj.config["project_path"] + "_decimated") / "labeled-data"
+        by_video: dict = {}
+        for e in kept:
+            by_video.setdefault(e["video"], []).append(e)
+
+        n_written = 0
+        for video, items in by_video.items():
+            vout = out_root / video
+            vout.mkdir(parents=True, exist_ok=True)
+            bodyparts = list(dict.fromkeys(bp for e in items for bp in e["labels"]))
+            rows, index = [], []
+            for e in items:
+                if e.get("png"):
+                    name = Path(e["png"]).name
+                    dst = vout / name
+                    if not dst.exists():
+                        try:
+                            os.link(e["png"], dst)
+                        except OSError:
+                            shutil.copy2(e["png"], dst)
+                else:
+                    name = f"img{int(e['frame']):06d}.png"
+                    dst = vout / name
+                    if not dst.exists():
+                        arr = self._decode_across_frame(e, readers)
+                        bgr = arr if arr.ndim == 2 else cv.cvtColor(
+                            arr, cv.COLOR_RGB2BGR)
+                        cv.imwrite(str(dst), bgr)
+                rows.append([c for bp in bodyparts
+                             for c in e["labels"].get(bp, [np.nan, np.nan])])
+                index.append(("labeled-data", video, name))
+                n_written += 1
+            cols = pd.MultiIndex.from_product(
+                [[scorer], bodyparts, ["x", "y"]],
+                names=["scorer", "bodyparts", "coords"])
+            out = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(index),
+                               columns=cols)
+            out.to_csv(vout / f"CollectedData_{scorer}.csv")
+            out.to_hdf(vout / f"CollectedData_{scorer}.h5", key="df_with_missing",
+                       mode="w")
+        print(f"Across-videos diverse selection: kept {n_written} frames across "
+              f"{len(by_video)} video(s) -> {out_root}")
+
+    def _prediction_base_layers(self):
+        """Base DLC prediction layers (``iteration-N``) with per-video
+        predictions on disk -- the candidates blips / low-confidence are
+        measured against. Empty when no project / no analyzed iteration."""
+        proj = self._dlcproject
+        if proj is None:
+            return []
+        try:
+            vids_dir = Path(proj.paths["videos"])
+            iters = list(getattr(proj, "all_iterations", []))
+        except Exception:                                  # noqa: BLE001
+            return []
+        return [f"iteration-{i}" for i in iters
+                if (vids_dir / f"iteration-{i}").is_dir()]
 
     def _run_diverse_review(self, qt_window, *, entries, load_image, materialize,
                             phase_label) -> None:

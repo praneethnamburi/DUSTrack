@@ -15,7 +15,7 @@ from ._overlays import _make_decimate_gallery_class, _make_source_selection_clas
 
 
 def prompt_source_selection(qt_window, *, layer_names, current_layer,
-                            has_project):
+                            has_project, base_layers=()):
     """Ask WHAT the diverse selection reads before the embed pass runs.
 
     Args:
@@ -24,10 +24,13 @@ def prompt_source_selection(qt_window, *, layer_names, current_layer,
         current_layer: The active layer's name (the this-video default source).
         has_project: Whether a DLC project is loaded -- gates the across-videos
             "labeled data" source (labeled data lives in the project).
+        base_layers: Base DLC prediction layers (e.g. ``["iteration-3", ...]``)
+            blips / low-confidence are measured against; empty disables those.
 
     Returns:
         A dict on Continue -- ``{"scope": "video", "layer": name}`` or
-        ``{"scope": "across", "sources": [...]}`` -- or ``None`` on Cancel.
+        ``{"scope": "across", "sources": [...], "base_layer": name}`` -- or
+        ``None`` on Cancel.
     """
     Dialog = _make_source_selection_class()
     return Dialog(
@@ -35,6 +38,7 @@ def prompt_source_selection(qt_window, *, layer_names, current_layer,
         layer_names=layer_names,
         current_layer=current_layer,
         has_project=has_project,
+        base_layers=base_layers,
     ).exec_()
 
 

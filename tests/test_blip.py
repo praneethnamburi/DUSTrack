@@ -387,3 +387,27 @@ def test_save_and_reload_blip_corrections(example_video, tmp_path):
     # save again on the same path should refuse (collision guard).
     with pytest.raises(FileExistsError):
         detect_and_interpolate_blips(ann, save=True)
+
+
+class TestLowConfidenceFrames:
+    """The low-confidence source: frames whose worst-point model likelihood is
+    below threshold, most-uncertain first (the complement of flow_blips)."""
+
+    def test_ranks_worst_first_and_thresholds(self):
+        from dustrack.blip import low_confidence_frames
+        lk = np.array([[0.9, 0.95], [0.2, 0.99], [0.8, 0.4],
+                       [0.99, 0.99], [0.1, 0.1]])
+        assert low_confidence_frames(lk, 0.6) == [4, 1, 2]      # 0.1, 0.2, 0.4
+
+    def test_max_frames_caps(self):
+        from dustrack.blip import low_confidence_frames
+        lk = np.array([[0.9, 0.95], [0.2, 0.99], [0.8, 0.4], [0.1, 0.1]])
+        assert low_confidence_frames(lk, 0.6, max_frames=2) == [3, 1]
+
+    def test_one_dimensional_likelihood(self):
+        from dustrack.blip import low_confidence_frames
+        assert low_confidence_frames(np.array([0.9, 0.3, 0.99]), 0.5) == [1]
+
+    def test_none_below_threshold_is_empty(self):
+        from dustrack.blip import low_confidence_frames
+        assert low_confidence_frames(np.array([0.9, 0.8, 0.99]), 0.5) == []

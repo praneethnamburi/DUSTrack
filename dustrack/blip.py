@@ -649,6 +649,26 @@ class FlowBlipResult:
         return sum(len(v) for v in self.corrections.values())
 
 
+def low_confidence_frames(likelihood, threshold, *, max_frames=None):
+    """Frame indices whose *worst* (min over points) model likelihood is below
+    ``threshold`` -- the frames the model is least sure of, for adding to
+    training. Ranked most-uncertain first; capped to ``max_frames`` if given.
+
+    The complement of :func:`flow_blips`: low confidence surfaces where the
+    model *knows* it's unsure (LOST), blips surface where it's confidently
+    wrong. ``likelihood`` is ``(N,)`` or ``(N, P)``.
+    """
+    lk = np.asarray(likelihood, dtype=float)
+    if lk.ndim == 1:
+        lk = lk[:, None]
+    worst = lk.min(axis=1)
+    idx = np.where(worst < float(threshold))[0]
+    idx = idx[np.argsort(worst[idx], kind="stable")]      # most uncertain first
+    if max_frames is not None:
+        idx = idx[: int(max_frames)]
+    return [int(i) for i in idx]
+
+
 def flow_blips(
     positions,
     video,

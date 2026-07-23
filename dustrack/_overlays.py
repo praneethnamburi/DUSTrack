@@ -2945,10 +2945,12 @@ def _make_source_selection_class():
     )
 
     class SourceSelectionDialog(QObject):
-        def __init__(self, main_window, *, layer_names, current_layer, has_project):
+        def __init__(self, main_window, *, layer_names, current_layer, has_project,
+                     base_layers=()):
             super().__init__(main_window)
             self._mw = main_window
             self._current_layer = current_layer
+            self._base_layers = list(base_layers)
             self._result = None
             self._loop = QEventLoop()
 
@@ -3052,8 +3054,10 @@ def _make_source_selection_class():
             col.addWidget(self._video_src)
 
             # 2b) across-videos source: a union of project-wide sources. Labeled
-            #     data needs a DLC project; blips + low-confidence come from the
-            #     autorefine machinery and aren't wired yet.
+            #     data needs a DLC project; blips + low-confidence are found
+            #     against a base DLC prediction layer (the dropdown), so they
+            #     need at least one trained iteration.
+            has_base = bool(self._base_layers)
             self._across_src = QWidget()
             acol = QVBoxLayout(self._across_src)
             acol.setContentsMargins(0, 0, 0, 0)
@@ -3066,18 +3070,33 @@ def _make_source_selection_class():
                     "Needs a DLC project — labeled data lives under its "
                     "labeled-data/ folder. Create/open a project first.")
             acol.addWidget(self._src_labeled)
-            self._src_blips = QCheckBox("Blips (confident-wrong frames) — coming soon")
-            self._src_blips.setEnabled(False)
-            self._src_blips.setToolTip("From the autorefine blip detector — not "
-                                       "wired into this picker yet.")
+            self._src_blips = QCheckBox("Blips — where the model disagrees with optical flow")
+            self._src_blips.setEnabled(has_base)
+            self._src_lowconf = QCheckBox("Low-confidence frames — low model likelihood")
+            self._src_lowconf.setEnabled(has_base)
+            if not has_base:
+                tip = ("Needs a trained DLC iteration: blips + low-confidence "
+                       "are found against a base prediction layer.")
+                self._src_blips.setToolTip(tip)
+                self._src_lowconf.setToolTip(tip)
+            self._src_blips.toggled.connect(self._on_across_src_changed)
+            self._src_lowconf.toggled.connect(self._on_across_src_changed)
             acol.addWidget(self._src_blips)
-            self._src_lowconf = QCheckBox("Low-confidence frames — coming soon")
-            self._src_lowconf.setEnabled(False)
-            self._src_lowconf.setToolTip("From the autorefine likelihood "
-                                         "detector — not wired in yet.")
             acol.addWidget(self._src_lowconf)
+
+            # Base DLC layer -- the prediction layer blips / low-confidence are
+            # measured against. Enabled only while one of those is ticked.
+            base_row = QHBoxLayout()
+            self._base_lbl = QLabel("Base DLC layer:")
+            self._base_combo = QComboBox()
+            self._base_combo.addItems(self._base_layers)
+            base_row.addWidget(self._base_lbl)
+            base_row.addWidget(self._base_combo, stretch=1)
+            acol.addLayout(base_row)
+
             self._across_src.setVisible(False)
             col.addWidget(self._across_src)
+            self._on_across_src_changed()
 
             btn_row = QHBoxLayout()
             btn_row.setAlignment(Qt.AlignCenter)
@@ -3108,12 +3127,25 @@ def _make_source_selection_class():
             self._video_src.setVisible(not across)
             self._across_src.setVisible(across)
 
+        def _on_across_src_changed(self, *_):
+            # The base-layer dropdown is only meaningful for blips / low-conf.
+            needs_base = self._src_blips.isChecked() or self._src_lowconf.isChecked()
+            self._base_lbl.setEnabled(needs_base)
+            self._base_combo.setEnabled(needs_base and bool(self._base_layers))
+
         def _on_ok(self):
             if self._across_radio.isChecked():
                 sources = []
                 if self._src_labeled.isChecked():
                     sources.append("labeled_data")
-                self._result = {"scope": "across", "sources": sources}
+                if self._src_blips.isChecked():
+                    sources.append("blips")
+                if self._src_lowconf.isChecked():
+                    sources.append("low_confidence")
+                result = {"scope": "across", "sources": sources}
+                if "blips" in sources or "low_confidence" in sources:
+                    result["base_layer"] = self._base_combo.currentText()
+                self._result = result
             else:
                 layer = (self._current_layer if self._current_radio.isChecked()
                          else self._combo.currentText())
