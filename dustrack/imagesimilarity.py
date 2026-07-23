@@ -25,12 +25,93 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["farthest_point_sample", "knn", "cluster"]
+__all__ = ["dino_embed", "farthest_point_sample", "knn", "cluster",
+           "DINOV3_SMALL", "DINOV2_SMALL"]
+
+#: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
+#: ~21M params, chosen to fit the paper's 8 GB consumer-GPU constraint. It is
+#: a **gated** HF repo -- request access once at the model page and the stored
+#: token unlocks it.
+DINOV3_SMALL = "facebook/dinov3-vits16-pretrain-lvd1689m"
+
+#: Non-gated, same-size (22M), same API drop-in. Use it to run the pipeline
+#: while DINOv3 access is pending -- switching back is one argument.
+DINOV2_SMALL = "facebook/dinov2-small"
+
+#: (processor, model, device) memoized per model id so a batch job loads once.
+_MODEL_CACHE: dict = {}
 
 
 def _l2_normalized(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-12)
+
+
+def _to_pil(img):
+    """A gray ``(H, W)`` or ``(H, W, 3)`` array / PIL image -> RGB PIL."""
+    from PIL import Image
+
+    if isinstance(img, Image.Image):
+        return img.convert("RGB")
+    a = np.asarray(img)
+    if a.dtype != np.uint8:                     # tolerate float [0,1] or [0,255]
+        a = (a * 255 if a.max() <= 1.5 else a).clip(0, 255).astype(np.uint8)
+    if a.ndim == 2:
+        a = np.stack([a] * 3, axis=-1)
+    return Image.fromarray(a)
+
+
+def _load(model_id: str, device: str):
+    key = (model_id, device)
+    if key not in _MODEL_CACHE:
+        from transformers import AutoImageProcessor, AutoModel
+
+        proc = AutoImageProcessor.from_pretrained(model_id)
+        model = AutoModel.from_pretrained(model_id).eval().to(device)
+        _MODEL_CACHE[key] = (proc, model)
+    return _MODEL_CACHE[key]
+
+
+def dino_embed(
+    images,
+    *,
+    model_id: str = DINOV3_SMALL,
+    batch_size: int = 32,
+    device: "str | None" = None,
+    pool: str = "cls",
+    normalize: bool = False,
+):
+    """DINOv3 features for a sequence of images -> ``(N, D)`` array.
+
+    The feature *source* for the index -- embed the ultrasound frames (or
+    label-centred patches) whose similarity everything downstream reasons
+    about. ``images`` are gray ``(H, W)`` or ``(H, W, 3)`` arrays (or PIL
+    images), whatever the caller has; the processor handles resize and
+    normalization.
+
+    ``pool`` is ``"cls"`` (the global class token -- the whole-image
+    descriptor decimation and M3 selection want) or ``"mean"`` (mean of the
+    patch tokens). ``model_id`` defaults to the gated :data:`DINOV3_SMALL`;
+    pass :data:`DINOV2_SMALL` to run before access is granted. transformers
+    and torch are imported lazily, so importing this module never requires
+    them (DUSTrack's standalone-import invariant).
+    """
+    import torch
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    proc, model = _load(model_id, device)
+
+    imgs = [_to_pil(im) for im in images]
+    feats = []
+    with torch.no_grad():
+        for i in range(0, len(imgs), batch_size):
+            batch = imgs[i : i + batch_size]
+            inputs = proc(images=batch, return_tensors="pt").to(device)
+            hidden = model(**inputs).last_hidden_state       # (B, 1+regs+patches, D)
+            vec = hidden[:, 0] if pool == "cls" else hidden[:, 1:].mean(dim=1)
+            feats.append(vec.float().cpu().numpy())
+    out = np.concatenate(feats, axis=0) if feats else np.empty((0, 0))
+    return _l2_normalized(out) if normalize and len(out) else out
 
 
 def farthest_point_sample(
