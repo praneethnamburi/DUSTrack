@@ -2709,3 +2709,148 @@ def _make_decimate_gallery_class():
             return self._result
 
     return DecimateGalleryDialog
+
+
+def _make_source_selection_class():
+    """Build the diverse-selection *source* modal lazily (qtpy on demand).
+
+    Pops up before the embed pass to pick WHAT is read: which annotation layer
+    (the current one by default, or one chosen from a dropdown), and whether to
+    run for this video or across every video in the project. ``exec_()`` returns
+    ``(layer_name, scope)`` on Continue (``scope`` is ``"video"`` or
+    ``"across"``), ``None`` on Cancel.
+    """
+    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
+    from qtpy.QtWidgets import (
+        QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
+        QRadioButton, QVBoxLayout, QWidget,
+    )
+
+    _PRIMARY = (
+        "QPushButton { background-color: #3a86ff; color: white; "
+        "border: 1px solid #2a76ef; padding: 6px 24px; font-size: 11pt; "
+        "font-weight: bold; } QPushButton:hover { background-color: #4a96ff; }"
+    )
+    _NEUTRAL = (
+        "QPushButton { background-color: #4a4a4a; color: white; "
+        "border: 1px solid #3a3a3a; padding: 6px 24px; font-size: 11pt; }"
+    )
+
+    class SourceSelectionDialog(QObject):
+        def __init__(self, main_window, *, layer_names, current_layer, across_enabled):
+            super().__init__(main_window)
+            self._mw = main_window
+            self._current_layer = current_layer
+            self._result = None
+            self._loop = QEventLoop()
+
+            self._frame = QFrame(main_window)
+            self._frame.setObjectName("dustrack_source_overlay")
+            self._frame.setStyleSheet(
+                "#dustrack_source_overlay { background-color: rgba(0,0,0,205); }"
+                "QLabel { color: white; } QRadioButton { color: white; }"
+                "#dustrack_source_title { color: white; font-size: 20pt; "
+                "  font-weight: bold; }")
+            self._frame.setFocusPolicy(Qt.StrongFocus)
+
+            outer = QVBoxLayout(self._frame)
+            outer.setAlignment(Qt.AlignCenter)
+            outer.addStretch(1)
+            title = QLabel("Diverse selection — source")
+            title.setObjectName("dustrack_source_title")
+            title.setAlignment(Qt.AlignCenter)
+            outer.addWidget(title)
+
+            content = QWidget()
+            content.setMaximumWidth(560)
+            col = QVBoxLayout(content)
+            col.setSpacing(10)
+
+            col.addWidget(QLabel("Read from:"))
+            self._layer_group = QButtonGroup(self._frame)
+            self._current_radio = QRadioButton(f"Current layer  ({current_layer})")
+            self._current_radio.setChecked(True)
+            self._layer_group.addButton(self._current_radio)
+            col.addWidget(self._current_radio)
+
+            pick_row = QHBoxLayout()
+            self._pick_radio = QRadioButton("Layer:")
+            self._layer_group.addButton(self._pick_radio)
+            self._combo = QComboBox()
+            self._combo.addItems(list(layer_names))
+            self._combo.setEnabled(False)
+            self._pick_radio.toggled.connect(self._combo.setEnabled)
+            pick_row.addWidget(self._pick_radio)
+            pick_row.addWidget(self._combo, stretch=1)
+            col.addLayout(pick_row)
+
+            col.addSpacing(6)
+            col.addWidget(QLabel("Scope:"))
+            self._scope_group = QButtonGroup(self._frame)
+            self._this_radio = QRadioButton("This video")
+            self._this_radio.setChecked(True)
+            self._scope_group.addButton(self._this_radio)
+            col.addWidget(self._this_radio)
+            self._across_radio = QRadioButton("Across all videos in the project")
+            self._across_radio.setEnabled(across_enabled)
+            if not across_enabled:
+                self._across_radio.setToolTip("Coming soon — the single-video "
+                                              "case is being finalized first.")
+            self._scope_group.addButton(self._across_radio)
+            col.addWidget(self._across_radio)
+
+            btn_row = QHBoxLayout()
+            btn_row.setAlignment(Qt.AlignCenter)
+            cancel = QPushButton("Cancel")
+            cancel.setStyleSheet(_NEUTRAL)
+            cancel.clicked.connect(self._on_cancel)
+            cont = QPushButton("Continue →")
+            cont.setStyleSheet(_PRIMARY)
+            cont.clicked.connect(self._on_ok)
+            btn_row.addWidget(cancel)
+            btn_row.addWidget(cont)
+            col.addLayout(btn_row)
+
+            outer.addWidget(content, alignment=Qt.AlignCenter)
+            outer.addStretch(1)
+
+            main_window.installEventFilter(self)
+            self._frame.show()
+            self._reposition()
+            self._frame.raise_()
+
+        def _on_ok(self):
+            layer = (self._current_layer if self._current_radio.isChecked()
+                     else self._combo.currentText())
+            scope = "across" if self._across_radio.isChecked() else "video"
+            self._result = (layer, scope)
+            self._dismiss()
+            self._loop.quit()
+
+        def _on_cancel(self):
+            self._result = None
+            self._dismiss()
+            self._loop.quit()
+
+        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+            if obj is self._mw and event.type() == QEvent.Resize:
+                self._reposition()
+            return False
+
+        def _reposition(self):
+            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
+            self._frame.raise_()
+
+        def _dismiss(self):
+            try:
+                self._mw.removeEventFilter(self)
+            except Exception:
+                pass
+            self._frame.hide()
+            self._frame.deleteLater()
+
+        def exec_(self):
+            self._loop.exec_()
+            return self._result
+
+    return SourceSelectionDialog

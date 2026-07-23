@@ -92,6 +92,24 @@ from .dlcinterface import DLCProject, _find_video_index
 from .seed import import_seed_bundle_into_project
 
 
+def _dino_backend_available() -> bool:
+    """Whether :func:`dustrack.imagesimilarity.dino_embed` can actually embed in
+    this environment -- torch importable AND a weights source reachable
+    (Corazon's local DINOv3-B, else transformers for DINOv2). Gates the "Select
+    diverse frames" button so every other DUSTrack feature stays usable where
+    the optional, heavy DINO stack isn't installed.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("torch") is None:
+        return False
+    from . import imagesimilarity as ims
+
+    if os.path.exists(ims.DINOV3_LOCAL_WEIGHTS):
+        return True
+    return importlib.util.find_spec("transformers") is not None
+
+
 class DUSTrack(VideoBrowser):
     """
     Interactive video point annotator with DeepLabCut integration.
@@ -466,11 +484,6 @@ class DUSTrack(VideoBrowser):
                 style_tag="workflow",
             )
             self.buttons.add(
-                text="Select diverse frames",
-                action_func=self.select_diverse_frames_workflow,
-                style_tag="workflow",
-            )
-            self.buttons.add(
                 text="Apply manual corrections",
                 action_func=self.apply_manual_corrections,
                 style_tag="workflow",
@@ -485,6 +498,24 @@ class DUSTrack(VideoBrowser):
                 action_func=self.detect_blips_workflow,
                 style_tag="workflow",
             )
+        # Diverse-frame selection is gated by the DINO backend (torch + a
+        # weights source), NOT by DLC, so it lives outside the HAS_DLC group and
+        # works before any project exists. Grayed out with a hover hint where
+        # the backend isn't installed, leaving the rest of DUSTrack usable.
+        diverse_btn = self.buttons.add(
+            text="Select diverse frames",
+            action_func=self.select_diverse_frames_workflow,
+            style_tag="workflow",
+        )
+        if not _dino_backend_available():
+            try:
+                diverse_btn._qt_btn.setEnabled(False)
+                diverse_btn._qt_btn.setToolTip(
+                    "Diverse selection needs the DINO backend (torch + DINOv3 "
+                    "weights or transformers), which isn't installed here. "
+                    "Every other DUSTrack feature still works.")
+            except Exception:
+                pass
         self.buttons.add(
             text="Save annotation as...",
             action_func=self.save_annotation_as,
@@ -4646,39 +4677,62 @@ class DUSTrack(VideoBrowser):
         self.update()
 
     def select_diverse_frames_workflow(self, event=None, *args, **kwargs) -> None:
-        """Embed the project's labeled data, farthest-point-select a diverse
-        subset across *all* its videos, review it in a gallery, and write the
-        pruned labeled data (the training feed of a new project).
+        """Embed one annotation layer's fully-labeled frames, farthest-point
+        select a diverse subset, review it in a gallery, and write the picks as
+        a pruned annotation layer in this video.
 
-        The DINOv3-feature variant of decimation (spec roadmap #1): the
-        reusable embed + cluster + select machinery lives in
-        :mod:`dustrack.imagesimilarity`; this supplies the frame set (the DLC
-        project's labeled data -- a *generator* other sources can replace) and
-        consumes the picks (a pruned ``labeled-data`` tree here; a new project
-        launched in a fresh instance next). The labeled frames are already
-        extracted as PNGs, so no video decode -- and it spans every video, so a
-        redundant appearance repeated across the series is thinned once. The
-        embed runs off-thread under a ProgressOverlay; the review modal then
-        re-selects over the cached embeddings without re-embedding.
+        The DINOv3-feature variant of decimation (spec roadmap #1). The reusable
+        embed + select machinery lives in :mod:`dustrack.imagesimilarity`; this
+        method only supplies the frame set -- a *generator* chosen in the source
+        modal (here one video's annotation layer; the labeled-data-across-videos
+        and blip generators feed the same modal for the multi-video case) -- and
+        consumes the picks (a pruned layer here; a new project next). **No DLC
+        project is required**: it reads the live layer and decodes frames from
+        the open video. The embed runs off-thread under a ProgressOverlay; the
+        review modal then re-selects over the cached embeddings without
+        re-embedding.
         """
         from . import _decimate_modal
 
         qt_window = self._find_qt_window()
-        if self._dlcproject is None:
-            print("Diverse selection reads the project's labeled data -- "
-                  "load a DLC project first.")
+        if not _dino_backend_available():
+            print("Diverse selection needs the DINO backend (torch + DINOv3 "
+                  "weights or transformers); it isn't installed in this "
+                  "environment. Every other DUSTrack feature still works.")
             return
-        entries = self._gather_labeled_data()          # (png, video, {bp: [x,y]})
+
+        choice = _decimate_modal.prompt_source_selection(
+            qt_window,
+            layer_names=list(self.annotations.names),
+            current_layer=self.ann.name,
+            across_enabled=False,         # single-video first; multi-video next
+        )
+        if choice is None:
+            return
+        layer_name, scope = choice
+        if scope == "across":
+            print("Across-videos diverse selection isn't wired yet -- run it "
+                  "per video for now.")
+            return
+
+        entries = self._gather_frames_from_layer(layer_name)  # (frame, {lbl:[x,y]})
         if len(entries) < 8:
-            print(f"Diverse selection needs >= 8 labeled frames; "
-                  f"found {len(entries)} in the project's labeled data.")
+            print(f"Diverse selection needs >= 8 fully-labeled frames; layer "
+                  f"{layer_name!r} has {len(entries)}.")
             return
 
         def work():
             from dustrack import imagesimilarity as ims
 
-            imgs = [cv.imread(str(png), cv.IMREAD_GRAYSCALE) for png, _, _ in entries]
-            print(f"Embedding {len(imgs)} labeled frames with {ims.ACTIVE_MODEL} ...")
+            imgs = []
+            for f, _ in entries:
+                frame = self.data[f]
+                arr = np.asarray(
+                    frame.asnumpy() if hasattr(frame, "asnumpy") else frame)
+                gray = arr if arr.ndim == 2 else cv.cvtColor(arr, cv.COLOR_RGB2GRAY)
+                imgs.append(gray)
+            print(f"Embedding {len(imgs)} frames from {layer_name!r} with "
+                  f"{ims.ACTIVE_MODEL} ...")
             feats = ims.dino_embed(imgs, normalize=True)
             thumbs = [self._frame_thumbnail(im) for im in imgs]
             return feats, thumbs
@@ -4701,16 +4755,67 @@ class DUSTrack(VideoBrowser):
             )
             if picks is None:
                 return
-            self._write_pruned_labeled_data([entries[i] for i in picks])
+            self._materialize_pruned_layer(layer_name, [entries[i] for i in picks])
 
         self._run_with_overlay(
             qt_window,
             work_fn=work,
             on_success=on_success,
             title="Selecting diverse frames",
-            initial_phase="Embedding labeled frames (DINO)",
+            initial_phase=f"Embedding {layer_name} frames (DINO)",
             success_summary="Embedded -- review the selection.",
         )
+
+    def _gather_frames_from_layer(self, layer_name):
+        """Every fully-labeled frame in one annotation layer -- the single-video
+        source for diverse selection, read straight from the live layer (no DLC
+        project, no extracted PNGs). "Fully labeled" = *all* the layer's labels
+        present (the co-label invariant training relies on). Returns
+        ``(frame_number, {label: [x, y]})`` per such frame, sorted by frame.
+        """
+        ann = self.annotations[layer_name]
+        labels = list(ann.labels)
+        if not labels:
+            return []
+        complete = set(ann.get_frames(labels[0]))
+        for label in labels[1:]:
+            complete &= set(ann.get_frames(label))
+        entries = []
+        for f in sorted(complete):
+            locs = {label: [float(ann.data[label][f][0]),
+                            float(ann.data[label][f][1])] for label in labels}
+            entries.append((int(f), locs))
+        return entries
+
+    def _materialize_pruned_layer(self, source_layer_name, kept):
+        """Write the selected frames as a fresh annotation LAYER in this video
+        (the single-video consumer -- application (b): a diverse training feed
+        kept beside the source layer, which stays untouched). ``kept`` is the
+        ``(frame_number, {label: [x, y]})`` subset the gallery confirmed. The
+        new layer is saved, adopted, and made active.
+        """
+        source = self.annotations[source_layer_name]
+        labels = list(source.labels)
+        data = {label: {} for label in labels}
+        for frame, locs in kept:
+            for label, xy in locs.items():
+                data[label][int(frame)] = [float(xy[0]), float(xy[1])]
+
+        base = f"{source_layer_name}_diverse"
+        new_name, i = base, 2
+        while new_name in self.annotations.names:
+            new_name, i = f"{base}{i}", i + 1
+        fname = make_annotation_file_name(self.fname, new_name)
+        new_ann = VideoAnnotation(fname=str(fname), vname=self.fname)
+        new_ann.data = data
+        new_ann._revision += 1
+        new_ann.save()
+        adopted = self._adopt_layer(new_ann, set_active=True) or new_name
+        self._restructure_annotation_order()
+        self.update()
+        print(f"Diverse selection: wrote {len(kept)} frames to layer "
+              f"{adopted!r}\n  -> {fname}")
+        return adopted
 
     def _gather_labeled_data(self):
         """Every labeled frame across the loaded project's labeled data.
