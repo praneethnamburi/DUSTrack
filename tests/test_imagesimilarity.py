@@ -136,6 +136,40 @@ class TestCaptureRadii:
         assert set(med.values()) <= set(sel)            # ...yet every medoid is kept
 
 
+class TestHierarchy:
+    """Agglomerative linkage + re-cut + the medoid dendrogram behind the
+    review modal's Clusters knob and left-side tree."""
+
+    def test_linkage_shape_and_cut(self):
+        pytest.importorskip("scipy")
+        X, y = three_blobs(per=8)                      # 24 points, 3 true blobs
+        Z = ims.build_linkage(X)
+        assert Z.shape == (len(X) - 1, 4)
+        lab = ims.cut_linkage(Z, 3)
+        assert sorted(set(lab.tolist())) == [0, 1, 2]  # 0-based contiguous
+        # cutting into 3 recovers the blobs (each true blob one predicted label)
+        assert all(len(set(lab[y == c])) == 1 for c in range(3))
+
+    def test_cut_is_contiguous_even_if_short(self):
+        pytest.importorskip("scipy")
+        X, _ = three_blobs(per=3)
+        Z = ims.build_linkage(X)
+        lab = ims.cut_linkage(Z, 5)
+        assert set(lab.tolist()) == set(range(len(set(lab.tolist()))))
+
+    def test_medoid_dendrogram_orders_and_draws(self):
+        pytest.importorskip("scipy")
+        X, y = three_blobs(per=8)
+        med = ims.cluster_medoids(X, y)
+        med_feats = np.stack([X[med[c]] for c in sorted(med)])
+        leaves, segments = ims.medoid_dendrogram(med_feats)
+        assert sorted(leaves) == list(range(3))        # a permutation of the leaves
+        assert len(segments) == 2                       # k-1 merges for k=3
+        for seg in segments:
+            for lp, h in seg:
+                assert 0.0 <= h <= 1.0                   # height normalized
+
+
 class TestKnn:
     def test_neighbours_come_from_the_query_blob(self):
         X, y = three_blobs(per=8)

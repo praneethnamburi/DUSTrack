@@ -29,6 +29,7 @@ import numpy as np
 
 __all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
            "cluster", "cluster_medoids", "select_within_radius",
+           "build_linkage", "cut_linkage", "medoid_dendrogram",
            "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL", "local_dinov3_usable"]
 
 #: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
@@ -321,6 +322,61 @@ def select_within_radius(radii, min_dist, *, order=None, floor=()) -> list:
     sel = {int(order[i]) for i in keep} if order is not None else {int(i) for i in keep}
     sel |= {int(i) for i in floor}
     return sorted(sel)
+
+
+def build_linkage(features, *, method: str = "average",
+                  metric: str = "euclidean", normalize: bool = True):
+    """Agglomerative linkage over the frames -- computed once so the review
+    modal's "number of clusters" knob is a cheap re-cut of one tree
+    (:func:`cut_linkage`), and the tree itself organizes the rows so sibling
+    appearance groups sit together. L2-normalize + euclidean is monotonic in
+    cosine on the unit sphere (the right geometry for DINO features). scipy is
+    imported lazily, so importing this module never requires it.
+    """
+    from scipy.cluster.hierarchy import linkage
+
+    X = np.asarray(features, dtype=float)
+    if normalize:
+        X = _l2_normalized(X)
+    return linkage(X, method=method, metric=metric)
+
+
+def cut_linkage(Z, k: int) -> np.ndarray:
+    """Flat labels ``0..k-1`` from cutting a :func:`build_linkage` tree into
+    ``k`` clusters (relabelled 0-based contiguous, so fewer-than-k in edge
+    cases stays dense)."""
+    from scipy.cluster.hierarchy import fcluster
+
+    lab = fcluster(Z, t=int(k), criterion="maxclust")
+    remap = {c: i for i, c in enumerate(sorted(set(int(x) for x in lab)))}
+    return np.array([remap[int(x)] for x in lab])
+
+
+def medoid_dendrogram(medoid_features, *, normalize: bool = True):
+    """Leaf order + merge segments for a small dendrogram over the cluster
+    medoids -- the tree drawn beside the review rows.
+
+    Returns ``(leaf_order, segments)``. ``leaf_order`` lists the medoid-row
+    indices left-to-right in the tree (the row order that puts siblings
+    together). Each segment is the 4-point inverted-U polyline of one merge in
+    ``(leaf_position, height)`` space, height normalized to ``[0, 1]`` -- a
+    drawer maps leaf_position -> row centre and height -> gutter depth. scipy is
+    imported lazily.
+    """
+    from scipy.cluster.hierarchy import dendrogram, linkage
+
+    X = np.asarray(medoid_features, dtype=float)
+    if normalize:
+        X = _l2_normalized(X)
+    k = len(X)
+    if k <= 1:
+        return list(range(k)), []
+    Z = linkage(X, method="average", metric="euclidean")
+    dd = dendrogram(Z, no_plot=True)
+    hmax = max((max(d) for d in dd["dcoord"]), default=1.0) or 1.0
+    segments = [[((x - 5.0) / 10.0, y / hmax) for x, y in zip(xs, ys)]
+                for xs, ys in zip(dd["icoord"], dd["dcoord"])]
+    return list(dd["leaves"]), segments
 
 
 def knn(features, queries, k: int, *, normalize: bool = True):

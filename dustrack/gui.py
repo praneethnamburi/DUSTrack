@@ -4737,46 +4737,59 @@ class DUSTrack(VideoBrowser):
             feats = ims.dino_embed(imgs, normalize=True)
             thumbs = [self._frame_thumbnail(im) for im in imgs]
 
-            # Cluster into review rows (K auto), the farthest-point order + its
-            # capture radii (so the modal's one knob -- min distance between kept
-            # frames -- thresholds a prefix, no re-embed), and each cluster's
-            # canonical medoid.
+            # One agglomerative hierarchy over the frames (so the Clusters knob
+            # is a cheap re-cut + the tree organizes the rows), plus the
+            # farthest-point order + capture radii (so the min-distance knob
+            # thresholds a prefix). Both computed once, off-thread.
             n = len(feats)
-            k = int(np.clip(round(np.sqrt(n / 4.0)), 6, 20))
-            labels = ims.cluster(feats, k)
-            medoids = ims.cluster_medoids(feats, labels)
+            linkage = ims.build_linkage(feats)
             cap = min(n, 512)
             order, radii = ims.farthest_point_sample(feats, cap, return_radii=True)
-            return feats, thumbs, labels, medoids, order, radii
+            return feats, thumbs, linkage, order, radii
 
         def on_success(res):
             from dustrack import imagesimilarity as ims
 
-            feats, thumbs, labels, medoids, order, radii = res
-            floor = list(medoids.values())
+            feats, thumbs, linkage, order, radii = res
+            n = len(feats)
+
+            def recluster_fn(k):
+                labels = ims.cut_linkage(linkage, k)
+                medoids = ims.cluster_medoids(feats, labels)
+                med_feats = np.stack([feats[medoids[c]] for c in sorted(medoids)])
+                leaf_pos, segments = ims.medoid_dendrogram(med_feats)
+                by_pos = sorted(medoids)                    # cluster id at each medoid row
+                leaf_order = [by_pos[p] for p in leaf_pos]  # cluster ids in tree order
+                return labels, medoids, leaf_order, segments
 
             def select_fn(min_dist):
-                return ims.select_within_radius(
-                    radii, min_dist, order=order, floor=floor)
+                # No floor here: the modal always keeps each kept cluster's
+                # medoid (canonical) on confirm, so per-cluster coverage is
+                # guaranteed regardless of k -- this stays purely the global
+                # "how diverse must two kept frames be" knob.
+                return ims.select_within_radius(radii, min_dist, order=order)
+
+            k_hi = int(min(40, max(2, n // 8)))
+            k_default = int(np.clip(round(np.sqrt(n / 4.0)), 6, min(20, k_hi)))
 
             finite = radii[np.isfinite(radii)]
             lo = float(finite.min()) if len(finite) else 0.0
             hi = float(finite.max()) if len(finite) else 1.0
-            # Default: a moderate starting count (between one-per-cluster and a
-            # cap), read off the capture-radius curve.
-            target = int(np.clip(len(entries) // 8, 2 * len(medoids), 120))
+            target = int(np.clip(n // 8, 2 * k_default, 120))
             dmin_default = float(radii[min(target, len(radii) - 1)])
 
             picks = _decimate_modal.prompt_decimate_gallery(
                 qt_window,
                 thumbs=thumbs,
-                labels=labels,
-                medoids=medoids,
+                recluster_fn=recluster_fn,
                 select_fn=select_fn,
+                k_lo=2,
+                k_hi=k_hi,
+                k_default=k_default,
                 dmin_lo=lo,
                 dmin_hi=hi,
                 dmin_default=dmin_default,
-                n_frames=len(entries),
+                n_frames=n,
             )
             if picks is None:
                 return

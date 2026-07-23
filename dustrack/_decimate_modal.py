@@ -39,23 +39,26 @@ def prompt_source_selection(qt_window, *, layer_names, current_layer,
     ).exec_()
 
 
-def prompt_decimate_gallery(qt_window, *, thumbs, labels, medoids, select_fn,
-                            dmin_lo, dmin_hi, dmin_default, n_frames):
+def prompt_decimate_gallery(qt_window, *, thumbs, recluster_fn, select_fn,
+                            k_lo, k_hi, k_default, dmin_lo, dmin_hi,
+                            dmin_default, n_frames):
     """Show the cluster-per-row review modal and return the kept frame indices.
 
     Args:
         qt_window: The DUSTrack QMainWindow (overlay parent).
         thumbs: One small ``uint8`` gray thumbnail per embedded frame,
             index-aligned to the embeddings.
-        labels: Per-frame cluster id (from
-            :func:`dustrack.imagesimilarity.cluster`) -- one review row each.
-        medoids: ``{cluster: frame_index}`` canonical (medoid) per cluster.
+        recluster_fn: ``k -> (labels, medoids, leaf_order, segments)`` -- re-cuts
+            the precomputed hierarchy at ``k`` clusters (cheap, no re-embed):
+            per-frame ``labels``, ``{cluster: frame_index}`` medoids, the
+            dendrogram ``leaf_order`` (row order that groups siblings), and the
+            tree ``segments`` for the left gutter. Drives the Clusters knob.
         select_fn: ``min_dist -> sorted frame indices``; thresholds the cached
-            farthest-point capture radii (cheap, no re-embed) and includes the
-            medoid floor so every cluster keeps its canonical.
-        dmin_lo, dmin_hi: Slider range for the minimum-distance knob (lo =
-            more/closer frames, hi = fewer).
-        dmin_default: Initial minimum distance.
+            farthest-point capture radii and includes the medoid floor. Drives
+            the minimum-distance knob (independent of ``k``).
+        k_lo, k_hi, k_default: Clusters-slider range + initial value.
+        dmin_lo, dmin_hi, dmin_default: Minimum-distance range (lo = more/closer
+            frames, hi = fewer) + initial value.
         n_frames: Total embedded frames (the "of N" in the status line).
 
     Returns:
@@ -66,9 +69,11 @@ def prompt_decimate_gallery(qt_window, *, thumbs, labels, medoids, select_fn,
     return Dialog(
         qt_window,
         thumbs=thumbs,
-        labels=labels,
-        medoids=medoids,
+        recluster_fn=recluster_fn,
         select_fn=select_fn,
+        k_lo=k_lo,
+        k_hi=k_hi,
+        k_default=k_default,
         dmin_lo=dmin_lo,
         dmin_hi=dmin_hi,
         dmin_default=dmin_default,

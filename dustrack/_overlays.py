@@ -2552,10 +2552,10 @@ def _make_decimate_gallery_class():
     """
     import numpy as np
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
-    from qtpy.QtGui import QImage, QPixmap
+    from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
     from qtpy.QtWidgets import (
-        QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-        QSlider, QVBoxLayout, QWidget,
+        QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+        QScrollArea, QSlider, QVBoxLayout, QWidget,
     )
 
     _PRIMARY = (
@@ -2568,7 +2568,10 @@ def _make_decimate_gallery_class():
         "border: 1px solid #3a3a3a; padding: 6px 24px; font-size: 11pt; } "
         "QPushButton:hover { background-color: #5a5a5a; }"
     )
-    _CANON, _MEMBER, _MEMBER_CAP = 118, 62, 14
+    _CANON, _MEMBER = 150, 70
+    _MEMBER_COLS, _MEMBER_ROWS = 8, 2
+    _MEMBER_CAP = _MEMBER_COLS * _MEMBER_ROWS
+    _ROW_H, _GUTTER_W = 176, 140
 
     def _to_pixmap(arr, size):
         a = np.ascontiguousarray(np.asarray(arr, dtype=np.uint8))
@@ -2580,19 +2583,65 @@ def _make_decimate_gallery_class():
         return QPixmap.fromImage(img.copy()).scaled(
             size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
+    class _DendrogramGutter(QWidget):
+        """Paints the hierarchical tree over the cluster rows: leaves at the
+        right edge (each aligned to a row centre), the root at the left, so
+        sibling appearance groups are visibly joined low and dissimilar ones
+        only merge near the root. Fed ``segments`` in (leaf_position, height01)
+        space by :meth:`set_tree`."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._segments = []
+            self._n = 0
+            self.setFixedWidth(_GUTTER_W)
+
+        def set_tree(self, segments, n_leaves):
+            self._segments = segments
+            self._n = int(n_leaves)
+            self.setFixedHeight(max(1, self._n) * _ROW_H)
+            self.update()
+
+        def paintEvent(self, _event):  # noqa: N802 (Qt API)
+            if not self._segments or self._n < 2:
+                return
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            pen = QPen(QColor("#9fb3c8"))
+            pen.setWidthF(1.4)
+            p.setPen(pen)
+            W = self.width()
+            pad_l, pad_r = 10, 8
+            usable = max(1, W - pad_l - pad_r)
+
+            def x_of(h01):                     # 0 = leaf (right), 1 = root (left)
+                return (W - pad_r) - h01 * usable
+
+            def y_of(leafpos):                 # 0..n-1 -> row centre
+                return leafpos * _ROW_H + _ROW_H / 2.0
+
+            for seg in self._segments:
+                pts = [(x_of(h), y_of(lp)) for (lp, h) in seg]
+                for a, b in zip(pts, pts[1:]):
+                    p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            p.end()
+
     class DecimateGalleryDialog(QObject):
-        def __init__(self, main_window, *, thumbs, labels, medoids, select_fn,
-                     dmin_lo, dmin_hi, dmin_default, n_frames):
+        def __init__(self, main_window, *, thumbs, recluster_fn, select_fn,
+                     k_lo, k_hi, k_default, dmin_lo, dmin_hi, dmin_default,
+                     n_frames):
             super().__init__(main_window)
             self._mw = main_window
             self._thumbs = thumbs
-            self._labels = np.asarray(labels)
-            self._medoids = {int(c): int(i) for c, i in medoids.items()}
+            self._recluster_fn = recluster_fn
             self._select_fn = select_fn
             self._lo, self._hi = float(dmin_lo), float(dmin_hi)
             self._n_frames = int(n_frames)
+            self._labels = np.zeros(0, dtype=int)
+            self._medoids = {}             # cluster -> frame index
+            self._leaf_order = []          # cluster ids in tree (row) order
             self._selected = []            # global indices at the current d_min
-            self._by_cluster = {}          # cluster -> [selected member indices, minus medoid]
+            self._by_cluster = {}          # cluster -> [selected members, minus medoid]
             self._rows = {}                # cluster -> {frame,check,members,host,count}
             self._result = None
             self._loop = QEventLoop()
@@ -2613,15 +2662,32 @@ def _make_decimate_gallery_class():
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
             outer = QVBoxLayout(self._frame)
-            outer.setContentsMargins(40, 20, 40, 20)
+            outer.setContentsMargins(40, 18, 40, 18)
 
             title = QLabel("Select diverse frames for training")
             title.setObjectName("dustrack_decimate_title")
             title.setAlignment(Qt.AlignCenter)
             outer.addWidget(title)
 
-            # One knob: minimum feature distance between kept frames. Left =
-            # smaller distance = more (closer) frames; right = fewer.
+            # Knob 1: number of clusters (re-cuts the hierarchy; rebuilds rows).
+            krow = QHBoxLayout()
+            krow.setAlignment(Qt.AlignCenter)
+            krow.addWidget(QLabel("Clusters"))
+            self._k_slider = QSlider(Qt.Horizontal)
+            self._k_slider.setRange(int(k_lo), int(k_hi))
+            self._k_slider.setValue(int(k_default))
+            self._k_slider.setFixedWidth(260)
+            self._k_label = QLabel(str(int(k_default)))
+            self._k_slider.valueChanged.connect(
+                lambda v: self._k_label.setText(str(int(v))))
+            self._k_slider.sliderReleased.connect(
+                lambda: self._recluster(int(self._k_slider.value())))
+            krow.addWidget(self._k_slider)
+            krow.addWidget(self._k_label)
+            outer.addLayout(krow)
+
+            # Knob 2: minimum feature distance between kept frames. Left = smaller
+            # distance = more (closer) frames; right = fewer.
             controls = QHBoxLayout()
             controls.setAlignment(Qt.AlignCenter)
             controls.addWidget(QLabel("← more frames"))
@@ -2643,14 +2709,21 @@ def _make_decimate_gallery_class():
             self._scroll.setWidgetResizable(True)
             self._scroll.setStyleSheet(
                 "QScrollArea { border: none; background: transparent; }")
+            body = QWidget()
+            body_row = QHBoxLayout(body)
+            body_row.setContentsMargins(0, 0, 0, 0)
+            body_row.setSpacing(0)
+            body_row.setAlignment(Qt.AlignTop)
+            self._gutter = _DendrogramGutter()
+            body_row.addWidget(self._gutter, alignment=Qt.AlignTop)
             self._rows_host = QWidget()
             self._rows_col = QVBoxLayout(self._rows_host)
-            self._rows_col.setSpacing(6)
+            self._rows_col.setContentsMargins(0, 0, 0, 0)
+            self._rows_col.setSpacing(0)
             self._rows_col.setAlignment(Qt.AlignTop)
-            self._scroll.setWidget(self._rows_host)
+            body_row.addWidget(self._rows_host, stretch=1)
+            self._scroll.setWidget(body)
             outer.addWidget(self._scroll, stretch=1)
-
-            self._build_rows()
 
             btns = QHBoxLayout()
             btns.setAlignment(Qt.AlignCenter)
@@ -2668,7 +2741,7 @@ def _make_decimate_gallery_class():
             self._frame.show()
             self._reposition()
             self._frame.raise_()
-            self._render_members()          # initial selection + thumbs
+            self._recluster(int(k_default))          # build rows + tree + select
 
         # -- knob geometry (slider position <-> minimum distance) ----------
 
@@ -2681,44 +2754,58 @@ def _make_decimate_gallery_class():
             frac = (d - self._lo) / (self._hi - self._lo)
             return int(round(1000 * min(1.0, max(0.0, frac))))
 
-        # -- rows (built once; clusters are stable) ------------------------
+        # -- clustering (re-cut the hierarchy at k; rebuild rows + tree) ----
 
-        def _build_rows(self):
-            # Biggest appearance groups first.
-            order = sorted(self._medoids, key=lambda c: -int((self._labels == c).sum()))
-            for c in order:
-                row = QFrame()
-                row.setObjectName("decimate_row")
-                h = QHBoxLayout(row)
-                h.setContentsMargins(8, 6, 8, 6)
-                h.setSpacing(10)
+        def _recluster(self, k):
+            labels, medoids, leaf_order, segments = self._recluster_fn(k)
+            self._labels = np.asarray(labels)
+            self._medoids = {int(c): int(i) for c, i in medoids.items()}
+            self._leaf_order = [int(c) for c in leaf_order]
 
-                chk = QCheckBox()
-                chk.setChecked(True)
-                chk.toggled.connect(lambda _checked, cc=c: self._on_row_toggled(cc))
-                h.addWidget(chk, alignment=Qt.AlignVCenter)
+            while self._rows_col.count():
+                w = self._rows_col.takeAt(0).widget()
+                if w is not None:
+                    w.deleteLater()
+            self._rows = {}
+            for c in self._leaf_order:
+                self._rows[c] = self._make_row(c)
+                self._rows_col.addWidget(self._rows[c]["frame"])
+            self._gutter.set_tree(segments, len(self._leaf_order))
+            self._render_members()
 
-                canon = QLabel()
-                canon.setPixmap(_to_pixmap(self._thumbs[self._medoids[c]], _CANON))
-                canon.setToolTip(f"cluster {c} canonical")
-                h.addWidget(canon, alignment=Qt.AlignVCenter)
+        def _make_row(self, c):
+            row = QFrame()
+            row.setObjectName("decimate_row")
+            row.setFixedHeight(_ROW_H)
+            h = QHBoxLayout(row)
+            h.setContentsMargins(8, 6, 8, 6)
+            h.setSpacing(10)
 
-                count = QLabel("")
-                count.setMinimumWidth(64)
-                count.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-                h.addWidget(count)
+            chk = QCheckBox()
+            chk.setChecked(True)
+            chk.toggled.connect(lambda _checked, cc=c: self._on_row_toggled(cc))
+            h.addWidget(chk, alignment=Qt.AlignVCenter)
 
-                host = QWidget()
-                members = QHBoxLayout(host)
-                members.setContentsMargins(0, 0, 0, 0)
-                members.setSpacing(3)
-                members.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                h.addWidget(host, stretch=1)
+            canon = QLabel()
+            canon.setPixmap(_to_pixmap(self._thumbs[self._medoids[c]], _CANON))
+            canon.setToolTip(f"cluster {c} canonical (nearest the cluster centre)")
+            h.addWidget(canon, alignment=Qt.AlignVCenter)
 
-                self._rows_col.addWidget(row)
-                self._rows[c] = dict(frame=row, check=chk, members=members,
-                                     host=host, count=count)
-                self._style_row(c)
+            count = QLabel("")
+            count.setMinimumWidth(60)
+            count.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            h.addWidget(count)
+
+            host = QWidget()
+            grid = QGridLayout(host)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(3)
+            grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            h.addWidget(host, stretch=1)
+
+            info = dict(frame=row, check=chk, members=grid, host=host, count=count)
+            self._style_row_frame(row, True)
+            return info
 
         # -- selection (cheap: threshold the cached FPS order) -------------
 
@@ -2756,29 +2843,32 @@ def _make_decimate_gallery_class():
         def _render_members(self):
             self._recompute()
             for c, info in self._rows.items():
-                lay = info["members"]
-                while lay.count():
-                    w = lay.takeAt(0).widget()
+                grid = info["members"]
+                while grid.count():
+                    w = grid.takeAt(0).widget()
                     if w is not None:
                         w.deleteLater()
                 members = self._by_cluster.get(c, [])
-                for i in members[:_MEMBER_CAP]:
+                for k, i in enumerate(members[:_MEMBER_CAP]):
                     lbl = QLabel()
                     lbl.setPixmap(_to_pixmap(self._thumbs[int(i)], _MEMBER))
-                    lay.addWidget(lbl)
+                    grid.addWidget(lbl, k // _MEMBER_COLS, k % _MEMBER_COLS)
                 if len(members) > _MEMBER_CAP:
                     more = QLabel(f"+{len(members) - _MEMBER_CAP}")
                     more.setStyleSheet("color: #9fb3c8; font-size: 10pt;")
-                    lay.addWidget(more)
+                    grid.addWidget(more, _MEMBER_ROWS - 1, _MEMBER_COLS)
                 info["count"].setText(f"{1 + len(members)} kept")
 
         # -- keep/drop a whole appearance group ----------------------------
 
-        def _style_row(self, c):
-            kept = self._rows[c]["check"].isChecked()
-            self._rows[c]["frame"].setStyleSheet(
+        def _style_row_frame(self, row, kept):
+            row.setStyleSheet(
                 "#decimate_row { background-color: rgba(255,255,255,%d); "
                 "border-radius: 6px; }" % (16 if kept else 4))
+
+        def _style_row(self, c):
+            kept = self._rows[c]["check"].isChecked()
+            self._style_row_frame(self._rows[c]["frame"], kept)
             self._rows[c]["host"].setEnabled(kept)
             self._rows[c]["count"].setEnabled(kept)
 
