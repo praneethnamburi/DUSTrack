@@ -15,27 +15,26 @@ from ._overlays import _make_decimate_gallery_class, _make_source_selection_clas
 
 
 def prompt_source_selection(qt_window, *, layer_names, current_layer,
-                            across_enabled=False):
+                            has_project):
     """Ask WHAT the diverse selection reads before the embed pass runs.
 
     Args:
         qt_window: The DUSTrack QMainWindow (overlay parent).
         layer_names: Every annotation-layer name (the "pick a layer" dropdown).
-        current_layer: The active layer's name (the default source).
-        across_enabled: Whether the "across all videos" scope is offered yet
-            (the single-video case ships first; this stays ``False`` until the
-            multi-video generator lands).
+        current_layer: The active layer's name (the this-video default source).
+        has_project: Whether a DLC project is loaded -- gates the across-videos
+            "labeled data" source (labeled data lives in the project).
 
     Returns:
-        ``(layer_name, scope)`` on Continue -- ``scope`` is ``"video"`` or
-        ``"across"`` -- or ``None`` on Cancel.
+        A dict on Continue -- ``{"scope": "video", "layer": name}`` or
+        ``{"scope": "across", "sources": [...]}`` -- or ``None`` on Cancel.
     """
     Dialog = _make_source_selection_class()
     return Dialog(
         qt_window,
         layer_names=layer_names,
         current_layer=current_layer,
-        across_enabled=across_enabled,
+        has_project=has_project,
     ).exec_()
 
 

@@ -4678,20 +4678,22 @@ class DUSTrack(VideoBrowser):
         self.update()
 
     def select_diverse_frames_workflow(self, event=None, *args, **kwargs) -> None:
-        """Embed one annotation layer's fully-labeled frames, farthest-point
-        select a diverse subset, review it in a gallery, and write the picks as
-        a pruned annotation layer in this video.
+        """Pick a source, embed it, review a diverse subset in the cluster
+        gallery, and write the picks.
 
         The DINOv3-feature variant of decimation (spec roadmap #1). The reusable
-        embed + select machinery lives in :mod:`dustrack.imagesimilarity`; this
-        method only supplies the frame set -- a *generator* chosen in the source
-        modal (here one video's annotation layer; the labeled-data-across-videos
-        and blip generators feed the same modal for the multi-video case) -- and
-        consumes the picks (a pruned layer here; a new project next). **No DLC
-        project is required**: it reads the live layer and decodes frames from
-        the open video. The embed runs off-thread under a ProgressOverlay; the
-        review modal then re-selects over the cached embeddings without
-        re-embedding.
+        embed + cluster + select machinery lives in
+        :mod:`dustrack.imagesimilarity` and the review modal; this method only
+        chooses a *generator* + a *consumer* from the source modal and hands
+        both to :meth:`_run_diverse_review`:
+
+        - **this video** (no DLC project needed): one annotation layer's
+          fully-labeled frames, decoded from the open video -> a pruned
+          ``<layer>_diverse`` layer.
+        - **across all videos** (needs a project): the union of chosen
+          project-wide sources (labeled data now; blips + low-confidence next),
+          read from ``labeled-data/`` PNGs -> a pruned ``labeled-data`` tree that
+          seeds a new project.
         """
         from . import _decimate_modal
 
@@ -4706,45 +4708,86 @@ class DUSTrack(VideoBrowser):
             qt_window,
             layer_names=list(self.annotations.names),
             current_layer=self.ann.name,
-            across_enabled=False,         # single-video first; multi-video next
+            has_project=self._dlcproject is not None,
         )
         if choice is None:
             return
-        layer_name, scope = choice
-        if scope == "across":
-            print("Across-videos diverse selection isn't wired yet -- run it "
-                  "per video for now.")
+
+        if choice["scope"] == "across":
+            self._diverse_across_videos(qt_window, choice.get("sources", []))
             return
 
+        layer_name = choice["layer"]
         entries = self._gather_frames_from_layer(layer_name)  # (frame, {lbl:[x,y]})
         if len(entries) < 8:
             print(f"Diverse selection needs >= 8 fully-labeled frames; layer "
                   f"{layer_name!r} has {len(entries)}.")
             return
 
+        def decode(entry):
+            frame = self.data[entry[0]]
+            arr = np.asarray(
+                frame.asnumpy() if hasattr(frame, "asnumpy") else frame)
+            return arr if arr.ndim == 2 else cv.cvtColor(arr, cv.COLOR_RGB2GRAY)
+
+        self._run_diverse_review(
+            qt_window,
+            entries=entries,
+            load_image=decode,
+            materialize=lambda kept: self._materialize_pruned_layer(layer_name, kept),
+            phase_label=f"Embedding {layer_name} frames (DINO)",
+        )
+
+    def _diverse_across_videos(self, qt_window, sources) -> None:
+        """The across-videos branch: union the chosen project-wide sources,
+        embed, review, and write a pruned ``labeled-data`` tree (the training
+        feed for a new project). Labeled data is wired; blips + low-confidence
+        (from the autorefine machinery) are the next sources on this path.
+        """
+        if "labeled_data" not in sources:
+            print("Across-videos selection: tick at least one source "
+                  "(labeled data). Blips + low-confidence are coming soon.")
+            return
+        if self._dlcproject is None:
+            print("Across-videos labeled data needs a DLC project -- create or "
+                  "open one first.")
+            return
+        entries = self._gather_labeled_data()          # (png, video, {bp:[x,y]})
+        if len(entries) < 8:
+            print(f"Across-videos diverse selection needs >= 8 labeled frames; "
+                  f"the project's labeled data has {len(entries)}.")
+            return
+
+        self._run_diverse_review(
+            qt_window,
+            entries=entries,
+            load_image=lambda e: cv.imread(str(e[0]), cv.IMREAD_GRAYSCALE),
+            materialize=self._write_pruned_labeled_data,
+            phase_label="Embedding labeled data across videos (DINO)",
+        )
+
+    def _run_diverse_review(self, qt_window, *, entries, load_image, materialize,
+                            phase_label) -> None:
+        """Shared embed -> cluster -> review -> materialize pass for both the
+        single-video and across-videos sources. ``entries`` is an opaque list;
+        ``load_image(entry)`` -> a gray frame to embed; ``materialize(kept)``
+        consumes the confirmed ``entries`` subset. Everything between (DINOv3
+        embed, one agglomerative hierarchy, the farthest-point order + capture
+        radii, the cluster gallery) is source-agnostic and runs off-thread.
+        """
+        from . import _decimate_modal
+
         def work():
             from dustrack import imagesimilarity as ims
 
-            imgs = []
-            for f, _ in entries:
-                frame = self.data[f]
-                arr = np.asarray(
-                    frame.asnumpy() if hasattr(frame, "asnumpy") else frame)
-                gray = arr if arr.ndim == 2 else cv.cvtColor(arr, cv.COLOR_RGB2GRAY)
-                imgs.append(gray)
-            print(f"Embedding {len(imgs)} frames from {layer_name!r} with "
-                  f"{ims.ACTIVE_MODEL} ...")
+            imgs = [load_image(e) for e in entries]
+            print(f"Embedding {len(imgs)} frames with {ims.ACTIVE_MODEL} ...")
             feats = ims.dino_embed(imgs, normalize=True)
             thumbs = [self._frame_thumbnail(im) for im in imgs]
-
-            # One agglomerative hierarchy over the frames (so the Clusters knob
-            # is a cheap re-cut + the tree organizes the rows), plus the
-            # farthest-point order + capture radii (so the min-distance knob
-            # thresholds a prefix). Both computed once, off-thread.
             n = len(feats)
             linkage = ims.build_linkage(feats)
-            cap = min(n, 512)
-            order, radii = ims.farthest_point_sample(feats, cap, return_radii=True)
+            order, radii = ims.farthest_point_sample(
+                feats, min(n, 512), return_radii=True)
             return feats, thumbs, linkage, order, radii
 
         def on_success(res):
@@ -4758,20 +4801,17 @@ class DUSTrack(VideoBrowser):
                 medoids = ims.cluster_medoids(feats, labels)
                 med_feats = np.stack([feats[medoids[c]] for c in sorted(medoids)])
                 leaf_pos, segments = ims.medoid_dendrogram(med_feats)
-                by_pos = sorted(medoids)                    # cluster id at each medoid row
+                by_pos = sorted(medoids)                    # cluster id per medoid row
                 leaf_order = [by_pos[p] for p in leaf_pos]  # cluster ids in tree order
                 return labels, medoids, leaf_order, segments
 
             def select_fn(min_dist):
-                # No floor here: the modal always keeps each kept cluster's
-                # medoid (canonical) on confirm, so per-cluster coverage is
-                # guaranteed regardless of k -- this stays purely the global
-                # "how diverse must two kept frames be" knob.
+                # No floor: the modal always keeps each kept cluster's medoid on
+                # confirm, so this stays purely the global diversity knob.
                 return ims.select_within_radius(radii, min_dist, order=order)
 
             k_hi = int(min(40, max(2, n // 8)))
             k_default = int(np.clip(round(np.sqrt(n / 4.0)), 6, min(20, k_hi)))
-
             finite = radii[np.isfinite(radii)]
             lo = float(finite.min()) if len(finite) else 0.0
             hi = float(finite.max()) if len(finite) else 1.0
@@ -4793,14 +4833,14 @@ class DUSTrack(VideoBrowser):
             )
             if picks is None:
                 return
-            self._materialize_pruned_layer(layer_name, [entries[i] for i in picks])
+            materialize([entries[i] for i in picks])
 
         self._run_with_overlay(
             qt_window,
             work_fn=work,
             on_success=on_success,
             title="Selecting diverse frames",
-            initial_phase=f"Embedding {layer_name} frames (DINO)",
+            initial_phase=phase_label,
             success_summary="Embedded + clustered -- review the selection.",
         )
 

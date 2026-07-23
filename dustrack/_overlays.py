@@ -2920,16 +2920,18 @@ def _make_decimate_gallery_class():
 def _make_source_selection_class():
     """Build the diverse-selection *source* modal lazily (qtpy on demand).
 
-    Pops up before the embed pass to pick WHAT is read: which annotation layer
-    (the current one by default, or one chosen from a dropdown), and whether to
-    run for this video or across every video in the project. ``exec_()`` returns
-    ``(layer_name, scope)`` on Continue (``scope`` is ``"video"`` or
-    ``"across"``), ``None`` on Cancel.
+    Pops up before the embed pass to pick WHAT is read. Scope is the primary
+    choice: **this video** (one annotation layer -- the current one, or one
+    picked from a dropdown) or **across all videos** (a union of project-wide
+    sources chosen with checkboxes: labeled data, and -- soon -- blips +
+    low-confidence frames from the autorefine machinery). ``exec_()`` returns a
+    dict on Continue -- ``{"scope": "video", "layer": name}`` or
+    ``{"scope": "across", "sources": [...]}`` -- or ``None`` on Cancel.
     """
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtWidgets import (
-        QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-        QRadioButton, QVBoxLayout, QWidget,
+        QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
+        QPushButton, QRadioButton, QVBoxLayout, QWidget,
     )
 
     _PRIMARY = (
@@ -2943,7 +2945,7 @@ def _make_source_selection_class():
     )
 
     class SourceSelectionDialog(QObject):
-        def __init__(self, main_window, *, layer_names, current_layer, across_enabled):
+        def __init__(self, main_window, *, layer_names, current_layer, has_project):
             super().__init__(main_window)
             self._mw = main_window
             self._current_layer = current_layer
@@ -2961,9 +2963,10 @@ def _make_source_selection_class():
                 "  font-weight: bold; }"
                 "QComboBox { font-size: 11pt; }"
                 "QRadioButton { color: white; font-size: 11pt; }"
-                # Native checked dot is invisible on this dark overlay; render
-                # a white-bordered circle filled primary-blue when checked
-                # (matches the training modal + the Continue button).
+                "QCheckBox { color: white; font-size: 11pt; }"
+                # Native checked mark is invisible on this dark overlay; render
+                # a white-bordered indicator filled primary-blue when checked
+                # (circle for radios, square for checkboxes).
                 "QRadioButton::indicator { width: 14px; height: 14px; }"
                 "QRadioButton::indicator:unchecked { "
                 "  background-color: transparent; border: 2px solid white; "
@@ -2971,13 +2974,23 @@ def _make_source_selection_class():
                 "QRadioButton::indicator:checked { "
                 "  background-color: #3a86ff; border: 2px solid white; "
                 "  border-radius: 8px; }"
-                "QRadioButton:disabled { color: #777777; }"
+                "QRadioButton:disabled, QCheckBox:disabled { color: #777777; }"
                 "QRadioButton::indicator:disabled { "
                 "  background-color: transparent; border: 2px solid #666666; "
                 "  border-radius: 8px; }"
                 "QRadioButton::indicator:checked:disabled { "
                 "  background-color: #4a5a7a; border: 2px solid #666666; "
-                "  border-radius: 8px; }")
+                "  border-radius: 8px; }"
+                "QCheckBox::indicator { width: 15px; height: 15px; }"
+                "QCheckBox::indicator:unchecked { "
+                "  background-color: transparent; border: 2px solid white; "
+                "  border-radius: 3px; }"
+                "QCheckBox::indicator:checked { "
+                "  background-color: #3a86ff; border: 2px solid white; "
+                "  border-radius: 3px; }"
+                "QCheckBox::indicator:disabled { "
+                "  background-color: transparent; border: 2px solid #666666; "
+                "  border-radius: 3px; }")
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
             outer = QVBoxLayout(self._frame)
@@ -2989,44 +3002,43 @@ def _make_source_selection_class():
             outer.addWidget(title)
 
             content = QWidget()
-            content.setMaximumWidth(560)
+            content.setMaximumWidth(580)
             col = QVBoxLayout(content)
             col.setSpacing(8)
 
             # 1) SCOPE -- the primary decision: it governs which sources are
-            #    even available (the "read from" options below are the
-            #    this-video sources; across-videos will swap in a multi-source
-            #    picker: labeled-data + blips + low-confidence frames).
+            #    even available (this-video reads one layer; across-videos reads
+            #    a union of project-wide sources).
             scope_lbl = QLabel("SCOPE")
             scope_lbl.setObjectName("dustrack_section")
             col.addWidget(scope_lbl)
             self._scope_group = QButtonGroup(self._frame)
             self._this_radio = QRadioButton("This video")
             self._this_radio.setChecked(True)
+            self._this_radio.toggled.connect(self._on_scope_changed)
             self._scope_group.addButton(self._this_radio)
             col.addWidget(self._this_radio)
             self._across_radio = QRadioButton("Across all videos in the project")
-            self._across_radio.setEnabled(across_enabled)
-            if not across_enabled:
-                self._across_radio.setToolTip("Coming soon — the single-video "
-                                              "case ships first; across-videos "
-                                              "adds a multi-source picker.")
+            self._across_radio.toggled.connect(self._on_scope_changed)
             self._scope_group.addButton(self._across_radio)
             col.addWidget(self._across_radio)
 
             col.addSpacing(12)
 
-            # 2) READ FROM -- the source WITHIN the chosen scope. For "this
-            #    video" that's one annotation layer (current, or picked).
-            read_lbl = QLabel("READ FROM  ·  this video")
-            read_lbl.setObjectName("dustrack_section")
-            col.addWidget(read_lbl)
+            self._read_lbl = QLabel("READ FROM  ·  this video")
+            self._read_lbl.setObjectName("dustrack_section")
+            col.addWidget(self._read_lbl)
+
+            # 2a) this-video source: one annotation layer (current, or picked).
+            self._video_src = QWidget()
+            vcol = QVBoxLayout(self._video_src)
+            vcol.setContentsMargins(0, 0, 0, 0)
+            vcol.setSpacing(6)
             self._layer_group = QButtonGroup(self._frame)
             self._current_radio = QRadioButton(f"Current layer  ({current_layer})")
             self._current_radio.setChecked(True)
             self._layer_group.addButton(self._current_radio)
-            col.addWidget(self._current_radio)
-
+            vcol.addWidget(self._current_radio)
             pick_row = QHBoxLayout()
             self._pick_radio = QRadioButton("Layer:")
             self._layer_group.addButton(self._pick_radio)
@@ -3036,7 +3048,36 @@ def _make_source_selection_class():
             self._pick_radio.toggled.connect(self._combo.setEnabled)
             pick_row.addWidget(self._pick_radio)
             pick_row.addWidget(self._combo, stretch=1)
-            col.addLayout(pick_row)
+            vcol.addLayout(pick_row)
+            col.addWidget(self._video_src)
+
+            # 2b) across-videos source: a union of project-wide sources. Labeled
+            #     data needs a DLC project; blips + low-confidence come from the
+            #     autorefine machinery and aren't wired yet.
+            self._across_src = QWidget()
+            acol = QVBoxLayout(self._across_src)
+            acol.setContentsMargins(0, 0, 0, 0)
+            acol.setSpacing(6)
+            self._src_labeled = QCheckBox("Labeled data — every video in the project")
+            self._src_labeled.setChecked(has_project)
+            self._src_labeled.setEnabled(has_project)
+            if not has_project:
+                self._src_labeled.setToolTip(
+                    "Needs a DLC project — labeled data lives under its "
+                    "labeled-data/ folder. Create/open a project first.")
+            acol.addWidget(self._src_labeled)
+            self._src_blips = QCheckBox("Blips (confident-wrong frames) — coming soon")
+            self._src_blips.setEnabled(False)
+            self._src_blips.setToolTip("From the autorefine blip detector — not "
+                                       "wired into this picker yet.")
+            acol.addWidget(self._src_blips)
+            self._src_lowconf = QCheckBox("Low-confidence frames — coming soon")
+            self._src_lowconf.setEnabled(False)
+            self._src_lowconf.setToolTip("From the autorefine likelihood "
+                                         "detector — not wired in yet.")
+            acol.addWidget(self._src_lowconf)
+            self._across_src.setVisible(False)
+            col.addWidget(self._across_src)
 
             btn_row = QHBoxLayout()
             btn_row.setAlignment(Qt.AlignCenter)
@@ -3053,16 +3094,30 @@ def _make_source_selection_class():
             outer.addWidget(content, alignment=Qt.AlignCenter)
             outer.addStretch(1)
 
+            self._on_scope_changed()          # establish initial section visibility
+
             main_window.installEventFilter(self)
             self._frame.show()
             self._reposition()
             self._frame.raise_()
 
+        def _on_scope_changed(self, *_):
+            across = self._across_radio.isChecked()
+            self._read_lbl.setText("READ FROM  ·  across all videos"
+                                   if across else "READ FROM  ·  this video")
+            self._video_src.setVisible(not across)
+            self._across_src.setVisible(across)
+
         def _on_ok(self):
-            layer = (self._current_layer if self._current_radio.isChecked()
-                     else self._combo.currentText())
-            scope = "across" if self._across_radio.isChecked() else "video"
-            self._result = (layer, scope)
+            if self._across_radio.isChecked():
+                sources = []
+                if self._src_labeled.isChecked():
+                    sources.append("labeled_data")
+                self._result = {"scope": "across", "sources": sources}
+            else:
+                layer = (self._current_layer if self._current_radio.isChecked()
+                         else self._combo.currentText())
+                self._result = {"scope": "video", "layer": layer}
             self._dismiss()
             self._loop.quit()
 
