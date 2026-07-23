@@ -4646,34 +4646,39 @@ class DUSTrack(VideoBrowser):
         self.update()
 
     def select_diverse_frames_workflow(self, event=None, *args, **kwargs) -> None:
-        """Embed the annotated frames, farthest-point-select a diverse subset,
-        review it in a gallery, and materialize it as a pruned layer.
+        """Embed the project's labeled data, farthest-point-select a diverse
+        subset across *all* its videos, review it in a gallery, and write the
+        pruned labeled data (the training feed of a new project).
 
         The DINOv3-feature variant of decimation (spec roadmap #1): the
         reusable embed + cluster + select machinery lives in
-        :mod:`dustrack.imagesimilarity`; this only supplies the frame set (the
-        active layer's completed frames -- a *generator* that other sources can
-        later replace) and consumes the picks (a pruned layer here; a new
-        project via a fresh instance next). The embed runs off-thread under a
-        ProgressOverlay; the review modal then re-selects over the cached
-        embeddings without re-embedding.
+        :mod:`dustrack.imagesimilarity`; this supplies the frame set (the DLC
+        project's labeled data -- a *generator* other sources can replace) and
+        consumes the picks (a pruned ``labeled-data`` tree here; a new project
+        launched in a fresh instance next). The labeled frames are already
+        extracted as PNGs, so no video decode -- and it spans every video, so a
+        redundant appearance repeated across the series is thinned once. The
+        embed runs off-thread under a ProgressOverlay; the review modal then
+        re-selects over the cached embeddings without re-embedding.
         """
         from . import _decimate_modal
 
         qt_window = self._find_qt_window()
-        frames, meta = self._gather_frames_for_selection()
-        if len(frames) < 8:
-            print(
-                f"Diverse selection needs >= 8 completed frames; "
-                f"found {len(frames)} on layer {self.ann.name!r}."
-            )
+        if self._dlcproject is None:
+            print("Diverse selection reads the project's labeled data -- "
+                  "load a DLC project first.")
+            return
+        entries = self._gather_labeled_data()          # (png, video, {bp: [x,y]})
+        if len(entries) < 8:
+            print(f"Diverse selection needs >= 8 labeled frames; "
+                  f"found {len(entries)} in the project's labeled data.")
             return
 
         def work():
             from dustrack import imagesimilarity as ims
 
-            imgs = [np.asarray(self.data[f]) for f in frames]
-            print(f"Embedding {len(imgs)} frames with {ims.ACTIVE_MODEL} ...")
+            imgs = [cv.imread(str(png), cv.IMREAD_GRAYSCALE) for png, _, _ in entries]
+            print(f"Embedding {len(imgs)} labeled frames with {ims.ACTIVE_MODEL} ...")
             feats = ims.dino_embed(imgs, normalize=True)
             thumbs = [self._frame_thumbnail(im) for im in imgs]
             return feats, thumbs
@@ -4689,55 +4694,63 @@ class DUSTrack(VideoBrowser):
 
             picks = _decimate_modal.prompt_decimate_gallery(
                 qt_window,
-                total=len(frames),
+                total=len(entries),
                 thumbs=thumbs,
                 select_fn=select_fn,
-                default_count=max(1, len(frames) // 2),
+                default_count=max(1, len(entries) // 2),
             )
             if picks is None:
                 return
-            self._materialize_pruned_layer(meta, [frames[i] for i in picks])
+            self._write_pruned_labeled_data([entries[i] for i in picks])
 
         self._run_with_overlay(
             qt_window,
             work_fn=work,
             on_success=on_success,
             title="Selecting diverse frames",
-            initial_phase="Embedding frames (DINO)",
+            initial_phase="Embedding labeled frames (DINO)",
             success_summary="Embedded -- review the selection.",
         )
 
-    def _gather_frames_for_selection(self):
-        """Completed frames of the active layer + their per-label positions.
+    def _gather_labeled_data(self):
+        """Every labeled frame across the loaded project's labeled data.
 
-        The frame-set *generator* for the diverse-selection machinery, kept
-        separate from it so other sources (a blip set, a series of videos) can
-        feed the same modal later. "Completed" uses the same required-label
-        rule as the Train preflight (:func:`_preflight.scan_incomplete_frames`).
+        The frame-set *generator*, kept separate from the selection engine so
+        other sources (a blip set, the active layer for a single-video
+        decimate) can feed the same modal. Returns ``(png_path, video_stem,
+        {bodypart: [x, y]})`` per labeled frame, read straight from each
+        video's ``CollectedData_<scorer>.csv`` + its ``img*.png``.
         """
-        labels = list(self.ann.labels)
-        target_labels = None
-        if self._dlcproject is not None:
-            bodyparts = self._dlcproject.config.get("bodyparts") or []
-            if bodyparts:
-                target_labels = _dlc_bodyparts_to_layer_labels(bodyparts)
-        incomplete = set(
-            _preflight.scan_incomplete_frames(
-                self.ann.data, target_labels=target_labels)
-        )
-        all_frames = sorted(
-            {f for label in labels for f in self.ann.get_frames(label)}
-        )
-        complete = [f for f in all_frames if f not in incomplete]
-        meta = {
-            f: {label: self.ann.data[label][f]
-                for label in labels if f in self.ann.data[label]}
-            for f in complete
-        }
-        return complete, meta
+        import pandas as pd
+
+        proj = self._dlcproject
+        labels_dir = Path(proj.paths["labels"])
+        scorer = proj.config["scorer"]
+        entries = []
+        for vdir in sorted(p for p in labels_dir.iterdir() if p.is_dir()):
+            csv = vdir / f"CollectedData_{scorer}.csv"
+            if not csv.exists():
+                continue
+            df = pd.read_csv(csv, header=[0, 1, 2])
+            img_names = df.iloc[:, 2].astype(str)
+            body_cols = list(df.columns[3:])
+            bodyparts = list(dict.fromkeys(c[1] for c in body_cols))
+            for i, img in enumerate(img_names):
+                png = vdir / img
+                if not png.exists():
+                    continue
+                labels = {}
+                for bp in bodyparts:
+                    x = df[(scorer, bp, "x")].iloc[i]
+                    y = df[(scorer, bp, "y")].iloc[i]
+                    if pd.notna(x) and pd.notna(y):
+                        labels[bp] = [float(x), float(y)]
+                if labels:
+                    entries.append((png, vdir.name, labels))
+        return entries
 
     def _frame_thumbnail(self, im, size: int = 150):
-        """A small ``uint8`` gray thumbnail of a decoded frame, for the gallery."""
+        """A small ``uint8`` gray thumbnail of a frame image, for the gallery."""
         a = np.asarray(im)
         gray = a if a.ndim == 2 else cv.cvtColor(a, cv.COLOR_RGB2GRAY)
         h, w = gray.shape[:2]
@@ -4745,33 +4758,48 @@ class DUSTrack(VideoBrowser):
         out = cv.resize(gray, (max(1, int(w * scale)), max(1, int(h * scale))))
         return out.astype(np.uint8)
 
-    def _materialize_pruned_layer(self, meta, kept_frames) -> None:
-        """Write the selected frames' labels as a new manual layer and adopt it.
-
-        Named ``<source>_decimated`` -- deliberately *not* starting with
-        ``dlc`` so it feeds DLC training -- with the dense source kept visible
-        as an overlay QA reference.
+    def _write_pruned_labeled_data(self, kept_entries):
+        """Write the selected frames as a fresh ``labeled-data`` tree beside the
+        project (``<project>_decimated/labeled-data/``): per video, the pruned
+        ``CollectedData`` + hard-linked (copy-fallback) PNGs. That tree is the
+        training feed of the new project the next step creates + launches; kept
+        separate so the source project stays untouched as the QA reference.
         """
-        from .annotations import VideoAnnotation
-        from ._layer_names import get_fname_annotations
+        import shutil
+        import pandas as pd
 
-        source = self.ann.name
-        new_name = f"{source}_decimated"
-        labels = list(self.ann.labels)
-        data = {label: {} for label in labels}
-        for f in kept_frames:
-            for label, xy in meta[f].items():
-                data[label][int(f)] = xy
-        fname = get_fname_annotations(self.fname, new_name)
-        ann = VideoAnnotation(
-            fname=fname, vname=self.fname, n_labels=len(labels),
-            preloaded_json=data, video=self.data,
-        )
-        ann.save()
-        self._adopt_layer(fname, set_active=True, set_overlay=source)
-        self.update()
-        print(f"Diverse selection: kept {len(kept_frames)} frames "
-              f"-> layer {new_name!r}.")
+        proj = self._dlcproject
+        scorer = proj.config["scorer"]
+        out_root = Path(proj.config["project_path"] + "_decimated") / "labeled-data"
+        by_video: dict = {}
+        for png, video, labels in kept_entries:
+            by_video.setdefault(video, []).append((png, labels))
+
+        n_written = 0
+        for video, items in by_video.items():
+            vout = out_root / video
+            vout.mkdir(parents=True, exist_ok=True)
+            bodyparts = list(dict.fromkeys(bp for _, lbls in items for bp in lbls))
+            rows, index = [], []
+            for png, labels in items:
+                for png_src, lbls in [(png, labels)]:
+                    dst = vout / png_src.name
+                    if not dst.exists():
+                        try:
+                            os.link(png_src, dst)
+                        except OSError:
+                            shutil.copy2(png_src, dst)
+                    rows.append([c for bp in bodyparts for c in labels.get(bp, [np.nan, np.nan])])
+                    index.append(("labeled-data", video, png_src.name))
+                    n_written += 1
+            cols = pd.MultiIndex.from_product(
+                [[scorer], bodyparts, ["x", "y"]],
+                names=["scorer", "bodyparts", "coords"])
+            out = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(index), columns=cols)
+            out.to_csv(vout / f"CollectedData_{scorer}.csv")
+            out.to_hdf(vout / f"CollectedData_{scorer}.h5", key="df_with_missing", mode="w")
+        print(f"Diverse selection: kept {n_written} frames across "
+              f"{len(by_video)} video(s) -> {out_root}")
 
     def decimate_annotations_in_interval(self) -> None:
         """Prune incomplete frames, then drop every other complete frame in the selected interval.
