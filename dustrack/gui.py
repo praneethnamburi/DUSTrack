@@ -5197,49 +5197,6 @@ class DUSTrack(VideoBrowser):
         out = cv.resize(gray, (max(1, int(w * scale)), max(1, int(h * scale))))
         return out.astype(np.uint8)
 
-    def _write_pruned_labeled_data(self, kept_entries):
-        """Write the selected frames as a fresh ``labeled-data`` tree beside the
-        project (``<project>_decimated/labeled-data/``): per video, the pruned
-        ``CollectedData`` + hard-linked (copy-fallback) PNGs. That tree is the
-        training feed of the new project the next step creates + launches; kept
-        separate so the source project stays untouched as the QA reference.
-        """
-        import shutil
-        import pandas as pd
-
-        proj = self._dlcproject
-        scorer = proj.config["scorer"]
-        out_root = Path(proj.config["project_path"] + "_decimated") / "labeled-data"
-        by_video: dict = {}
-        for png, video, labels in kept_entries:
-            by_video.setdefault(video, []).append((png, labels))
-
-        n_written = 0
-        for video, items in by_video.items():
-            vout = out_root / video
-            vout.mkdir(parents=True, exist_ok=True)
-            bodyparts = list(dict.fromkeys(bp for _, lbls in items for bp in lbls))
-            rows, index = [], []
-            for png, labels in items:
-                for png_src, lbls in [(png, labels)]:
-                    dst = vout / png_src.name
-                    if not dst.exists():
-                        try:
-                            os.link(png_src, dst)
-                        except OSError:
-                            shutil.copy2(png_src, dst)
-                    rows.append([c for bp in bodyparts for c in labels.get(bp, [np.nan, np.nan])])
-                    index.append(("labeled-data", video, png_src.name))
-                    n_written += 1
-            cols = pd.MultiIndex.from_product(
-                [[scorer], bodyparts, ["x", "y"]],
-                names=["scorer", "bodyparts", "coords"])
-            out = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(index), columns=cols)
-            out.to_csv(vout / f"CollectedData_{scorer}.csv")
-            out.to_hdf(vout / f"CollectedData_{scorer}.h5", key="df_with_missing", mode="w")
-        print(f"Diverse selection: kept {n_written} frames across "
-              f"{len(by_video)} video(s) -> {out_root}")
-
     def decimate_annotations_in_interval(self) -> None:
         """Prune incomplete frames, then drop every other complete frame in the selected interval.
 
