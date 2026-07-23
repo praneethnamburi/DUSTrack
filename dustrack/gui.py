@@ -94,20 +94,21 @@ from .seed import import_seed_bundle_into_project
 
 def _dino_backend_available() -> bool:
     """Whether :func:`dustrack.imagesimilarity.dino_embed` can actually embed in
-    this environment -- torch importable AND a weights source reachable
-    (Corazon's local DINOv3-B, else transformers for DINOv2). Gates the "Select
-    diverse frames" button so every other DUSTrack feature stays usable where
-    the optional, heavy DINO stack isn't installed.
+    this environment: the local DINOv3-B path is fully loadable (weights + the
+    hubconf's torch/torchmetrics/termcolor), OR the transformers/DINOv2 fallback
+    is installed. Mirrors ``imagesimilarity.ACTIVE_MODEL``'s own choice via the
+    shared ``local_dinov3_usable`` predicate, so the button and the embed never
+    disagree. Gates the "Select diverse frames" button, leaving every other
+    DUSTrack feature usable where the optional, heavy DINO stack isn't present.
     """
     import importlib.util
 
-    if importlib.util.find_spec("torch") is None:
-        return False
     from . import imagesimilarity as ims
 
-    if os.path.exists(ims.DINOV3_LOCAL_WEIGHTS):
+    if ims.local_dinov3_usable():
         return True
-    return importlib.util.find_spec("transformers") is not None
+    return (importlib.util.find_spec("torch") is not None
+            and importlib.util.find_spec("transformers") is not None)
 
 
 class DUSTrack(VideoBrowser):

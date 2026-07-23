@@ -28,7 +28,8 @@ import os
 import numpy as np
 
 __all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
-           "cluster", "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL"]
+           "cluster", "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL",
+           "local_dinov3_usable"]
 
 #: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
 #: ~21M params, chosen to fit the paper's 8 GB consumer-GPU constraint. It is
@@ -54,12 +55,30 @@ DINOV3_LOCAL_WEIGHTS = os.environ.get(
 #: :func:`dino_embed` routes to the hub loader.
 DINOV3_B_LOCAL = "dinov3:vitb16"
 
+def local_dinov3_usable() -> bool:
+    """Whether the local DINOv3-B path can actually load here: the weights are
+    on disk AND the facebookresearch/dinov3 hubconf's load-time deps are present
+    (``torch`` + ``torchmetrics`` + ``termcolor`` -- the hubconf imports the
+    segmentation stack at load, so the weights alone aren't enough).
+
+    Single source of truth for BOTH :data:`ACTIVE_MODEL` and the GUI's button
+    gate, so they never disagree: a weights-only environment must fall back to
+    DINOv2, not enable the button and then crash on the hubconf's torchmetrics
+    import (the failure mode this predicate closes).
+    """
+    import importlib.util
+
+    return os.path.exists(DINOV3_LOCAL_WEIGHTS) and all(
+        importlib.util.find_spec(m) is not None
+        for m in ("torch", "torchmetrics", "termcolor"))
+
+
 #: The model :func:`dino_embed` uses when a caller doesn't name one: the local
-#: **DINOv3-B** (the production ultrasound feature space) when its weights are
-#: present, else non-gated **DINOv2-Small**. Resolved once at import from the
-#: weights file's existence, so a set of embeddings has unambiguous provenance
-#: (the two are different variants; the M3 comparison depends on knowing which).
-ACTIVE_MODEL = DINOV3_B_LOCAL if os.path.exists(DINOV3_LOCAL_WEIGHTS) else DINOV2_SMALL
+#: **DINOv3-B** (the production ultrasound feature space) when it's fully
+#: loadable here, else non-gated **DINOv2-Small**. Resolved once at import so a
+#: set of embeddings has unambiguous provenance (the two are different variants;
+#: the M3 comparison depends on knowing which).
+ACTIVE_MODEL = DINOV3_B_LOCAL if local_dinov3_usable() else DINOV2_SMALL
 
 #: (processor, model, device) memoized per model id so a batch job loads once.
 _MODEL_CACHE: dict = {}

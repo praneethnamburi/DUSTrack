@@ -2748,9 +2748,30 @@ def _make_source_selection_class():
             self._frame.setObjectName("dustrack_source_overlay")
             self._frame.setStyleSheet(
                 "#dustrack_source_overlay { background-color: rgba(0,0,0,205); }"
-                "QLabel { color: white; } QRadioButton { color: white; }"
+                "QLabel { color: white; font-size: 11pt; }"
                 "#dustrack_source_title { color: white; font-size: 20pt; "
-                "  font-weight: bold; }")
+                "  font-weight: bold; }"
+                "#dustrack_section { color: #9fb3c8; font-size: 10pt; "
+                "  font-weight: bold; }"
+                "QComboBox { font-size: 11pt; }"
+                "QRadioButton { color: white; font-size: 11pt; }"
+                # Native checked dot is invisible on this dark overlay; render
+                # a white-bordered circle filled primary-blue when checked
+                # (matches the training modal + the Continue button).
+                "QRadioButton::indicator { width: 14px; height: 14px; }"
+                "QRadioButton::indicator:unchecked { "
+                "  background-color: transparent; border: 2px solid white; "
+                "  border-radius: 8px; }"
+                "QRadioButton::indicator:checked { "
+                "  background-color: #3a86ff; border: 2px solid white; "
+                "  border-radius: 8px; }"
+                "QRadioButton:disabled { color: #777777; }"
+                "QRadioButton::indicator:disabled { "
+                "  background-color: transparent; border: 2px solid #666666; "
+                "  border-radius: 8px; }"
+                "QRadioButton::indicator:checked:disabled { "
+                "  background-color: #4a5a7a; border: 2px solid #666666; "
+                "  border-radius: 8px; }")
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
             outer = QVBoxLayout(self._frame)
@@ -2764,9 +2785,36 @@ def _make_source_selection_class():
             content = QWidget()
             content.setMaximumWidth(560)
             col = QVBoxLayout(content)
-            col.setSpacing(10)
+            col.setSpacing(8)
 
-            col.addWidget(QLabel("Read from:"))
+            # 1) SCOPE -- the primary decision: it governs which sources are
+            #    even available (the "read from" options below are the
+            #    this-video sources; across-videos will swap in a multi-source
+            #    picker: labeled-data + blips + low-confidence frames).
+            scope_lbl = QLabel("SCOPE")
+            scope_lbl.setObjectName("dustrack_section")
+            col.addWidget(scope_lbl)
+            self._scope_group = QButtonGroup(self._frame)
+            self._this_radio = QRadioButton("This video")
+            self._this_radio.setChecked(True)
+            self._scope_group.addButton(self._this_radio)
+            col.addWidget(self._this_radio)
+            self._across_radio = QRadioButton("Across all videos in the project")
+            self._across_radio.setEnabled(across_enabled)
+            if not across_enabled:
+                self._across_radio.setToolTip("Coming soon — the single-video "
+                                              "case ships first; across-videos "
+                                              "adds a multi-source picker.")
+            self._scope_group.addButton(self._across_radio)
+            col.addWidget(self._across_radio)
+
+            col.addSpacing(12)
+
+            # 2) READ FROM -- the source WITHIN the chosen scope. For "this
+            #    video" that's one annotation layer (current, or picked).
+            read_lbl = QLabel("READ FROM  ·  this video")
+            read_lbl.setObjectName("dustrack_section")
+            col.addWidget(read_lbl)
             self._layer_group = QButtonGroup(self._frame)
             self._current_radio = QRadioButton(f"Current layer  ({current_layer})")
             self._current_radio.setChecked(True)
@@ -2783,21 +2831,6 @@ def _make_source_selection_class():
             pick_row.addWidget(self._pick_radio)
             pick_row.addWidget(self._combo, stretch=1)
             col.addLayout(pick_row)
-
-            col.addSpacing(6)
-            col.addWidget(QLabel("Scope:"))
-            self._scope_group = QButtonGroup(self._frame)
-            self._this_radio = QRadioButton("This video")
-            self._this_radio.setChecked(True)
-            self._scope_group.addButton(self._this_radio)
-            col.addWidget(self._this_radio)
-            self._across_radio = QRadioButton("Across all videos in the project")
-            self._across_radio.setEnabled(across_enabled)
-            if not across_enabled:
-                self._across_radio.setToolTip("Coming soon — the single-video "
-                                              "case is being finalized first.")
-            self._scope_group.addButton(self._across_radio)
-            col.addWidget(self._across_radio)
 
             btn_row = QHBoxLayout()
             btn_row.setAlignment(Qt.AlignCenter)
