@@ -90,6 +90,10 @@ class TestDinoEmbed:
     """Integration: runs where transformers + the (non-gated) DINOv2 weights
     are available (the full-featured env); skips in CI / the DLC-only env."""
 
+    def test_active_model_is_a_known_default(self):
+        # DINOv2 while DINOv3 access is pending; flip in one place.
+        assert ims.ACTIVE_MODEL in (ims.DINOV2_SMALL, ims.DINOV3_SMALL)
+
     def test_embeds_a_batch(self):
         pytest.importorskip("transformers")
         pytest.importorskip("torch")

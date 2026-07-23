@@ -26,7 +26,7 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["dino_embed", "farthest_point_sample", "knn", "cluster",
-           "DINOV3_SMALL", "DINOV2_SMALL"]
+           "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL"]
 
 #: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
 #: ~21M params, chosen to fit the paper's 8 GB consumer-GPU constraint. It is
@@ -37,6 +37,14 @@ DINOV3_SMALL = "facebook/dinov3-vits16-pretrain-lvd1689m"
 #: Non-gated, same-size (22M), same API drop-in. Use it to run the pipeline
 #: while DINOv3 access is pending -- switching back is one argument.
 DINOV2_SMALL = "facebook/dinov2-small"
+
+#: The model :func:`dino_embed` uses when a caller doesn't name one. It is
+#: **DINOv2 while DINOv3 access is pending** -- flip this one line to
+#: ``DINOV3_SMALL`` the moment access lands. Kept as an explicit constant
+#: rather than a silent try-v3-fall-back-to-v2 so a set of embeddings always
+#: has an unambiguous provenance (v2 and v3 are different variants, and the
+#: general-model M3 comparison depends on knowing which produced it).
+ACTIVE_MODEL = DINOV2_SMALL
 
 #: (processor, model, device) memoized per model id so a batch job loads once.
 _MODEL_CACHE: dict = {}
@@ -75,7 +83,7 @@ def _load(model_id: str, device: str):
 def dino_embed(
     images,
     *,
-    model_id: str = DINOV3_SMALL,
+    model_id: "str | None" = None,
     batch_size: int = 32,
     device: "str | None" = None,
     pool: str = "cls",
@@ -91,13 +99,14 @@ def dino_embed(
 
     ``pool`` is ``"cls"`` (the global class token -- the whole-image
     descriptor decimation and M3 selection want) or ``"mean"`` (mean of the
-    patch tokens). ``model_id`` defaults to the gated :data:`DINOV3_SMALL`;
-    pass :data:`DINOV2_SMALL` to run before access is granted. transformers
-    and torch are imported lazily, so importing this module never requires
-    them (DUSTrack's standalone-import invariant).
+    patch tokens). ``model_id`` defaults to :data:`ACTIVE_MODEL` (DINOv2
+    while DINOv3 access is pending). transformers and torch are imported
+    lazily, so importing this module never requires them (DUSTrack's
+    standalone-import invariant).
     """
     import torch
 
+    model_id = model_id or ACTIVE_MODEL
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     proc, model = _load(model_id, device)
 
