@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["dino_embed", "farthest_point_sample", "knn", "cluster",
-           "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL"]
+__all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
+           "cluster", "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL"]
 
 #: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
 #: ~21M params, chosen to fit the paper's 8 GB consumer-GPU constraint. It is
@@ -128,6 +128,7 @@ def farthest_point_sample(
     n: int,
     *,
     start: "int | None" = 0,
+    preselected=None,
     normalize: bool = True,
     seed: "int | None" = None,
 ) -> np.ndarray:
@@ -143,7 +144,11 @@ def farthest_point_sample(
     ``normalize`` L2-normalizes first, so distance is cosine (the right
     metric for DINOv3 features). ``start`` seeds the first pick; ``None``
     draws it at random from ``seed`` (the rest are deterministic given the
-    first). Returns fewer than ``n`` only if the pool is smaller.
+    first). ``preselected`` (indices already in the set) makes FPS *continue*
+    from them -- the new picks are farthest from everything already chosen,
+    and the returned list includes the preselected up front. This is how a
+    coverage floor or a cluster share feeds back into one global spread.
+    Returns fewer than ``n`` only if the pool is smaller.
     """
     X = np.asarray(features, dtype=float)
     if X.ndim != 2:
@@ -153,12 +158,21 @@ def farthest_point_sample(
         return np.arange(N)
     if normalize:
         X = _l2_normalized(X)
-    if start is None:
-        start = int(np.random.default_rng(seed).integers(N))
 
-    chosen = [int(start)]
-    dist = np.linalg.norm(X - X[start], axis=1)
-    for _ in range(n - 1):
+    if preselected is not None and len(preselected):
+        chosen = list(dict.fromkeys(int(i) for i in preselected))
+        if len(chosen) >= n:
+            return np.array(chosen[:n])
+        dist = np.full(N, np.inf)
+        for p in chosen:
+            dist = np.minimum(dist, np.linalg.norm(X - X[p], axis=1))
+    else:
+        if start is None:
+            start = int(np.random.default_rng(seed).integers(N))
+        chosen = [int(start)]
+        dist = np.linalg.norm(X - X[chosen[0]], axis=1)
+
+    while len(chosen) < n:
         i = int(np.argmax(dist))
         chosen.append(i)
         dist = np.minimum(dist, np.linalg.norm(X - X[i], axis=1))
@@ -215,3 +229,108 @@ def cluster(
             n_clusters=n_clusters, metric="cosine", linkage="average"
         ).fit_predict(X)
     raise ValueError(f"unknown method {method!r}")
+
+
+def _balanced_alloc(sizes: dict, total: int) -> dict:
+    """Split ``total`` across keys as evenly as possible, capped by each
+    key's ``size``; leftover from a small key is redistributed to the rest.
+    (The same equalizing allocation the label-harvest budget uses.)"""
+    alloc = {c: 0 for c in sizes}
+    pool = {c for c, s in sizes.items() if s > 0}
+    remaining = total
+    while pool and remaining > 0:
+        share = max(1, remaining // len(pool))
+        progressed = False
+        for c in sorted(pool):
+            take = min(share, sizes[c] - alloc[c], remaining)
+            if take <= 0:
+                pool.discard(c)
+                continue
+            alloc[c] += take
+            remaining -= take
+            progressed = True
+            if alloc[c] >= sizes[c]:
+                pool.discard(c)
+        if not progressed:
+            break
+    return alloc
+
+
+def _cluster_balanced_fps(X, m, *, exclude, n_clusters, normalize, seed):
+    """Give each appearance cluster an equal share of ``m`` picks (FPS within
+    each), so one dominant look can't swamp the selection."""
+    N = len(X)
+    k = min(N, n_clusters or max(2, min(m, 8)))
+    lab = cluster(X, k, normalize=normalize, seed=seed)
+    avail = {c: [int(i) for i in np.where(lab == c)[0] if i not in exclude]
+             for c in range(k)}
+    alloc = _balanced_alloc({c: len(v) for c, v in avail.items()}, m)
+    picks: list[int] = []
+    for c, take in alloc.items():
+        if take and avail[c]:
+            sub = np.array(avail[c])
+            loc = farthest_point_sample(X[sub], take, normalize=normalize)
+            picks.extend(int(sub[j]) for j in loc)
+    return picks
+
+
+def select_diverse(
+    features,
+    n: int,
+    *,
+    groups=None,
+    min_per_group: int = 0,
+    cluster_balance: bool = False,
+    n_clusters: "int | None" = None,
+    normalize: bool = True,
+    seed: int = 0,
+) -> np.ndarray:
+    """Select ``n`` diverse row indices of ``features`` -- the selection core.
+
+    Fed by any frame-set generator (all labels across iterations, one video's
+    interpolated stretches, a blip set) and routed to any consumer (a new
+    DLC project, a new layer): this function only sees embeddings and returns
+    which rows to keep.
+
+    * **Base** -- farthest-point sampling: appearance spread, which already
+      under-samples dense near-duplicate groups.
+    * **Coverage floor** -- ``groups`` (an array parallel to ``features``,
+      e.g. a participant id per frame) plus ``min_per_group`` guarantees at
+      least that many picks from each group, so the general model never drops
+      a participant entirely even when two participants look alike. Omit it
+      for a single-video decimation.
+    * **Cluster balance** -- ``cluster_balance`` gives each appearance cluster
+      an equal share of the budget (FPS within each) rather than letting FPS
+      alone decide, a stronger guard against one look dominating and against
+      outlier frames stealing the budget.
+
+    The floor is taken first; the remainder fills by continuing the same FPS
+    spread (or the cluster-balanced version) so the two constraints compose.
+    """
+    X = np.asarray(features, dtype=float)
+    N = len(X)
+    if n >= N:
+        return np.arange(N)
+
+    chosen: list[int] = []
+    if groups is not None and min_per_group > 0:
+        groups = np.asarray(groups)
+        for g in np.unique(groups):
+            if len(chosen) >= n:
+                break
+            idx_g = np.where(groups == g)[0]
+            take = min(min_per_group, len(idx_g), n - len(chosen))
+            loc = farthest_point_sample(X[idx_g], take, normalize=normalize)
+            chosen.extend(int(idx_g[j]) for j in loc)
+        chosen = list(dict.fromkeys(chosen))
+
+    remaining = n - len(chosen)
+    if remaining > 0:
+        if cluster_balance:
+            chosen.extend(_cluster_balanced_fps(
+                X, remaining, exclude=set(chosen),
+                n_clusters=n_clusters, normalize=normalize, seed=seed))
+        else:
+            chosen = [int(i) for i in farthest_point_sample(
+                X, n, preselected=chosen or None, normalize=normalize)]
+    return np.array([int(i) for i in chosen[:n]])

@@ -26,6 +26,20 @@ def three_blobs(per=8, d=16, spread=0.15, seed=0):
     return np.concatenate(X), np.array(y)
 
 
+def uneven_blobs(sizes=(20, 5, 5), d=16, spread=0.15, seed=0):
+    """Three blobs of unequal population -- the case where a dominant look
+    would swamp a naive selection."""
+    rng = np.random.default_rng(seed)
+    centers = np.zeros((3, d))
+    for i in range(3):
+        centers[i, i] = 10.0
+    X, y = [], []
+    for c, sz in enumerate(sizes):
+        X.append(centers[c] + rng.normal(0, spread, (sz, d)))
+        y += [c] * sz
+    return np.concatenate(X), np.array(y)
+
+
 class TestFarthestPointSample:
     def test_spreads_across_the_blobs(self):
         X, y = three_blobs()
@@ -46,6 +60,37 @@ class TestFarthestPointSample:
     def test_first_pick_is_the_start(self):
         X, _ = three_blobs()
         assert ims.farthest_point_sample(X, 4, start=7)[0] == 7
+
+    def test_preselected_is_kept_and_continued(self):
+        X, y = three_blobs()
+        pre = [int(np.where(y == 0)[0][0])]          # one frame from blob 0
+        idx = ims.farthest_point_sample(X, 3, preselected=pre)
+        assert idx[0] == pre[0]                       # preselected up front
+        assert len(set(y[idx])) == 3                  # then spreads to the rest
+
+
+class TestSelectDiverse:
+    """The selection core: base FPS, a per-group coverage floor, and optional
+    cluster balancing -- the machinery every frame-set generator feeds."""
+
+    def test_base_is_fps_spread(self):
+        X, y = three_blobs()
+        assert len(set(y[ims.select_diverse(X, 3)])) == 3
+
+    def test_coverage_floor_reaches_every_group(self):
+        X, y = three_blobs(per=8)                     # y = group id
+        idx = ims.select_diverse(X, 8, groups=y, min_per_group=2)
+        assert all(int((y[idx] == g).sum()) >= 2 for g in range(3))
+
+    def test_cluster_balance_evens_a_dominant_group(self):
+        X, y = uneven_blobs((20, 5, 5))               # one look dominates 20:5:5
+        idx = ims.select_diverse(X, 6, cluster_balance=True, n_clusters=3)
+        counts = sorted(int((y[idx] == g).sum()) for g in range(3))
+        assert counts == [2, 2, 2]                    # split evenly, not 6:0:0
+
+    def test_returns_all_when_n_exceeds_pool(self):
+        X, _ = three_blobs(per=2)
+        assert sorted(ims.select_diverse(X, 100)) == list(range(len(X)))
 
 
 class TestKnn:
