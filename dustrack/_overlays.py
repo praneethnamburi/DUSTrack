@@ -2537,22 +2537,25 @@ def _prompt_for_videos(parent=None):
 
 
 def _make_decimate_gallery_class():
-    """Build the diverse-frame selection review modal lazily (qtpy on demand).
+    """Build the cluster-per-row diverse-frame review modal lazily (qtpy on demand).
 
-    A two-stage overlay in the house style (mirrors ``BlipOptionsDialog``):
-    the frames are embedded off-thread *before* this opens, so here the user
-    sets a target count + an auto-balance toggle, clicks Re-select to re-run
-    :func:`dustrack.imagesimilarity.select_diverse` over the cached embeddings
-    (cheap -- no re-embed), and reviews the picks as a thumbnail gallery
-    before committing. ``exec_()`` returns the selected row indices (into the
-    embedded frame set) on confirm, ``None`` on cancel.
+    Frames are embedded + clustered off-thread *before* this opens. Each
+    appearance cluster is one row: its canonical (medoid) shown large, the
+    diverse members kept at the current minimum feature-distance beside it, and
+    a keep checkbox (default on). One knob -- the minimum distance between kept
+    frames -- drives how many survive (data-driven; per-cluster counts vary with
+    each cluster's spread), re-selecting over the cached farthest-point order
+    with no re-embed. A member strip next to its canonical is also the "is the
+    clustering working?" check. Unchecking a row drops that whole appearance
+    group. ``exec_()`` returns the kept frame indices on confirm, ``None`` on
+    cancel.
     """
     import numpy as np
     from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
     from qtpy.QtGui import QImage, QPixmap
     from qtpy.QtWidgets import (
-        QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-        QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+        QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+        QSlider, QVBoxLayout, QWidget,
     )
 
     _PRIMARY = (
@@ -2565,6 +2568,7 @@ def _make_decimate_gallery_class():
         "border: 1px solid #3a3a3a; padding: 6px 24px; font-size: 11pt; } "
         "QPushButton:hover { background-color: #5a5a5a; }"
     )
+    _CANON, _MEMBER, _MEMBER_CAP = 118, 62, 14
 
     def _to_pixmap(arr, size):
         a = np.ascontiguousarray(np.asarray(arr, dtype=np.uint8))
@@ -2577,13 +2581,20 @@ def _make_decimate_gallery_class():
             size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
     class DecimateGalleryDialog(QObject):
-        def __init__(self, main_window, *, total, thumbs, select_fn, default_count):
+        def __init__(self, main_window, *, thumbs, labels, medoids, select_fn,
+                     dmin_lo, dmin_hi, dmin_default, n_frames):
             super().__init__(main_window)
             self._mw = main_window
             self._thumbs = thumbs
+            self._labels = np.asarray(labels)
+            self._medoids = {int(c): int(i) for c, i in medoids.items()}
             self._select_fn = select_fn
+            self._lo, self._hi = float(dmin_lo), float(dmin_hi)
+            self._n_frames = int(n_frames)
+            self._selected = []            # global indices at the current d_min
+            self._by_cluster = {}          # cluster -> [selected member indices, minus medoid]
+            self._rows = {}                # cluster -> {frame,check,members,host,count}
             self._result = None
-            self._picks = np.array([], dtype=int)
             self._loop = QEventLoop()
 
             self._frame = QFrame(main_window)
@@ -2593,31 +2604,35 @@ def _make_decimate_gallery_class():
                 "QLabel { color: white; }"
                 "#dustrack_decimate_title { color: white; font-size: 22pt; "
                 "  font-weight: bold; }"
+                "QCheckBox::indicator { width: 18px; height: 18px; }"
+                "QCheckBox::indicator:unchecked { background-color: transparent; "
+                "  border: 2px solid white; border-radius: 3px; }"
+                "QCheckBox::indicator:checked { background-color: #3a86ff; "
+                "  border: 2px solid white; border-radius: 3px; }"
             )
             self._frame.setFocusPolicy(Qt.StrongFocus)
 
             outer = QVBoxLayout(self._frame)
-            outer.setContentsMargins(40, 24, 40, 24)
+            outer.setContentsMargins(40, 20, 40, 20)
 
             title = QLabel("Select diverse frames for training")
             title.setObjectName("dustrack_decimate_title")
             title.setAlignment(Qt.AlignCenter)
             outer.addWidget(title)
 
+            # One knob: minimum feature distance between kept frames. Left =
+            # smaller distance = more (closer) frames; right = fewer.
             controls = QHBoxLayout()
             controls.setAlignment(Qt.AlignCenter)
-            controls.addWidget(QLabel("Keep"))
-            self._count_spin = QSpinBox()
-            self._count_spin.setRange(1, int(total))
-            self._count_spin.setValue(int(default_count))
-            controls.addWidget(self._count_spin)
-            controls.addWidget(QLabel(f"of {total} frames"))
-            self._balance_chk = QCheckBox("Auto-balance cluster sizes")
-            controls.addWidget(self._balance_chk)
-            self._reselect_btn = QPushButton("Re-select")
-            self._reselect_btn.setStyleSheet(_PRIMARY)
-            self._reselect_btn.clicked.connect(self._reselect)
-            controls.addWidget(self._reselect_btn)
+            controls.addWidget(QLabel("← more frames"))
+            self._slider = QSlider(Qt.Horizontal)
+            self._slider.setRange(0, 1000)
+            self._slider.setFixedWidth(380)
+            self._slider.setValue(self._dmin_to_pos(float(dmin_default)))
+            self._slider.valueChanged.connect(self._on_slider_moved)
+            self._slider.sliderReleased.connect(self._render_members)
+            controls.addWidget(self._slider)
+            controls.addWidget(QLabel("fewer →"))
             outer.addLayout(controls)
 
             self._status = QLabel("")
@@ -2628,11 +2643,14 @@ def _make_decimate_gallery_class():
             self._scroll.setWidgetResizable(True)
             self._scroll.setStyleSheet(
                 "QScrollArea { border: none; background: transparent; }")
-            self._grid_host = QWidget()
-            self._grid = QGridLayout(self._grid_host)
-            self._grid.setSpacing(4)
-            self._scroll.setWidget(self._grid_host)
+            self._rows_host = QWidget()
+            self._rows_col = QVBoxLayout(self._rows_host)
+            self._rows_col.setSpacing(6)
+            self._rows_col.setAlignment(Qt.AlignTop)
+            self._scroll.setWidget(self._rows_host)
             outer.addWidget(self._scroll, stretch=1)
+
+            self._build_rows()
 
             btns = QHBoxLayout()
             btns.setAlignment(Qt.AlignCenter)
@@ -2650,35 +2668,133 @@ def _make_decimate_gallery_class():
             self._frame.show()
             self._reposition()
             self._frame.raise_()
-            self._reselect()
+            self._render_members()          # initial selection + thumbs
 
-        def _reselect(self):
-            count = int(self._count_spin.value())
-            balance = bool(self._balance_chk.isChecked())
+        # -- knob geometry (slider position <-> minimum distance) ----------
+
+        def _pos_to_dmin(self, pos):
+            return self._lo + (self._hi - self._lo) * (pos / 1000.0)
+
+        def _dmin_to_pos(self, d):
+            if self._hi <= self._lo:
+                return 0
+            frac = (d - self._lo) / (self._hi - self._lo)
+            return int(round(1000 * min(1.0, max(0.0, frac))))
+
+        # -- rows (built once; clusters are stable) ------------------------
+
+        def _build_rows(self):
+            # Biggest appearance groups first.
+            order = sorted(self._medoids, key=lambda c: -int((self._labels == c).sum()))
+            for c in order:
+                row = QFrame()
+                row.setObjectName("decimate_row")
+                h = QHBoxLayout(row)
+                h.setContentsMargins(8, 6, 8, 6)
+                h.setSpacing(10)
+
+                chk = QCheckBox()
+                chk.setChecked(True)
+                chk.toggled.connect(lambda _checked, cc=c: self._on_row_toggled(cc))
+                h.addWidget(chk, alignment=Qt.AlignVCenter)
+
+                canon = QLabel()
+                canon.setPixmap(_to_pixmap(self._thumbs[self._medoids[c]], _CANON))
+                canon.setToolTip(f"cluster {c} canonical")
+                h.addWidget(canon, alignment=Qt.AlignVCenter)
+
+                count = QLabel("")
+                count.setMinimumWidth(64)
+                count.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                h.addWidget(count)
+
+                host = QWidget()
+                members = QHBoxLayout(host)
+                members.setContentsMargins(0, 0, 0, 0)
+                members.setSpacing(3)
+                members.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                h.addWidget(host, stretch=1)
+
+                self._rows_col.addWidget(row)
+                self._rows[c] = dict(frame=row, check=chk, members=members,
+                                     host=host, count=count)
+                self._style_row(c)
+
+        # -- selection (cheap: threshold the cached FPS order) -------------
+
+        def _recompute(self):
+            d = self._pos_to_dmin(self._slider.value())
             try:
-                self._picks = np.asarray(self._select_fn(count, balance), dtype=int)
+                self._selected = [int(i) for i in self._select_fn(d)]
             except Exception as exc:  # noqa: BLE001
                 self._status.setText(f"Selection failed: {exc}")
-                return
-            self._status.setText(
-                f"{len(self._picks)} frames selected"
-                + ("  ·  cluster-balanced" if balance else ""))
-            self._render()
+                self._selected = list(self._medoids.values())
+            sel_by_c = {c: [] for c in self._medoids}
+            for i in self._selected:
+                c = int(self._labels[i])
+                if c in sel_by_c and i != self._medoids[c]:
+                    sel_by_c[c].append(i)
+            self._by_cluster = sel_by_c
+            self._update_status(d)
 
-        def _render(self):
-            while self._grid.count():
-                w = self._grid.takeAt(0).widget()
-                if w is not None:
-                    w.deleteLater()
-            cols, thumb = 8, 130
-            for k, idx in enumerate(self._picks):
-                lbl = QLabel()
-                lbl.setPixmap(_to_pixmap(self._thumbs[int(idx)], thumb))
-                lbl.setAlignment(Qt.AlignCenter)
-                self._grid.addWidget(lbl, k // cols, k % cols)
+        def _update_status(self, d=None):
+            if d is None:
+                d = self._pos_to_dmin(self._slider.value())
+            kept = sum(1 + len(m) for c, m in self._by_cluster.items()
+                       if self._rows[c]["check"].isChecked())
+            dropped = sum(1 for c in self._medoids
+                          if not self._rows[c]["check"].isChecked())
+            drop_txt = f"  ·  {dropped} cluster(s) dropped" if dropped else ""
+            self._status.setText(
+                f"{len(self._medoids)} clusters  ·  {kept} of {self._n_frames} "
+                f"frames selected  ·  min distance {d:.3f}{drop_txt}")
+
+        def _on_slider_moved(self, _value):
+            # Live count on drag; thumbs redraw on release (cheap vs pixmaps).
+            self._recompute()
+
+        def _render_members(self):
+            self._recompute()
+            for c, info in self._rows.items():
+                lay = info["members"]
+                while lay.count():
+                    w = lay.takeAt(0).widget()
+                    if w is not None:
+                        w.deleteLater()
+                members = self._by_cluster.get(c, [])
+                for i in members[:_MEMBER_CAP]:
+                    lbl = QLabel()
+                    lbl.setPixmap(_to_pixmap(self._thumbs[int(i)], _MEMBER))
+                    lay.addWidget(lbl)
+                if len(members) > _MEMBER_CAP:
+                    more = QLabel(f"+{len(members) - _MEMBER_CAP}")
+                    more.setStyleSheet("color: #9fb3c8; font-size: 10pt;")
+                    lay.addWidget(more)
+                info["count"].setText(f"{1 + len(members)} kept")
+
+        # -- keep/drop a whole appearance group ----------------------------
+
+        def _style_row(self, c):
+            kept = self._rows[c]["check"].isChecked()
+            self._rows[c]["frame"].setStyleSheet(
+                "#decimate_row { background-color: rgba(255,255,255,%d); "
+                "border-radius: 6px; }" % (16 if kept else 4))
+            self._rows[c]["host"].setEnabled(kept)
+            self._rows[c]["count"].setEnabled(kept)
+
+        def _on_row_toggled(self, c):
+            self._style_row(c)
+            self._update_status()
+
+        # -- lifecycle -----------------------------------------------------
 
         def _on_confirm(self):
-            self._result = [int(i) for i in self._picks]
+            keep = []
+            for c, members in self._by_cluster.items():
+                if self._rows[c]["check"].isChecked():
+                    keep.append(self._medoids[c])
+                    keep.extend(members)
+            self._result = sorted({int(i) for i in keep})
             self._dismiss()
             self._loop.quit()
 

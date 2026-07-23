@@ -4736,23 +4736,47 @@ class DUSTrack(VideoBrowser):
                   f"{ims.ACTIVE_MODEL} ...")
             feats = ims.dino_embed(imgs, normalize=True)
             thumbs = [self._frame_thumbnail(im) for im in imgs]
-            return feats, thumbs
+
+            # Cluster into review rows (K auto), the farthest-point order + its
+            # capture radii (so the modal's one knob -- min distance between kept
+            # frames -- thresholds a prefix, no re-embed), and each cluster's
+            # canonical medoid.
+            n = len(feats)
+            k = int(np.clip(round(np.sqrt(n / 4.0)), 6, 20))
+            labels = ims.cluster(feats, k)
+            medoids = ims.cluster_medoids(feats, labels)
+            cap = min(n, 512)
+            order, radii = ims.farthest_point_sample(feats, cap, return_radii=True)
+            return feats, thumbs, labels, medoids, order, radii
 
         def on_success(res):
             from dustrack import imagesimilarity as ims
 
-            feats, thumbs = res
+            feats, thumbs, labels, medoids, order, radii = res
+            floor = list(medoids.values())
 
-            def select_fn(count, balance):
-                return ims.select_diverse(
-                    feats, int(count), cluster_balance=bool(balance))
+            def select_fn(min_dist):
+                return ims.select_within_radius(
+                    radii, min_dist, order=order, floor=floor)
+
+            finite = radii[np.isfinite(radii)]
+            lo = float(finite.min()) if len(finite) else 0.0
+            hi = float(finite.max()) if len(finite) else 1.0
+            # Default: a moderate starting count (between one-per-cluster and a
+            # cap), read off the capture-radius curve.
+            target = int(np.clip(len(entries) // 8, 2 * len(medoids), 120))
+            dmin_default = float(radii[min(target, len(radii) - 1)])
 
             picks = _decimate_modal.prompt_decimate_gallery(
                 qt_window,
-                total=len(entries),
                 thumbs=thumbs,
+                labels=labels,
+                medoids=medoids,
                 select_fn=select_fn,
-                default_count=max(1, len(entries) // 2),
+                dmin_lo=lo,
+                dmin_hi=hi,
+                dmin_default=dmin_default,
+                n_frames=len(entries),
             )
             if picks is None:
                 return
@@ -4764,7 +4788,7 @@ class DUSTrack(VideoBrowser):
             on_success=on_success,
             title="Selecting diverse frames",
             initial_phase=f"Embedding {layer_name} frames (DINO)",
-            success_summary="Embedded -- review the selection.",
+            success_summary="Embedded + clustered -- review the selection.",
         )
 
     def _gather_frames_from_layer(self, layer_name):

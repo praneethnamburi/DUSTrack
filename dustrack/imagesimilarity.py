@@ -28,8 +28,8 @@ import os
 import numpy as np
 
 __all__ = ["dino_embed", "farthest_point_sample", "select_diverse", "knn",
-           "cluster", "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL",
-           "local_dinov3_usable"]
+           "cluster", "cluster_medoids", "select_within_radius",
+           "DINOV3_SMALL", "DINOV2_SMALL", "ACTIVE_MODEL", "local_dinov3_usable"]
 
 #: The production feature space (Corazon's ultrasound result): DINOv3 ViT-S/16,
 #: ~21M params, chosen to fit the paper's 8 GB consumer-GPU constraint. It is
@@ -217,6 +217,7 @@ def farthest_point_sample(
     preselected=None,
     normalize: bool = True,
     seed: "int | None" = None,
+    return_radii: bool = False,
 ) -> np.ndarray:
     """``n`` indices maximally spread out in feature space (greedy FPS).
 
@@ -235,20 +236,31 @@ def farthest_point_sample(
     and the returned list includes the preselected up front. This is how a
     coverage floor or a cluster share feeds back into one global spread.
     Returns fewer than ``n`` only if the pool is smaller.
+
+    ``return_radii`` also returns, per pick, its **capture radius** -- the
+    distance from that point to the set already chosen when it was picked
+    (``inf`` for the seed / any preselected). Being greedy FPS, this sequence
+    is non-increasing, so thresholding it at a minimum distance yields a
+    prefix: this is what lets the review modal turn "minimum distance between
+    kept frames" into a data-driven count in one pass (see
+    :func:`select_within_radius`).
     """
     X = np.asarray(features, dtype=float)
     if X.ndim != 2:
         raise ValueError("features must be (N, D)")
     N = len(X)
-    if n >= N:
+    n = min(int(n), N)
+    if not return_radii and n >= N:
         return np.arange(N)
     if normalize:
         X = _l2_normalized(X)
 
     if preselected is not None and len(preselected):
         chosen = list(dict.fromkeys(int(i) for i in preselected))
+        radii = [float("inf")] * len(chosen)
         if len(chosen) >= n:
-            return np.array(chosen[:n])
+            order = np.array(chosen[:n])
+            return (order, np.array(radii[:n])) if return_radii else order
         dist = np.full(N, np.inf)
         for p in chosen:
             dist = np.minimum(dist, np.linalg.norm(X - X[p], axis=1))
@@ -256,13 +268,59 @@ def farthest_point_sample(
         if start is None:
             start = int(np.random.default_rng(seed).integers(N))
         chosen = [int(start)]
+        radii = [float("inf")]
         dist = np.linalg.norm(X - X[chosen[0]], axis=1)
 
     while len(chosen) < n:
         i = int(np.argmax(dist))
+        radii.append(float(dist[i]))          # distance to the set before adding i
         chosen.append(i)
         dist = np.minimum(dist, np.linalg.norm(X - X[i], axis=1))
-    return np.array(chosen)
+    order = np.array(chosen)
+    return (order, np.array(radii)) if return_radii else order
+
+
+def cluster_medoids(features, labels, *, normalize: bool = True) -> dict:
+    """The medoid -- the frame nearest its cluster's mean -- per cluster.
+
+    The canonical image that represents each appearance group in the review
+    modal (a real frame, unlike the centroid). Returns ``{label: index}`` over
+    the rows of ``features``; ``labels`` is the per-row cluster id from
+    :func:`cluster`.
+    """
+    X = np.asarray(features, dtype=float)
+    if normalize:
+        X = _l2_normalized(X)
+    labels = np.asarray(labels)
+    medoids = {}
+    for c in np.unique(labels):
+        members = np.where(labels == c)[0]
+        centroid = X[members].mean(axis=0)
+        d = np.linalg.norm(X[members] - centroid, axis=1)
+        medoids[int(c)] = int(members[int(np.argmin(d))])
+    return medoids
+
+
+def select_within_radius(radii, min_dist, *, order=None, floor=()) -> list:
+    """The frames kept when no two selected frames may sit closer than
+    ``min_dist`` in feature space -- the data-driven count behind the review
+    modal's one knob.
+
+    ``radii`` are the non-increasing capture radii from
+    ``farthest_point_sample(..., return_radii=True)``, so ``radii >= min_dist``
+    is a prefix of the farthest-point order: loosening ``min_dist`` admits more
+    (closer) frames, and dense/redundant regions -- covered early -- contribute
+    few while diverse regions keep earning picks. ``order`` maps prefix
+    positions back to original indices (returned as such when given). ``floor``
+    (e.g. each cluster's medoid) is always included, so every appearance group
+    keeps at least its canonical even when it's globally redundant. Returns a
+    sorted list of indices.
+    """
+    radii = np.asarray(radii, dtype=float)
+    keep = np.where(radii >= float(min_dist))[0]
+    sel = {int(order[i]) for i in keep} if order is not None else {int(i) for i in keep}
+    sel |= {int(i) for i in floor}
+    return sorted(sel)
 
 
 def knn(features, queries, k: int, *, normalize: bool = True):

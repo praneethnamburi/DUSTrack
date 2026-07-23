@@ -39,27 +39,38 @@ def prompt_source_selection(qt_window, *, layer_names, current_layer,
     ).exec_()
 
 
-def prompt_decimate_gallery(qt_window, *, total, thumbs, select_fn, default_count):
-    """Show the diverse-selection review modal and return the chosen indices.
+def prompt_decimate_gallery(qt_window, *, thumbs, labels, medoids, select_fn,
+                            dmin_lo, dmin_hi, dmin_default, n_frames):
+    """Show the cluster-per-row review modal and return the kept frame indices.
 
     Args:
         qt_window: The DUSTrack QMainWindow (overlay parent).
-        total: Number of frames in the embedded set (spinbox upper bound).
-        thumbs: One small ``uint8`` gray thumbnail array per embedded frame,
-            index-aligned to the embeddings the ``select_fn`` selects over.
-        select_fn: ``(count, balance) -> row indices``; re-runs
-            :func:`dustrack.imagesimilarity.select_diverse` over the cached
-            embeddings (cheap, no re-embed).
-        default_count: Initial spinbox value (the 50%-of-set default).
+        thumbs: One small ``uint8`` gray thumbnail per embedded frame,
+            index-aligned to the embeddings.
+        labels: Per-frame cluster id (from
+            :func:`dustrack.imagesimilarity.cluster`) -- one review row each.
+        medoids: ``{cluster: frame_index}`` canonical (medoid) per cluster.
+        select_fn: ``min_dist -> sorted frame indices``; thresholds the cached
+            farthest-point capture radii (cheap, no re-embed) and includes the
+            medoid floor so every cluster keeps its canonical.
+        dmin_lo, dmin_hi: Slider range for the minimum-distance knob (lo =
+            more/closer frames, hi = fewer).
+        dmin_default: Initial minimum distance.
+        n_frames: Total embedded frames (the "of N" in the status line).
 
     Returns:
-        The list of selected row indices on confirm, ``None`` on cancel.
+        The kept frame indices (from checked clusters) on confirm, ``None`` on
+        cancel.
     """
     Dialog = _make_decimate_gallery_class()
     return Dialog(
         qt_window,
-        total=total,
         thumbs=thumbs,
+        labels=labels,
+        medoids=medoids,
         select_fn=select_fn,
-        default_count=default_count,
+        dmin_lo=dmin_lo,
+        dmin_hi=dmin_hi,
+        dmin_default=dmin_default,
+        n_frames=n_frames,
     ).exec_()

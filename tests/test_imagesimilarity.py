@@ -93,6 +93,49 @@ class TestSelectDiverse:
         assert sorted(ims.select_diverse(X, 100)) == list(range(len(X)))
 
 
+class TestCaptureRadii:
+    """farthest_point_sample(return_radii=True) + the min-distance selection
+    it powers -- the review modal's one knob."""
+
+    def test_radii_are_non_increasing_with_inf_seed(self):
+        X, _ = three_blobs(per=8)
+        order, radii = ims.farthest_point_sample(X, 12, return_radii=True)
+        assert len(order) == len(radii) == 12
+        assert radii[0] == np.inf                      # seed has no prior
+        finite = radii[1:]
+        assert np.all(np.diff(finite) <= 1e-9)         # greedy FPS => non-increasing
+
+    def test_full_order_when_capped_at_pool(self):
+        X, _ = three_blobs(per=4)                      # 12 points
+        order, radii = ims.farthest_point_sample(X, 100, return_radii=True)
+        assert sorted(order.tolist()) == list(range(len(X)))
+        assert len(radii) == len(X)
+
+    def test_medoid_is_a_member_near_its_centre(self):
+        X, y = three_blobs(per=8)
+        med = ims.cluster_medoids(X, y)
+        assert set(med) == {0, 1, 2}
+        for c, idx in med.items():
+            assert y[idx] == c                          # medoid belongs to its cluster
+
+    def test_within_radius_is_a_shrinking_prefix(self):
+        X, _ = three_blobs(per=8)
+        order, radii = ims.farthest_point_sample(X, 20, return_radii=True)
+        loose = ims.select_within_radius(radii, radii[6], order=order)
+        tight = ims.select_within_radius(radii, radii[3], order=order)
+        assert set(tight) <= set(loose)                 # larger d_min => subset
+        assert len(loose) >= len(tight)
+
+    def test_floor_is_always_included(self):
+        X, y = three_blobs(per=8)
+        order, radii = ims.farthest_point_sample(X, 20, return_radii=True)
+        med = ims.cluster_medoids(X, y)
+        # a min_dist so large nothing but the seed survives on its own...
+        sel = ims.select_within_radius(radii, radii[1] + 1.0, order=order,
+                                       floor=med.values())
+        assert set(med.values()) <= set(sel)            # ...yet every medoid is kept
+
+
 class TestKnn:
     def test_neighbours_come_from_the_query_blob(self):
         X, y = three_blobs(per=8)
