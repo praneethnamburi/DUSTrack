@@ -2568,10 +2568,10 @@ def _make_decimate_gallery_class():
         "border: 1px solid #3a3a3a; padding: 6px 24px; font-size: 11pt; } "
         "QPushButton:hover { background-color: #5a5a5a; }"
     )
-    _CANON, _MEMBER = 150, 70
-    _MEMBER_COLS, _MEMBER_ROWS = 8, 2
+    _CANON, _MEMBER = 200, 72
+    _MEMBER_COLS, _MEMBER_ROWS = 7, 2
     _MEMBER_CAP = _MEMBER_COLS * _MEMBER_ROWS
-    _ROW_H, _GUTTER_W = 176, 140
+    _ROW_H, _GUTTER_W = 208, 140
 
     def _to_pixmap(arr, size):
         a = np.ascontiguousarray(np.asarray(arr, dtype=np.uint8))
@@ -2778,7 +2778,7 @@ def _make_decimate_gallery_class():
             row.setObjectName("decimate_row")
             row.setFixedHeight(_ROW_H)
             h = QHBoxLayout(row)
-            h.setContentsMargins(8, 6, 8, 6)
+            h.setContentsMargins(8, 2, 8, 2)
             h.setSpacing(10)
 
             chk = QCheckBox()
@@ -2793,14 +2793,14 @@ def _make_decimate_gallery_class():
 
             count = QLabel("")
             count.setMinimumWidth(60)
-            count.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            count.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             h.addWidget(count)
 
             host = QWidget()
             grid = QGridLayout(host)
             grid.setContentsMargins(0, 0, 0, 0)
             grid.setSpacing(3)
-            grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            grid.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             h.addWidget(host, stretch=1)
 
             info = dict(frame=row, check=chk, members=grid, host=host, count=count)
