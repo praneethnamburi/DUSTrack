@@ -67,6 +67,7 @@ __all__ = [
     "nudge_labels",
     "repair",
     "select_across_videos",
+    "select_flow_blips",
     "select_training_frames",
 ]
 
@@ -866,6 +867,67 @@ def select_across_videos(
     # back would leave the round underfilled -- if only 3 of 10 trials
     # have good candidates, a strict cap would spend 3/10 of the round
     # and stop.
+    if sum(per_video_count.values()) < n:
+        _take(enforce_cap=False)
+
+    return {k: v for k, v in picked.items() if any(v.values())}
+
+
+def select_flow_blips(
+    results: dict,
+    *,
+    n: int = 20,
+    min_residual: float = 0.0,
+    min_spacing: int = 10,
+    per_video_cap: int | None = None,
+) -> dict[str, dict[str, dict[int, list[float]]]]:
+    """Pick this round's ``n`` labels from :func:`dustrack.blip.flow_blips`
+    results, ranked by *largest* model-vs-flow residual.
+
+    The counterpart to :func:`select_across_videos`, with the ranking
+    inverted: for a likelihood/repair candidate a small forward/reverse
+    disagreement means *trusted*, so smallest wins; here every candidate is
+    already trusted (``flow_blips`` gated on flow agreement), and the
+    residual is the *size of the error*, so the **biggest** wins -- the
+    most-wrong frames are the most valuable to teach. The per-video cap and
+    spacing are identical, so one arm's model never learns a single trial's
+    appearance and no more.
+
+    Args:
+        results: ``{video_key: FlowBlipResult}``.
+        n: Total labels wanted this round.
+        min_residual: A floor on the error worth training on, px.
+        min_spacing: Minimum frame gap between two picks in one video.
+        per_video_cap: Override the default ``ceil(n / n_videos)``.
+    """
+    if not results:
+        return {}
+    cap = per_video_cap or int(np.ceil(n / len(results)))
+
+    pool: list[tuple[float, str, str, int]] = []
+    for key, res in results.items():
+        for label, per in res.residual.items():
+            for frame, r in per.items():
+                if r >= min_residual:
+                    pool.append((r, key, label, frame))
+    pool.sort(reverse=True)                         # biggest error first
+
+    picked: dict[str, dict[str, dict[int, list[float]]]] = {}
+    per_video_count: dict[str, int] = {}
+
+    def _take(enforce_cap: bool) -> None:
+        for r, key, label, frame in pool:
+            if sum(per_video_count.values()) >= n:
+                return
+            if enforce_cap and per_video_count.get(key, 0) >= cap:
+                continue
+            kept = picked.setdefault(key, {}).setdefault(label, {})
+            if frame in kept or any(abs(frame - f) < min_spacing for f in kept):
+                continue
+            kept[frame] = results[key].corrections[label][frame]
+            per_video_count[key] = per_video_count.get(key, 0) + 1
+
+    _take(enforce_cap=True)
     if sum(per_video_count.values()) < n:
         _take(enforce_cap=False)
 

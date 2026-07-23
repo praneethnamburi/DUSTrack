@@ -593,3 +593,43 @@ class TestNudgeLabels:
         prev = self._pred(100.0, 100.0, 1.0)
         out, st = ar.nudge_labels({"0": {50: [103.0, 100.0]}}, lat, prev)
         assert st["unconverged"] == 1 and out["0"][50] == [103.0, 100.0]
+
+
+# --------------------------------------------------------------------- #
+# select_flow_blips -- rank by SIZE of error, not by trust               #
+# --------------------------------------------------------------------- #
+class TestSelectFlowBlips:
+    """The mirror image of select_across_videos: here the ranking is
+    inverted -- every candidate is already trusted, so the biggest error is
+    the most valuable label, not the safest one."""
+
+    def _res(self, corr_res):
+        from dustrack.blip import FlowBlipResult
+        corrections = {lab: {f: xy for f, (xy, r) in d.items()}
+                       for lab, d in corr_res.items()}
+        residual = {lab: {f: r for f, (xy, r) in d.items()}
+                    for lab, d in corr_res.items()}
+        return FlowBlipResult(corrections=corrections, residual=residual)
+
+    def test_biggest_error_wins(self):
+        results = {"a": self._res({"0": {10: ([1, 1], 3.0), 50: ([2, 2], 30.0)}})}
+        out = ar.select_flow_blips(results, n=1)
+        assert out == {"a": {"0": {50: [2.0, 2.0]}}}
+
+    def test_min_residual_floor(self):
+        results = {"a": self._res({"0": {10: ([1, 1], 2.0)}})}
+        assert ar.select_flow_blips(results, n=5, min_residual=5.0) == {}
+
+    def test_spacing_within_video(self):
+        results = {"a": self._res({"0": {10: ([0, 0], 20.0), 12: ([0, 0], 19.0),
+                                         40: ([0, 0], 18.0)}})}
+        out = ar.select_flow_blips(results, n=3, min_spacing=10)
+        assert sorted(out["a"]["0"]) == [10, 40]        # 12 too close to 10
+
+    def test_per_video_cap_spreads_across_videos(self):
+        results = {
+            "a": self._res({"0": {i: ([0, 0], 100.0 - i) for i in range(0, 60, 10)}}),
+            "b": self._res({"0": {5: ([0, 0], 1.0)}}),
+        }
+        out = ar.select_flow_blips(results, n=2)
+        assert "a" in out and "b" in out               # cap=1 each, b not starved

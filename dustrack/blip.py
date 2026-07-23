@@ -614,3 +614,129 @@ def remove_blips(
         video=video,  # share the reader; avoid a second av.open
     )
     return out
+
+
+# --------------------------------------------------------------------- #
+# Flow-based blip detection                                             #
+# --------------------------------------------------------------------- #
+# The geometric detector above thresholds the model's own per-frame
+# displacement, so it cannot tell a model spike from genuine fast motion
+# and its adaptive cutoff sails over the *small* (5-10 px) confidently-
+# wrong jitter -- which, measured on s061 t001, is the majority of the
+# error a confident model makes and the part likelihood is blind to.
+# ``flow_blips`` instead confirms each candidate against the optical flow
+# it should obey (:mod:`dustrack.flow_consistency`): a step the flow
+# contradicts is a real error whatever its size, and the flow hands back
+# the correction for free.
+
+
+@dataclass
+class FlowBlipResult:
+    """Confidently-wrong frames found by model-vs-flow disagreement.
+
+    ``corrections`` is the flow's answer at each kept frame (the label to
+    train on); ``residual`` is the model-vs-flow distance in px, the key to
+    rank by -- the biggest errors are the most valuable training signal.
+    Both are ``{label: {frame: value}}``.
+    """
+
+    corrections: dict
+    residual: dict
+    n_screened: int = 0
+    params: dict = field(default_factory=dict)
+
+    def n_kept(self) -> int:
+        return sum(len(v) for v in self.corrections.values())
+
+
+def flow_blips(
+    positions,
+    video,
+    *,
+    labels=None,
+    likelihood=None,
+    confident_high: float | None = None,
+    detect_min: float = 3.0,
+    confirm_thr: float = 5.0,
+    trust_tol: float = 3.0,
+    max_candidates: int | None = None,
+    lk_config: dict | None = None,
+):
+    """Flag frames whose model prediction the optical flow contradicts.
+
+    Two stages, so LK is paid only where it can matter:
+
+    1. **Screen** (no decode): a frame is a candidate if the model's own
+       per-frame step exceeds ``detect_min`` px on any point. High recall,
+       trivially cheap.
+    2. **Confirm** (:func:`dustrack.flow_consistency.flow_residual` at the
+       candidates): keep a frame+label when the model sits more than
+       ``confirm_thr`` px from the flow's landing *and* the forward and
+       reverse flow agree within ``trust_tol`` (so the correction is
+       determined, not a blip-contaminated neighbour).
+
+    With ``confident_high`` set (and ``likelihood`` supplied as an
+    ``(N, P)`` array), only frames the model is *confident* about are kept
+    -- the confidently-wrong ones a likelihood pass is blind to. Left
+    ``None``, every disagreement is kept (the general-analysis use).
+
+    ``max_candidates`` caps the screen to its top-N by step size, bounding
+    LK cost; ``None`` runs every candidate.
+
+    Returns a :class:`FlowBlipResult`.
+    """
+    from dustrack.flow_consistency import flow_residual
+
+    positions = np.asarray(positions, dtype=float)
+    n_frames, n_pts = positions.shape[:2]
+    labels = list(labels) if labels is not None else [str(i) for i in range(n_pts)]
+    lik = None if likelihood is None else np.asarray(likelihood, dtype=float)
+
+    d = np.linalg.norm(np.diff(positions, axis=0), axis=2)      # (N-1, P)
+    incoming = np.zeros((n_frames, n_pts)); incoming[1:] = d
+    outgoing = np.zeros((n_frames, n_pts)); outgoing[:-1] = d
+    step = np.fmax(incoming, outgoing)                          # (N, P) NaN-tolerant
+    anomalous = step > detect_min
+    if confident_high is not None and lik is not None:
+        # Pre-filter to CONFIDENT anomalies *before* paying for LK: the
+        # low-confidence jumps are the likelihood pass's territory, and
+        # dropping them here (no decode) is what keeps the flow confirm
+        # affordable -- and also what stops ``max_candidates`` from
+        # spending its budget on big lost jumps instead of the small
+        # confidently-wrong jitter this source exists to find.
+        anomalous = anomalous & (lik >= confident_high)
+    frame_step = np.nanmax(np.where(anomalous, step, 0.0), axis=1)
+    frame_step[~np.isfinite(frame_step)] = 0.0
+
+    cand = np.where(frame_step > 0)[0]
+    cand = cand[(cand >= 1) & (cand <= n_frames - 2)]
+    if max_candidates is not None and len(cand) > max_candidates:
+        keep = np.argsort(frame_step[cand])[::-1][:max_candidates]
+        cand = np.sort(cand[keep])
+
+    corrections = {lab: {} for lab in labels}
+    residual = {lab: {} for lab in labels}
+    if len(cand):
+        fr = flow_residual(positions, video, frames=cand, labels=labels,
+                           lk_config=lk_config)
+        for k, f in enumerate(fr.frames):
+            for p, lab in enumerate(labels):
+                r = fr.residual[k, p]
+                if not (np.isfinite(r) and r > confirm_thr
+                        and fr.agreement[k, p] < trust_tol):
+                    continue
+                if (confident_high is not None and lik is not None
+                        and lik[int(f), p] < confident_high):
+                    continue                       # a "lost" frame -- likelihood's job
+                corrections[lab][int(f)] = [float(fr.lk_estimate[k, p, 0]),
+                                            float(fr.lk_estimate[k, p, 1])]
+                residual[lab][int(f)] = float(r)
+
+    return FlowBlipResult(
+        corrections=corrections,
+        residual=residual,
+        n_screened=int(len(cand)),
+        params=dict(detect_min=detect_min, confirm_thr=confirm_thr,
+                    trust_tol=trust_tol, confident_high=confident_high,
+                    max_candidates=max_candidates),
+    )
