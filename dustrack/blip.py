@@ -760,3 +760,131 @@ def flow_blips(
                     trust_tol=trust_tol, confident_high=confident_high,
                     max_candidates=max_candidates),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Unified blip detector: LK-from-previous-frame vs DLC disagreement, 5-sigma.  #
+# One definition (this), reused by the GUI "Interpolate blips" button and the  #
+# autorefine curriculum. The absolute-px flow_blips path above is retired in   #
+# favour of this + autorefine-only filters layered on top.                     #
+# --------------------------------------------------------------------------- #
+
+def _runs_from_mask(mask, max_gap: int = 0):
+    """Contiguous ``True`` runs of a boolean mask as ``(start, end)`` inclusive
+    index pairs. Runs separated by a gap of ``<= max_gap`` ``False`` frames are
+    merged (so a one-frame recovery inside a disturbed stretch doesn't split
+    the run the interpolation should span)."""
+    idx = np.flatnonzero(np.asarray(mask, dtype=bool))
+    if idx.size == 0:
+        return []
+    runs, s, prev = [], int(idx[0]), int(idx[0])
+    for i in idx[1:]:
+        i = int(i)
+        if i - prev - 1 > max_gap:
+            runs.append((s, prev))
+            s = i
+        prev = i
+    runs.append((s, prev))
+    return runs
+
+
+def compute_lk_predictions(positions, video, *, lk_config=None,
+                           progress_callback=None):
+    """Per-frame LK-from-the-previous-frame prediction of each DLC point.
+
+    For every frame ``m``, seed LK at the model's *previous*-frame prediction
+    ``positions[m-1]`` and track it forward ``m-1 -> m``; the landing is the
+    flow's answer for where ``m`` should be, independent of the model. The
+    disagreement ``|positions[m] - lk_pred[m]|`` is the single blip signal (see
+    :func:`disagreement_blips`).
+
+    This is the quantity DUSTrack saves alongside a DLC ``analyze_videos`` run
+    -- computed on the frames inference already decodes -- so blip detection is
+    later a cheap array op with no second decode. Frame 0 (and any frame with a
+    non-finite previous prediction) is left NaN.
+
+    Returns ``lk_pred`` of shape ``(N, P, 2)``, index-aligned to ``positions``.
+    """
+    from datanavigator.video_reader import VideoReader
+    from dustrack.lk_opticalflow import _gray_rgb, _lk_track_frames
+
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim != 3 or positions.shape[2] != 2:
+        raise ValueError("positions must be (N, P, 2)")
+    n_frames = positions.shape[0]
+    if isinstance(video, (str, Path)):
+        video = VideoReader(str(video))
+    cfg = dict(lk_config or {})
+
+    lk_pred = np.full_like(positions, np.nan)
+    prev = _gray_rgb(video, 0)
+    for m in range(1, n_frames):
+        cur = _gray_rgb(video, m)
+        seed = positions[m - 1]
+        if np.isfinite(seed).all():
+            lk_pred[m] = _lk_track_frames([prev, cur], seed.astype(np.float32))[-1]
+        prev = cur
+        if progress_callback is not None and m % 500 == 0:
+            progress_callback(m, n_frames)
+    return lk_pred
+
+
+def disagreement_blips(positions, lk_pred, *, labels=None,
+                       threshold_factor: float = 5.0, max_gap: int = 1,
+                       max_blip_length=None) -> BlipReport:
+    """The one blip detector: LK-vs-DLC disagreement, thresholded per label at
+    ``median + threshold_factor * 1.4826 * MAD`` (robust 5-sigma), bracketed
+    into runs with good-frame anchors.
+
+    Adaptive by construction -- the threshold sits above each point's own
+    disagreement floor, so a point can move (or wobble a few px) without
+    blipping; only anomalous disagreement flags. Returns a :class:`BlipReport`
+    interchangeable with :func:`detect_blips`'s, so :func:`interpolate_blips`
+    consumes it unchanged.
+
+    Args:
+        positions: ``(N, P, 2)`` model predictions.
+        lk_pred: ``(N, P, 2)`` LK-from-previous predictions
+            (:func:`compute_lk_predictions`), index-aligned to ``positions``.
+        labels: point names (default ``"0".."P-1"``).
+        threshold_factor: robust-sigma multiplier (default 5).
+        max_gap: merge runs separated by <= this many sub-threshold frames.
+        max_blip_length: drop runs longer than this (a long run is a sustained
+            failure, not a blip); ``None`` keeps all.
+    """
+    positions = np.asarray(positions, dtype=float)
+    lk_pred = np.asarray(lk_pred, dtype=float)
+    if positions.shape != lk_pred.shape:
+        raise ValueError("positions and lk_pred must have the same shape")
+    n_frames, n_pts = positions.shape[:2]
+    labels = list(labels) if labels is not None else [str(i) for i in range(n_pts)]
+
+    disagreement = np.linalg.norm(positions - lk_pred, axis=2)      # (N, P)
+    blips: list[Blip] = []
+    stats: dict[str, dict] = {}
+    for p, lab in enumerate(labels):
+        d = disagreement[:, p]
+        finite = d[np.isfinite(d)]
+        med, mad, threshold = _label_threshold(finite, threshold_factor)
+        mask = np.isfinite(d) & (d > threshold)
+        n_blips = 0
+        for s, e in _runs_from_mask(mask, max_gap):
+            if max_blip_length is not None and (e - s + 1) > max_blip_length:
+                continue
+            if s - 1 < 0 or e + 1 >= n_frames:
+                continue                                # no anchor on one side
+            ab, aa = positions[s - 1, p], positions[e + 1, p]
+            if not (np.isfinite(ab).all() and np.isfinite(aa).all()):
+                continue
+            blips.append(Blip(label=lab, start=s, end=e,
+                              anchor_before=(float(ab[0]), float(ab[1])),
+                              anchor_after=(float(aa[0]), float(aa[1])),
+                              threshold=float(threshold)))
+            n_blips += 1
+        stats[lab] = dict(median_d=med, mad_d=mad, threshold=threshold,
+                          n_blips=n_blips,
+                          n_finite_frames=int(np.isfinite(d).sum()))
+    return BlipReport(blips=blips, per_label_stats=stats,
+                      params=dict(threshold_factor=threshold_factor,
+                                  max_gap=max_gap, source="disagreement"),
+                      n_frames=n_frames)

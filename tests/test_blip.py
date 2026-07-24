@@ -411,3 +411,55 @@ class TestLowConfidenceFrames:
     def test_none_below_threshold_is_empty(self):
         from dustrack.blip import low_confidence_frames
         assert low_confidence_frames(np.array([0.9, 0.8, 0.99]), 0.5) == []
+
+
+class TestRunsFromMask:
+    def test_basic_and_gap_merge(self):
+        from dustrack.blip import _runs_from_mask
+        m = np.array([0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0], dtype=bool)
+        assert _runs_from_mask(m, 0) == [(1, 2), (4, 4), (7, 9)]
+        assert _runs_from_mask(m, 1) == [(1, 4), (7, 9)]     # bridge the 1-gap at 3
+
+    def test_empty(self):
+        from dustrack.blip import _runs_from_mask
+        assert _runs_from_mask(np.zeros(5, dtype=bool)) == []
+
+
+class TestDisagreementBlips:
+    """The single blip detector: |DLC - LK| thresholded at 5 robust-sigma."""
+
+    def test_flags_anomalous_disagreement_and_merges_runs(self):
+        from dustrack.blip import disagreement_blips
+        rng = np.random.default_rng(0)
+        N = 200
+        pos = np.zeros((N, 1, 2))
+        pos[:, 0, 0] = np.linspace(0, 100, N)
+        pos[:, 0, 1] = 50.0
+        lk = pos + rng.normal(0, 0.4, pos.shape)          # LK agrees (low floor)
+        for f in (50, 120, 121):                           # inject disagreement
+            pos[f, 0, 0] += 20.0
+        rep = disagreement_blips(pos, lk, threshold_factor=5.0, max_gap=1)
+        assert len(rep.blips) == 2                          # 50 alone; 120-121 merged
+        assert any(b.start == 50 and b.end == 50 for b in rep.blips)
+        assert any(b.start == 120 and b.end == 121 for b in rep.blips)
+
+    def test_movement_without_disagreement_is_not_a_blip(self):
+        from dustrack.blip import disagreement_blips
+        N = 100
+        pos = np.zeros((N, 1, 2))
+        pos[:, 0, 0] = np.arange(N) * 5.0                  # moves 5px/frame
+        lk = pos.copy()                                    # LK tracks it exactly
+        assert len(disagreement_blips(pos, lk, threshold_factor=5.0).blips) == 0
+
+    def test_anchors_are_the_bracketing_good_frames(self):
+        from dustrack.blip import disagreement_blips
+        N = 50
+        pos = np.zeros((N, 1, 2))
+        pos[:, 0, 0] = np.arange(N, dtype=float)
+        pos[:, 0, 1] = 10.0
+        lk = pos + 0.1
+        pos[25, 0, 0] += 30.0
+        b = [x for x in disagreement_blips(pos, lk, threshold_factor=5.0).blips
+             if x.start == 25][0]
+        assert b.anchor_before == (24.0, 10.0)
+        assert b.anchor_after == (26.0, 10.0)
