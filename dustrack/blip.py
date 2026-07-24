@@ -888,3 +888,55 @@ def disagreement_blips(positions, lk_pred, *, labels=None,
                       params=dict(threshold_factor=threshold_factor,
                                   max_gap=max_gap, source="disagreement"),
                       n_frames=n_frames)
+
+
+def blipped_positions(ann, report: BlipReport) -> dict:
+    """The model's ORIGINAL positions at every flagged blip frame -- the sparse
+    ``blips`` inspection layer (what the model got wrong), as
+    ``{label: {frame: [x, y]}}``. Empty per-label dicts for un-blipped labels."""
+    out: dict[str, dict[int, list[float]]] = {label: {} for label in ann.labels}
+    for b in report.blips:
+        for f in range(b.start, b.end + 1):
+            xy = ann.data.get(b.label, {}).get(f)
+            if xy is not None:
+                out[b.label][int(f)] = [float(xy[0]), float(xy[1])]
+    return out
+
+
+def deblip_trace(ann, corrections) -> dict:
+    """The dense DLC trace with blip frames overwritten by the LK-RSTC
+    interpolation -- the ``deblip`` corrected output, as ``{label: {frame:
+    [x, y]}}``. ``corrections`` is the sparse layer from :func:`interpolate_blips`.
+    The source ``ann`` is left untouched (a per-label copy is spliced)."""
+    out = {label: {int(f): [float(v[0]), float(v[1])] for f, v in ann.data[label].items()}
+           for label in ann.labels}
+    for label in corrections.labels:
+        for f, xy in corrections.data[label].items():
+            out[label][int(f)] = [float(xy[0]), float(xy[1])]
+    return out
+
+
+def deblip(ann, lk_pred, *, threshold_factor: float = 5.0, max_gap: int = 1,
+           max_blip_length=None, lk_config=None, progress_callback=None):
+    """One-call de-blip on the unified criterion: detect (LK-vs-DLC disagreement
+    at 5-sigma) -> LK-RSTC interpolate -> the two output layer data dicts.
+
+    Returns ``(report, corrections, blips_data, deblip_data)`` where
+    ``corrections`` is the sparse interpolated :class:`VideoAnnotation`,
+    ``blips_data`` the original blipped positions, and ``deblip_data`` the dense
+    corrected trace (both ``{label: {frame: [x, y]}}``). The GUI builds the
+    ``blips_``/``deblip_`` layers from the two dicts.
+    """
+    labels = list(ann.labels)
+    n = int(getattr(ann, "n_frames", 0)) or (int(np.asarray(lk_pred).shape[0]))
+    positions = np.full((n, len(labels), 2), np.nan)
+    for p, label in enumerate(labels):
+        for f, xy in ann.data[label].items():
+            if 0 <= int(f) < n:
+                positions[int(f), p] = xy
+    report = disagreement_blips(positions, lk_pred, labels=labels,
+                                threshold_factor=threshold_factor, max_gap=max_gap,
+                                max_blip_length=max_blip_length)
+    corrections = interpolate_blips(ann, report, lk_config=lk_config,
+                                    progress_callback=progress_callback)
+    return report, corrections, blipped_positions(ann, report), deblip_trace(ann, corrections)

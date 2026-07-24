@@ -463,3 +463,29 @@ class TestDisagreementBlips:
              if x.start == 25][0]
         assert b.anchor_before == (24.0, 10.0)
         assert b.anchor_after == (26.0, 10.0)
+
+
+class TestDeblipHelpers:
+    """The two output layers: blipped_positions (what was wrong) + deblip_trace
+    (the corrected dense trace)."""
+
+    class _Ann:
+        def __init__(self, labels, data):
+            self.labels = labels
+            self.data = data
+
+    def test_blipped_positions_are_the_original_flagged_frames(self):
+        from dustrack.blip import blipped_positions, Blip, BlipReport
+        ann = self._Ann(["0", "1"],
+                        {"0": {10: [1, 2], 11: [3, 4], 12: [5, 6]}, "1": {10: [7, 8]}})
+        rep = BlipReport(blips=[Blip("0", 11, 11, (1, 2), (5, 6), 9.0)])
+        out = blipped_positions(ann, rep)
+        assert out == {"0": {11: [3.0, 4.0]}, "1": {}}
+
+    def test_deblip_trace_splices_corrections_over_a_copy(self):
+        from dustrack.blip import deblip_trace
+        ann = self._Ann(["0"], {"0": {10: [1, 1], 11: [2, 2], 12: [3, 3]}})
+        corr = self._Ann(["0"], {"0": {11: [9, 9]}})
+        out = deblip_trace(ann, corr)
+        assert out == {"0": {10: [1.0, 1.0], 11: [9.0, 9.0], 12: [3.0, 3.0]}}
+        assert ann.data["0"][11] == [2, 2]              # source untouched
