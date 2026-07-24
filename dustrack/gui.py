@@ -495,8 +495,8 @@ class DUSTrack(VideoBrowser):
                 style_tag="workflow",
             )
             self.buttons.add(
-                text="Detect blip outliers",
-                action_func=self.detect_blips_workflow,
+                text="Interpolate blips",
+                action_func=self.interpolate_blips_workflow,
                 style_tag="workflow",
             )
         # Diverse-frame selection is gated by the DINO backend (torch + a
@@ -2442,6 +2442,101 @@ class DUSTrack(VideoBrowser):
             ),
         )
         return None
+
+    def interpolate_blips_workflow(self, event=None, *args, **kwargs) -> None:
+        """Detect blips on the active DLC trace via the unified criterion
+        (LK-from-previous-frame vs DLC disagreement, per label at 5 robust-
+        sigma), LK-RSTC interpolate across each run, and emit two derived
+        layers: ``blips_<src>`` (the model's original positions at the flagged
+        frames -- what was wrong) and ``deblip_<src>`` (the DLC trace with those
+        frames overwritten by the interpolation -- the corrected output). The
+        de-blipped layer becomes active with the source DLC trace pinned as
+        overlay so the correction is visible side-by-side.
+
+        The LK predictions are computed off-thread here (a full decode pass);
+        once analyze_videos saves the paired ``lk_`` layer this reuses it.
+        """
+        from . import blip as _blip
+
+        qt_window = self._find_qt_window()
+        source_ann = self.ann
+        source_name = source_ann.name
+        if not any(source_ann.data.values()):
+            print(f"Interpolate blips: layer {source_name!r} has no points.")
+            return
+
+        def work():
+            positions = self._layer_positions(source_ann)
+            saved = self._saved_lk_predictions(source_name)
+            if saved is not None:
+                lk_pred = saved
+                print(f"Interpolate blips: using saved LK layer for {source_name!r}.")
+            else:
+                print(f"Interpolate blips: computing LK predictions "
+                      f"({positions.shape[0]} frames) ...")
+                lk_pred = _blip.compute_lk_predictions(positions, source_ann.video)
+            report, _corr, blips_data, deblip_data = _blip.deblip(
+                source_ann, lk_pred, threshold_factor=5.0)
+            return report, blips_data, deblip_data
+
+        def on_success(res):
+            report, blips_data, deblip_data = res
+            blips_name = self._build_derived_layer(
+                f"blips_{source_name}", blips_data, plot_type="dot", set_active=False)
+            deblip_name = self._build_derived_layer(
+                f"deblip_{source_name}", deblip_data, plot_type="line",
+                set_active=True, set_overlay=source_name)
+            self._restructure_annotation_order()
+            self.update()
+            print(f"Interpolate blips: {len(report.blips)} blips on {source_name!r} "
+                  f"-> {blips_name!r} + {deblip_name!r}")
+
+        self._run_with_overlay(
+            qt_window, work_fn=work, on_success=on_success,
+            title="Interpolating blips",
+            initial_phase="Detecting + LK-RSTC interpolating",
+            success_summary="Done -- review the de-blipped layer vs the source.")
+
+    def _layer_positions(self, ann):
+        """Dense ``(N, P, 2)`` positions from an annotation layer's ``.data``
+        (NaN where a frame/point is absent)."""
+        labels = list(ann.labels)
+        n = int(getattr(ann, "n_frames", 0)) or (
+            1 + max((int(f) for lab in labels for f in ann.data[lab]), default=-1))
+        pos = np.full((n, len(labels), 2), np.nan)
+        for p, lab in enumerate(labels):
+            for f, xy in ann.data[lab].items():
+                if 0 <= int(f) < n:
+                    pos[int(f), p] = xy
+        return pos
+
+    def _saved_lk_predictions(self, source_name):
+        """The paired ``lk_*`` layer's positions if one is loaded, else ``None``
+        (populated once analyze_videos saves the LK trace; on-the-fly compute is
+        the fallback)."""
+        base = source_name[len("dlc_"):] if source_name.startswith("dlc_") else source_name
+        lk_name = "lk_" + base
+        if lk_name in self.annotations.names:
+            return self._layer_positions(self.annotations[lk_name])
+        return None
+
+    def _build_derived_layer(self, name, data, *, plot_type, set_active,
+                             set_overlay=None):
+        """Write ``data`` (``{label: {frame: [x, y]}}``) as a derived annotation
+        layer named ``name``, adopt it, set its plot type. Returns the adopted
+        (canonical) layer name."""
+        fname = make_annotation_file_name(self.fname, name)
+        ann = VideoAnnotation(fname=str(fname), vname=self.fname)
+        ann.data = data
+        ann._revision += 1
+        ann.save()
+        adopted = self._adopt_layer(ann, set_active=set_active,
+                                    set_overlay=set_overlay) or name
+        try:
+            self.annotations[adopted].set_plot_type(plot_type)
+        except Exception:  # noqa: BLE001
+            pass
+        return adopted
 
     def detect_blips_workflow(self, event=None):
         """Detect blip outliers on the active layer + remove them.
