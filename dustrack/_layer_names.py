@@ -36,8 +36,17 @@ import os
 from pathlib import Path
 
 
-_DENSE_LAYER_PREFIXES = ("dlc_", "dlccorr")
+_DENSE_LAYER_PREFIXES = ("dlc_", "dlccorr", "lk_", "deblip")
 _DENSE_LAYER_SUBSTRINGS = ("lkmovavg",)
+
+#: Prefixes that mark a *derived* layer -- a model/flow prediction or a
+#: corrected output that must NEVER be extracted as DLC training labels. Splits
+#: cleanly from manual (hand-labelled) layers, which are the training feed.
+#: Members: ``dlc`` (inference + LK-RSTC jitter outputs), ``lk_`` (the
+#: flow-prediction layer paired with each DLC trace), ``blips`` (the flagged
+#: blip frames, for inspection), ``deblip`` (the de-blipped corrected trace).
+#: Generalizes the pre-2026-07 hard-coded ``startswith("dlc")`` exclusion.
+_DERIVED_LAYER_PREFIXES = ("dlc", "lk_", "blips", "deblip")
 
 
 def _dlc_bodyparts_to_layer_labels(bodyparts: list[str]) -> list[str]:
@@ -108,7 +117,7 @@ def is_manual_layer_name(
     """
     if ann_name in special_names:
         return False
-    if ann_name.startswith("dlc"):
+    if any(ann_name.startswith(p) for p in _DERIVED_LAYER_PREFIXES):
         return False
     return True
 

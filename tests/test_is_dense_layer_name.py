@@ -83,3 +83,30 @@ class TestSparseLayerNames:
 
     def test_empty_name(self):
         assert not _is_dense_layer_name("")
+
+
+class TestDerivedLayerCategorization:
+    """The new derived (non-training) layers: lk_ / blips_ / deblip_.
+
+    All are derived so none feed DLC training; lk_ + deblip_ are dense (line),
+    blips_ is sparse (scatter).
+    """
+
+    def test_lk_and_deblip_are_dense(self):
+        from dustrack._layer_names import _is_dense_layer_name
+        assert _is_dense_layer_name("lk_iteration-3_320")
+        assert _is_dense_layer_name("deblip_iteration-3")
+
+    def test_blips_is_not_dense(self):
+        from dustrack._layer_names import _is_dense_layer_name
+        assert not _is_dense_layer_name("blips_iteration-3")
+
+    def test_all_three_are_non_manual(self):
+        from dustrack._layer_names import is_manual_layer_name
+        for name in ("lk_iteration-3_320", "blips_iteration-3", "deblip_iteration-3"):
+            assert not is_manual_layer_name(name), name
+
+    def test_real_manual_layers_still_manual(self):
+        from dustrack._layer_names import is_manual_layer_name
+        for name in ("manual", "iteration-1", "pn", "iter1"):
+            assert is_manual_layer_name(name), name
