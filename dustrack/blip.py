@@ -41,7 +41,6 @@ import numpy as np
 from .annotations import VideoAnnotation
 from .lk_opticalflow import lucas_kanade_rstc
 
-
 # Scale factor that makes the median absolute deviation a consistent
 # estimator of the standard deviation under a normal distribution
 # (``sigma_hat = 1.4826 * MAD``). Letting callers pass ``threshold_factor``
@@ -57,7 +56,6 @@ _MAD_ZERO_EPS = 1e-6
 # the endpoints are ~ 1 (within ``epsilon`` floor); the blended path
 # should match the input anchors within numerical noise.
 _RSTC_ENDPOINT_TOL = 1e-3
-
 
 @dataclass
 class Blip:
@@ -82,7 +80,6 @@ class Blip:
     def length(self) -> int:
         """Number of blip frames (inclusive on both ends)."""
         return self.end - self.start + 1
-
 
 @dataclass
 class BlipReport:
@@ -141,7 +138,6 @@ class BlipReport:
         ]
         return float(min(ratios)) if ratios else 0.0
 
-
 def _label_threshold(
     d_finite: np.ndarray, threshold_factor: float
 ) -> tuple[float, float, float]:
@@ -175,200 +171,6 @@ def _label_threshold(
         threshold = med + threshold_factor * _MAD_TO_SIGMA * mad
     return med, mad, threshold
 
-
-def _find_blips_in_label(
-    xy: np.ndarray,
-    d: np.ndarray,
-    threshold: float,
-    median_d: float,
-    *,
-    max_blip_length: int,
-    return_position_factor: float,
-) -> tuple[list[tuple[int, int]], int, int, int]:
-    """Bracket blip runs in one label's dense ``(n_frames, 2)`` trace.
-
-    Returns:
-        ``(blips, n_skipped_edge, n_skipped_long, n_skipped_noreturn)``
-        where ``blips`` is a list of ``(start, end)`` index pairs (both
-        inclusive, blip-frame indices into ``xy``).
-
-    Algorithm:
-        Walk ``d`` left-to-right. ``d[i]`` is the displacement between
-        ``xy[i]`` and ``xy[i+1]``. A blip entry at frame ``s`` requires
-        ``d[s-1] > threshold`` (entry from a clean frame). After
-        ``max_blip_length`` candidate end frames, give up; otherwise the
-        first frame ``e`` whose successor position ``xy[e+1]`` lands
-        within ``return_position_factor * median_d * (e - s + 2)`` of
-        the anchor ``xy[s-1]`` closes the blip as ``[s, e]``.
-
-    Edge handling:
-        - A spike whose entry is the very first displacement (``d[0]``,
-          so ``s == 1`` and anchor frame 0 is fine) is anchored normally.
-        - A spike whose entry is the last displacement
-          (``d[n_frames - 2]``, anchor-after frame ``n_frames`` doesn't
-          exist) cannot be bracketed.
-        - Either anchor being NaN disqualifies the blip.
-        - The detection is per-label-frame; partial coverage (NaN gaps
-          in ``xy``) means the displacement series has NaNs which are
-          filtered out of the threshold computation and never compared
-          against ``threshold`` (a NaN-anchored blip cannot be bracketed
-          since the boundary check below requires finite anchors).
-    """
-    n_frames = xy.shape[0]
-    blips: list[tuple[int, int]] = []
-    n_skipped_edge = 0
-    n_skipped_long = 0
-    n_skipped_noreturn = 0
-
-    # Outcome codes returned by the per-spike inner scan.
-    OUTCOME_FOUND = "found"
-    OUTCOME_LONG = "long"           # ran out of candidates without a return
-    OUTCOME_EDGE = "edge"           # anchor-after would be past the end of the trace
-    OUTCOME_NORETURN = "noreturn"   # anchor-after was NaN (unlabeled)
-
-    def _scan_for_return(s: int) -> tuple[str, int]:
-        """Scan forward from blip start ``s`` for a return-position anchor.
-
-        Returns ``(outcome, e)`` where ``e`` is the bracketed end frame
-        (only meaningful when outcome == OUTCOME_FOUND).
-        """
-        anchor_before_local = xy[s - 1]
-        for e in range(s, s + max_blip_length):
-            if e + 1 >= n_frames:
-                return OUTCOME_EDGE, -1
-            anchor_after_local = xy[e + 1]
-            if not np.isfinite(anchor_after_local).all():
-                return OUTCOME_NORETURN, -1
-            run_len = e - s + 1
-            tol = return_position_factor * median_d * (run_len + 1)
-            if np.linalg.norm(anchor_after_local - anchor_before_local) <= tol:
-                return OUTCOME_FOUND, e
-        return OUTCOME_LONG, -1
-
-    i = 0
-    while i < d.shape[0]:
-        di = d[i]
-        if not np.isfinite(di) or di <= threshold:
-            i += 1
-            continue
-
-        # ``d[i]`` is the displacement xy[i] -> xy[i+1]. A blip ENTRY
-        # means ``xy[i+1]`` is the first off-trajectory frame, so the
-        # blip start is ``s = i + 1`` and the pre-blip anchor is
-        # ``xy[i]``.
-        s = i + 1
-        anchor_before = xy[s - 1]
-        if not np.isfinite(anchor_before).all():
-            i += 1
-            continue
-
-        outcome, e = _scan_for_return(s)
-        if outcome == OUTCOME_FOUND:
-            blips.append((s, e))
-            # Skip past the blip + its return frame so we don't
-            # re-flag the return displacement as a new entry.
-            i = e + 1
-            continue
-        if outcome == OUTCOME_EDGE:
-            n_skipped_edge += 1
-        elif outcome == OUTCOME_LONG:
-            n_skipped_long += 1
-        else:  # OUTCOME_NORETURN
-            n_skipped_noreturn += 1
-        i += 1
-
-    return blips, n_skipped_edge, n_skipped_long, n_skipped_noreturn
-
-
-def detect_blips(
-    ann: VideoAnnotation,
-    *,
-    threshold_factor: float = 5.0,
-    max_blip_length: int = 5,
-    return_position_factor: float = 3.0,
-) -> BlipReport:
-    """Find sparse blip runs in a dense-trace annotation, per label.
-
-    Pure-Python: does not decode the video.
-
-    Args:
-        ann: A :class:`VideoAnnotation` whose ``data[label]`` is densely
-            populated across frames (typically a DLC ``.h5`` predicted
-            trace; partial coverage is tolerated — NaN frames are skipped).
-        threshold_factor: Per-label entry threshold in units of robust
-            sigma (``1.4826 * MAD``) above the median displacement.
-            Default 5.0 is conservative; lower flags more candidates.
-        max_blip_length: Maximum run length (in frames) the bracketing
-            scan will consider before giving up on a spike. Long runs
-            are usually real model failures, not blips.
-        return_position_factor: Multiplier on the per-blip return-tolerance
-            ``factor * median_d * (run_len + 1)``. Default 3.0 allows the
-            return anchor to land within ~3 typical-per-frame displacements
-            per run-frame of the pre-blip anchor.
-
-    Returns:
-        :class:`BlipReport`.
-    """
-    params = dict(
-        threshold_factor=threshold_factor,
-        max_blip_length=max_blip_length,
-        return_position_factor=return_position_factor,
-    )
-    report = BlipReport(params=params, n_frames=int(ann.n_frames))
-
-    for label in ann.labels:
-        xy = ann.to_trace(label)  # (n_frames, 2) with NaN for missing
-        # Per-frame displacement magnitudes. NaN where either endpoint is
-        # missing; filtered out of the threshold computation.
-        diff = np.diff(xy, axis=0)
-        d = np.linalg.norm(diff, axis=1)
-        d_finite = d[np.isfinite(d)]
-
-        med, mad, threshold = _label_threshold(d_finite, threshold_factor)
-        stats: dict[str, float | int] = {
-            "median_d": med,
-            "mad_d": mad,
-            "threshold": threshold,
-            "n_blips": 0,
-            "n_skipped_edge": 0,
-            "n_skipped_long": 0,
-            "n_skipped_noreturn": 0,
-            "n_finite_frames": int(np.isfinite(xy).all(axis=1).sum()),
-        }
-
-        if not np.isfinite(threshold) or d_finite.size == 0:
-            report.per_label_stats[label] = stats
-            continue
-
-        ranges, n_edge, n_long, n_noret = _find_blips_in_label(
-            xy,
-            d,
-            threshold=threshold,
-            median_d=med,
-            max_blip_length=max_blip_length,
-            return_position_factor=return_position_factor,
-        )
-        stats["n_blips"] = len(ranges)
-        stats["n_skipped_edge"] = n_edge
-        stats["n_skipped_long"] = n_long
-        stats["n_skipped_noreturn"] = n_noret
-        report.per_label_stats[label] = stats
-
-        for s, e in ranges:
-            report.blips.append(
-                Blip(
-                    label=label,
-                    start=s,
-                    end=e,
-                    anchor_before=(float(xy[s - 1, 0]), float(xy[s - 1, 1])),
-                    anchor_after=(float(xy[e + 1, 0]), float(xy[e + 1, 1])),
-                    threshold=float(threshold),
-                )
-            )
-
-    return report
-
-
 def interpolate_blips(
     ann: VideoAnnotation,
     report: BlipReport,
@@ -386,8 +188,8 @@ def interpolate_blips(
 
     Args:
         ann: Source dense-trace annotation (the one passed to
-            :func:`detect_blips`). Its ``video`` is reused for decode.
-        report: Detection result from :func:`detect_blips`.
+            :func:`disagreement_blips`). Its ``video`` is reused for decode.
+        report: Detection result from :func:`disagreement_blips`.
         lk_config: Optional override for the per-pair LK config (passed
             through to :func:`dustrack.lk_opticalflow.lucas_kanade_rstc`).
         progress_callback: Optional ``(done_count, total_count)``
@@ -444,7 +246,7 @@ def interpolate_blips(
             # within numerical noise but a future LK regression should
             # at least be visible.
             print(
-                f"[detect_blips] WARNING: RSTC endpoint drift for blip "
+                f"[interpolate_blips] WARNING: RSTC endpoint drift for blip "
                 f"{blip!r}: start_err={start_err:.4f} end_err={end_err:.4f}"
             )
 
@@ -473,58 +275,6 @@ def interpolate_blips(
     )
     return out
 
-
-def detect_and_interpolate_blips(
-    ann: VideoAnnotation,
-    *,
-    save: bool = True,
-    threshold_factor: float = 5.0,
-    max_blip_length: int = 5,
-    return_position_factor: float = 3.0,
-    lk_config: dict | None = None,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[VideoAnnotation, BlipReport]:
-    """Convenience wrapper: detect, interpolate, optionally save.
-
-    Args:
-        ann: Source dense-trace annotation.
-        save: If True (default), write the sparse output to
-            ``<source_stem>_blip_corrections.json`` next to the source.
-            Refuses to overwrite an existing file (raises
-            :class:`FileExistsError`); delete or rename the existing
-            file first.
-        threshold_factor: See :func:`detect_blips`.
-        max_blip_length: See :func:`detect_blips`.
-        return_position_factor: See :func:`detect_blips`.
-        lk_config: See :func:`interpolate_blips`.
-
-    Returns:
-        ``(sparse_annotation, report)``.
-
-    Raises:
-        FileExistsError: If ``save=True`` and the output file already
-            exists. Per [[benchmark-cleanup-collision]]: never silently
-            overwrite a user file.
-    """
-    report = detect_blips(
-        ann,
-        threshold_factor=threshold_factor,
-        max_blip_length=max_blip_length,
-        return_position_factor=return_position_factor,
-    )
-    out = interpolate_blips(
-        ann, report, lk_config=lk_config, progress_callback=progress_callback
-    )
-    if save:
-        if os.path.exists(out.fname):
-            raise FileExistsError(
-                f"Output file already exists at {out.fname}. "
-                f"Refusing to overwrite; delete or rename it first."
-            )
-        out.save()
-    return out, report
-
-
 def _corrections_fname(ann: VideoAnnotation) -> str:
     """Derive the sparse-corrections output path from a source annotation.
 
@@ -535,100 +285,12 @@ def _corrections_fname(ann: VideoAnnotation) -> str:
     p = Path(ann.fname)
     return str(p.parent / f"{p.stem}_blip_corrections.json")
 
-
-def _removed_fname(ann: VideoAnnotation) -> str:
-    """Derive the without-blip dense output path from a source annotation.
-
-    ``<source_stem>_blip_removed.json`` next to the source file.
-    """
-    if ann.fname is None:
-        raise ValueError("Source annotation has no fname; cannot derive output path.")
-    p = Path(ann.fname)
-    return str(p.parent / f"{p.stem}_blip_removed.json")
-
-
-def remove_blips(
-    ann: VideoAnnotation,
-    report: BlipReport,
-    *,
-    drop_frame_if_any_blip: bool = False,
-) -> VideoAnnotation:
-    """Build a *without-blip* copy of ``ann``: every blip frame's entry
-    is dropped, all other frames carry their original (x, y) untouched.
-
-    The output is a **dense** :class:`VideoAnnotation` (same labels +
-    frame coverage as the source minus the dropped entries) — directly
-    usable as DLC training data via the NaN-tolerant labeled-data path,
-    since DLC simply skips frames with missing per-bodypart values.
-
-    Args:
-        ann: Source dense-trace annotation passed to :func:`detect_blips`.
-        report: Detection result from :func:`detect_blips`.
-        drop_frame_if_any_blip: When ``False`` (default), only the
-            blipped label's entry is removed at each blip frame; other
-            labels at the same frame are preserved. When ``True``, the
-            blip frame is dropped from *every* label — the strict
-            "if any label was bad at this frame, the frame is suspect
-            for all" policy. Useful when blips on one label tend to
-            correlate with bad image quality (occlusion, motion blur)
-            that compromises every label at the same instant.
-
-    Returns:
-        A new :class:`VideoAnnotation` whose ``fname`` is set to
-        ``<source_stem>_blip_removed.json`` next to the source; the
-        file is NOT written by this function (call ``.save()`` on the
-        returned object if you want it persisted).
-    """
-    # Collect blip frames into per-label sets (and a union set for the
-    # whole-frame policy). Use sets for O(1) lookup during the copy.
-    per_label_drop: dict[str, set[int]] = {label: set() for label in ann.labels}
-    any_label_drop: set[int] = set()
-    for blip in report.blips:
-        for f in range(blip.start, blip.end + 1):
-            per_label_drop.setdefault(blip.label, set()).add(f)
-            any_label_drop.add(f)
-
-    # Build the new per-label data dict by filtering the source.
-    drop_set_for = (
-        (lambda label: any_label_drop)
-        if drop_frame_if_any_blip
-        else (lambda label: per_label_drop.get(label, set()))
-    )
-    new_data: dict[str, dict[int, list[float]]] = {}
-    for label in ann.labels:
-        drop = drop_set_for(label)
-        src = ann.data[label]
-        new_data[label] = {
-            int(frame): [float(xy[0]), float(xy[1])]
-            for frame, xy in src.items()
-            if frame not in drop
-        }
-
-    video = ann.video
-    out_fname = _removed_fname(ann)
-    out = VideoAnnotation(
-        fname=out_fname,
-        vname=None,
-        n_labels=len(ann.labels),
-        preloaded_json=new_data,
-        video=video,  # share the reader; avoid a second av.open
-    )
-    return out
-
-
 # --------------------------------------------------------------------- #
 # Flow-based blip detection                                             #
 # --------------------------------------------------------------------- #
-# The geometric detector above thresholds the model's own per-frame
-# displacement, so it cannot tell a model spike from genuine fast motion
-# and its adaptive cutoff sails over the *small* (5-10 px) confidently-
-# wrong jitter -- which, measured on s061 t001, is the majority of the
-# error a confident model makes and the part likelihood is blind to.
-# ``flow_blips`` instead confirms each candidate against the optical flow
-# it should obey (:mod:`dustrack.flow_consistency`): a step the flow
-# contradicts is a real error whatever its size, and the flow hands back
-# the correction for free.
-
+# FlowBlipResult is the mining-result container (corrections + residual) the
+# autorefine curriculum ranks over. Produced now by the unified disagreement
+# detector (below), consumed by mithic's select_flow_blips.
 
 @dataclass
 class FlowBlipResult:
@@ -648,13 +310,12 @@ class FlowBlipResult:
     def n_kept(self) -> int:
         return sum(len(v) for v in self.corrections.values())
 
-
 def low_confidence_frames(likelihood, threshold, *, max_frames=None):
     """Frame indices whose *worst* (min over points) model likelihood is below
     ``threshold`` -- the frames the model is least sure of, for adding to
     training. Ranked most-uncertain first; capped to ``max_frames`` if given.
 
-    The complement of :func:`flow_blips`: low confidence surfaces where the
+    The complement of :func:`disagreement_blips`: low confidence surfaces where the
     model *knows* it's unsure (LOST), blips surface where it's confidently
     wrong. ``likelihood`` is ``(N,)`` or ``(N, P)``.
     """
@@ -668,105 +329,10 @@ def low_confidence_frames(likelihood, threshold, *, max_frames=None):
         idx = idx[: int(max_frames)]
     return [int(i) for i in idx]
 
-
-def flow_blips(
-    positions,
-    video,
-    *,
-    labels=None,
-    likelihood=None,
-    confident_high: float | None = None,
-    detect_min: float = 3.0,
-    confirm_thr: float = 5.0,
-    trust_tol: float = 3.0,
-    max_candidates: int | None = None,
-    lk_config: dict | None = None,
-):
-    """Flag frames whose model prediction the optical flow contradicts.
-
-    Two stages, so LK is paid only where it can matter:
-
-    1. **Screen** (no decode): a frame is a candidate if the model's own
-       per-frame step exceeds ``detect_min`` px on any point. High recall,
-       trivially cheap.
-    2. **Confirm** (:func:`dustrack.flow_consistency.flow_residual` at the
-       candidates): keep a frame+label when the model sits more than
-       ``confirm_thr`` px from the flow's landing *and* the forward and
-       reverse flow agree within ``trust_tol`` (so the correction is
-       determined, not a blip-contaminated neighbour).
-
-    With ``confident_high`` set (and ``likelihood`` supplied as an
-    ``(N, P)`` array), only frames the model is *confident* about are kept
-    -- the confidently-wrong ones a likelihood pass is blind to. Left
-    ``None``, every disagreement is kept (the general-analysis use).
-
-    ``max_candidates`` caps the screen to its top-N by step size, bounding
-    LK cost; ``None`` runs every candidate.
-
-    Returns a :class:`FlowBlipResult`.
-    """
-    from dustrack.flow_consistency import flow_residual
-
-    positions = np.asarray(positions, dtype=float)
-    n_frames, n_pts = positions.shape[:2]
-    labels = list(labels) if labels is not None else [str(i) for i in range(n_pts)]
-    lik = None if likelihood is None else np.asarray(likelihood, dtype=float)
-
-    d = np.linalg.norm(np.diff(positions, axis=0), axis=2)      # (N-1, P)
-    incoming = np.zeros((n_frames, n_pts)); incoming[1:] = d
-    outgoing = np.zeros((n_frames, n_pts)); outgoing[:-1] = d
-    step = np.fmax(incoming, outgoing)                          # (N, P) NaN-tolerant
-    anomalous = step > detect_min
-    if confident_high is not None and lik is not None:
-        # Pre-filter to CONFIDENT anomalies *before* paying for LK: the
-        # low-confidence jumps are the likelihood pass's territory, and
-        # dropping them here (no decode) is what keeps the flow confirm
-        # affordable -- and also what stops ``max_candidates`` from
-        # spending its budget on big lost jumps instead of the small
-        # confidently-wrong jitter this source exists to find.
-        anomalous = anomalous & (lik >= confident_high)
-    frame_step = np.nanmax(np.where(anomalous, step, 0.0), axis=1)
-    frame_step[~np.isfinite(frame_step)] = 0.0
-
-    cand = np.where(frame_step > 0)[0]
-    cand = cand[(cand >= 1) & (cand <= n_frames - 2)]
-    if max_candidates is not None and len(cand) > max_candidates:
-        keep = np.argsort(frame_step[cand])[::-1][:max_candidates]
-        cand = np.sort(cand[keep])
-
-    corrections = {lab: {} for lab in labels}
-    residual = {lab: {} for lab in labels}
-    if len(cand):
-        fr = flow_residual(positions, video, frames=cand, labels=labels,
-                           lk_config=lk_config)
-        for k, f in enumerate(fr.frames):
-            for p, lab in enumerate(labels):
-                r = fr.residual[k, p]
-                if not (np.isfinite(r) and r > confirm_thr
-                        and fr.agreement[k, p] < trust_tol):
-                    continue
-                if (confident_high is not None and lik is not None
-                        and lik[int(f), p] < confident_high):
-                    continue                       # a "lost" frame -- likelihood's job
-                corrections[lab][int(f)] = [float(fr.lk_estimate[k, p, 0]),
-                                            float(fr.lk_estimate[k, p, 1])]
-                residual[lab][int(f)] = float(r)
-
-    return FlowBlipResult(
-        corrections=corrections,
-        residual=residual,
-        n_screened=int(len(cand)),
-        params=dict(detect_min=detect_min, confirm_thr=confirm_thr,
-                    trust_tol=trust_tol, confident_high=confident_high,
-                    max_candidates=max_candidates),
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Unified blip detector: LK-from-previous-frame vs DLC disagreement, 5-sigma.  #
-# One definition (this), reused by the GUI "Interpolate blips" button and the  #
-# autorefine curriculum. The absolute-px flow_blips path above is retired in   #
-# favour of this + autorefine-only filters layered on top.                     #
+# The ONE blip definition -- reused by the GUI "Interpolate blips" button and  #
+# the autorefine curriculum, which layers confidence/agreement/budget on top.  #
 # --------------------------------------------------------------------------- #
 
 def _runs_from_mask(mask, max_gap: int = 0):
@@ -786,7 +352,6 @@ def _runs_from_mask(mask, max_gap: int = 0):
         prev = i
     runs.append((s, prev))
     return runs
-
 
 def compute_lk_predictions(positions, video, *, lk_config=None,
                            progress_callback=None):
@@ -828,7 +393,6 @@ def compute_lk_predictions(positions, video, *, lk_config=None,
             progress_callback(m, n_frames)
     return lk_pred
 
-
 def disagreement_blips(positions, lk_pred, *, labels=None,
                        threshold_factor: float = 5.0, max_gap: int = 1,
                        max_blip_length=None) -> BlipReport:
@@ -839,7 +403,7 @@ def disagreement_blips(positions, lk_pred, *, labels=None,
     Adaptive by construction -- the threshold sits above each point's own
     disagreement floor, so a point can move (or wobble a few px) without
     blipping; only anomalous disagreement flags. Returns a :class:`BlipReport`
-    interchangeable with :func:`detect_blips`'s, so :func:`interpolate_blips`
+    interchangeable with a hand-built one, so :func:`interpolate_blips`
     consumes it unchanged.
 
     Args:
@@ -889,7 +453,6 @@ def disagreement_blips(positions, lk_pred, *, labels=None,
                                   max_gap=max_gap, source="disagreement"),
                       n_frames=n_frames)
 
-
 def blipped_positions(ann, report: BlipReport) -> dict:
     """The model's ORIGINAL positions at every flagged blip frame -- the sparse
     ``blips`` inspection layer (what the model got wrong), as
@@ -902,7 +465,6 @@ def blipped_positions(ann, report: BlipReport) -> dict:
                 out[b.label][int(f)] = [float(xy[0]), float(xy[1])]
     return out
 
-
 def deblip_trace(ann, corrections) -> dict:
     """The dense DLC trace with blip frames overwritten by the LK-RSTC
     interpolation -- the ``deblip`` corrected output, as ``{label: {frame:
@@ -914,7 +476,6 @@ def deblip_trace(ann, corrections) -> dict:
         for f, xy in corrections.data[label].items():
             out[label][int(f)] = [float(xy[0]), float(xy[1])]
     return out
-
 
 def deblip(ann, lk_pred, *, threshold_factor: float = 5.0, max_gap: int = 1,
            max_blip_length=None, lk_config=None, progress_callback=None):
@@ -941,7 +502,6 @@ def deblip(ann, lk_pred, *, threshold_factor: float = 5.0, max_gap: int = 1,
                                     progress_callback=progress_callback)
     return report, corrections, blipped_positions(ann, report), deblip_trace(ann, corrections)
 
-
 def _lk_layer_data(lk_pred, labels) -> dict:
     """Dense ``{label: {frame: [x, y]}}`` from an ``(N, P, 2)`` LK-prediction
     array, skipping NaN frames (e.g. frame 0 / any point with no previous
@@ -954,7 +514,6 @@ def _lk_layer_data(lk_pred, labels) -> dict:
             if np.isfinite(col[f]).all():
                 out[str(lab)][int(f)] = [float(col[f, 0]), float(col[f, 1])]
     return out
-
 
 def save_lk_layer(video_path, prediction_h5, out_fname, *, lk_config=None,
                   progress_callback=None, overwrite=False):
@@ -979,7 +538,6 @@ def save_lk_layer(video_path, prediction_h5, out_fname, *, lk_config=None,
                           video=reader)
     out.save()
     return out_fname
-
 
 def _lk_layer_worker(args):
     """Picklable ProcessPool worker for :meth:`DLCProject._save_lk_layers`.

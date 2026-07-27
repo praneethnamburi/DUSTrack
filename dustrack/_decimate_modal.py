@@ -7,7 +7,7 @@ re-run the cheap selection over the cached embeddings, review the picks as a
 gallery, and confirm. Pairs with :mod:`dustrack.imagesimilarity` (the engine)
 and :mod:`dustrack.gui` (the workflow method that composes the embed pass with
 this modal). The dialog factory lives in :mod:`._overlays` alongside the other
-dialog factories. Mirrors :mod:`dustrack._blip_modal`'s thin-wrapper shape.
+dialog factories. A thin wrapper over the dialog factory in :mod:`._overlays`.
 """
 from __future__ import annotations
 

@@ -17,14 +17,12 @@ cv2 = pytest.importorskip("cv2")
 
 from dustrack import flow_consistency as fc
 
-
 class _FakeFrame:
     def __init__(self, arr):
         self._a = arr
 
     def asnumpy(self):
         return self._a
-
 
 class _FakeVideo:
     """Minimal VideoReader stand-in: ``video[i].asnumpy()`` -> gray frame."""
@@ -38,7 +36,6 @@ class _FakeVideo:
     def __len__(self):
         return len(self._f)
 
-
 def make_video(n=30, dx=1, dy=1, size=220):
     rng = np.random.default_rng(0)
     base = (rng.random((size, size)).astype(np.float32) * 255)
@@ -49,16 +46,13 @@ def make_video(n=30, dx=1, dy=1, size=220):
     ]
     return _FakeVideo(frames), dx, dy
 
-
 def true_track(n, dx, dy, q):
     return np.array([[q[0] + m * dx, q[1] + m * dy] for m in range(n)], float)
-
 
 def two_point_positions(n, dx, dy, q0=(80, 90), q1=(140, 130)):
     p0 = true_track(n, dx, dy, q0)
     p1 = true_track(n, dx, dy, q1)
     return np.stack([p0, p1], axis=1)                    # (n, 2, 2)
-
 
 class TestFlowResidual:
     def test_on_track_residual_is_near_zero(self):
@@ -126,43 +120,6 @@ class TestFlowResidual:
         idx = {int(f): k for k, f in enumerate(fr.frames)}
         assert fr.residual[idx[15], 0] > 25 and fr.agreement[idx[15], 0] < 3.0
         assert fr.agreement[idx[14], 0] > 5.0 or fr.agreement[idx[16], 0] > 5.0
-
-
-class TestFlowBlips:
-    """The blip-detector layer over the primitive: screen cheaply, confirm
-    against the flow, keep only confident disagreements."""
-
-    def test_flags_a_confident_jump_with_its_correction(self):
-        from dustrack import blip as blipmod
-        vid, dx, dy = make_video()
-        pos = two_point_positions(30, dx, dy)
-        truth = pos[15, 0].copy()
-        pos[15, 0] = truth + [30.0, 0.0]
-        lik = np.ones((30, 2))
-        res = blipmod.flow_blips(pos, vid, likelihood=lik, confident_high=0.9,
-                                 detect_min=3.0, confirm_thr=5.0, trust_tol=3.0)
-        assert 15 in res.corrections["0"]
-        assert np.linalg.norm(np.array(res.corrections["0"][15]) - truth) < 3.0
-        assert res.residual["0"][15] > 25
-
-    def test_confident_filter_drops_lost_frames(self):
-        """A big jump the model is UNSURE about is the likelihood pass's
-        job -- confident_high keeps this source complementary."""
-        from dustrack import blip as blipmod
-        vid, dx, dy = make_video()
-        pos = two_point_positions(30, dx, dy)
-        pos[15, 0] = pos[15, 0] + [30.0, 0.0]
-        lik = np.ones((30, 2)); lik[15, 0] = 0.2          # model knows it's lost
-        res = blipmod.flow_blips(pos, vid, likelihood=lik, confident_high=0.9)
-        assert 15 not in res.corrections["0"]
-
-    def test_smooth_track_flags_nothing(self):
-        from dustrack import blip as blipmod
-        vid, dx, dy = make_video()
-        pos = two_point_positions(30, dx, dy)
-        res = blipmod.flow_blips(pos, vid, detect_min=3.0, confirm_thr=5.0)
-        assert res.n_kept() == 0
-
 
 class TestDlcPositions:
     def test_bridges_a_dlc_frame(self):

@@ -62,7 +62,6 @@ from . import _nav_widget
 from . import _preflight
 from . import _preflight_modal
 from . import _seed_bundle_modal
-from . import _blip_modal
 from . import _train_modal
 from . import blip as _blip
 from . import _view_state
@@ -91,7 +90,6 @@ from ._file_management import VideoFileManager, make_annotation_file_name
 from .dlcinterface import DLCProject, _find_video_index
 from .seed import import_seed_bundle_into_project
 
-
 def _dino_backend_available() -> bool:
     """Whether :func:`dustrack.imagesimilarity.dino_embed` can actually embed in
     this environment: the local DINOv3-B path is fully loadable (weights + the
@@ -109,7 +107,6 @@ def _dino_backend_available() -> bool:
         return True
     return (importlib.util.find_spec("torch") is not None
             and importlib.util.find_spec("transformers") is not None)
-
 
 class DUSTrack(VideoBrowser):
     """
@@ -2560,143 +2557,6 @@ class DUSTrack(VideoBrowser):
         except Exception:  # noqa: BLE001
             pass
         return adopted
-
-    def detect_blips_workflow(self, event=None):
-        """Detect blip outliers on the active layer + remove them.
-
-        Two-stage flow that mirrors :meth:`process_with_lk`'s Qt-vs-mpl
-        dispatch:
-
-        1. On Qt: pop the ``BlipOptionsDialog`` modal (knob tuning +
-           in-modal Detect button + results pane + drop-frame
-           checkbox). Cancel returns; on Remove blips, save a
-           without-blip copy of the source layer via
-           :func:`dustrack.blip.remove_blips` and adopt it.
-        2. On mpl-fallback: run detect + remove synchronously with
-           module defaults; print a one-line summary.
-
-        Either way, the without-blip layer adopts via
-        :meth:`_adopt_layer` with the source layer pinned as overlay
-        (mirrors Reduce jitter's adoption shape so the user sees the
-        source DLC trace + cleaned version side-by-side immediately).
-
-        The LK-interpolation alternative (per-blip RSTC re-track,
-        producing a sparse corrections layer) shipped first but turned
-        out to be less useful in the pia02 workflow than just dropping
-        the contaminating frames -- the model trains on a cleaner
-        subset rather than on synthesized positions. The LK function
-        :func:`dustrack.blip.interpolate_blips` stays available for
-        headless callers who explicitly want it.
-        """
-        source_ann = self.ann
-        source_layer_name = source_ann.name
-
-        def _adopt_fresh_removed(out):
-            """Same reload-then-adopt as the corrections flow: on a
-            re-run the in-session layer object holds the stale data
-            even after the disk file is overwritten, so reload before
-            handing off to the idempotent _adopt_layer.
-            """
-            layer_name = VideoFileManager.canonical_layer_name(out.fname)
-            if layer_name in self.annotations.names:
-                self.annotations[layer_name].reload()
-            self._adopt_layer(
-                out,
-                set_active=True,
-                set_overlay=source_layer_name,
-            )
-            self.update()
-
-        qt_window = self._find_qt_window()
-        if qt_window is None:
-            # mpl-fallback: synchronous, default knobs, no modal, no
-            # drop-frame option (header API ergonomics).
-            report = _blip.detect_blips(source_ann)
-            if len(report) == 0:
-                print(
-                    f"[detect_blips] no blips found on layer "
-                    f"{source_layer_name!r}; nothing to remove."
-                )
-                return None
-            out = _blip.remove_blips(
-                source_ann, report, drop_frame_if_any_blip=False
-            )
-            out.save()
-            _adopt_fresh_removed(out)
-            print(
-                f"[detect_blips] {len(report)} blips on layer "
-                f"{source_layer_name!r}; without-blip layer saved to "
-                f"{out.fname}."
-            )
-            return out
-
-        modal_result = _blip_modal.prompt_blip_options(qt_window, source_ann)
-        if modal_result is None:
-            return None  # user clicked Cancel
-        report, _knobs, drop_frame_if_any_blip = modal_result
-
-        # Refuse to silently overwrite an existing _blip_removed file.
-        from ._overlays import _make_confirm_overlay_class
-        from .blip import _removed_fname
-
-        out_path = _removed_fname(source_ann)
-        if os.path.exists(out_path):
-            ConfirmOverlay = _make_confirm_overlay_class()
-            choice = ConfirmOverlay(
-                qt_window,
-                title="Without-blip file exists",
-                message=(
-                    f"A without-blip file already exists at\n  {out_path}\n\n"
-                    "Overwrite it (the existing file is lost), or cancel?"
-                ),
-                buttons=[("Overwrite", "destructive"), ("Cancel", "neutral")],
-                default="Cancel",
-                severity="warning",
-            ).exec_()
-            if choice != "Overwrite":
-                return None
-            os.remove(out_path)
-
-        def _remove():
-            # remove_blips is a synchronous in-memory rebuild (no
-            # decode, no per-blip LK); finishes in milliseconds even
-            # on the 36715-frame pia02 trace, so no progress callback
-            # is needed -- the ProgressOverlay's tqdm-style bar just
-            # snaps to 100% before the user notices.
-            out = _blip.remove_blips(
-                source_ann,
-                report,
-                drop_frame_if_any_blip=drop_frame_if_any_blip,
-            )
-            out.save()
-            return out
-
-        def _on_success(out):
-            _adopt_fresh_removed(out)
-
-        policy_desc = (
-            "drop whole frame on any blip"
-            if drop_frame_if_any_blip
-            else "drop blipped label only"
-        )
-        self._run_with_overlay(
-            qt_window,
-            work_fn=_remove,
-            on_success=_on_success,
-            title=f"Removing {len(report)} blips ({source_layer_name})",
-            initial_phase=f"Building without-blip copy ({policy_desc})",
-            hint=(
-                "Output is also streamed to the launching terminal. "
-                "The without-blip layer will load when you click Done."
-            ),
-            show_progress_bar=False,
-            success_summary=(
-                f"Blip removal complete: {len(report)} blips dropped "
-                f"from layer {source_layer_name!r}. Without-blip layer "
-                f"loaded."
-            ),
-        )
-        return None
 
     def remove_current_layer(self, event=None):
         """Remove the active annotation layer from the DUSTrack session.

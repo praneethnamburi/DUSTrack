@@ -96,10 +96,7 @@ from .lk_filter import lk_moving_average_filter
 from .blip import (
     Blip,
     BlipReport,
-    detect_blips,
-    detect_and_interpolate_blips,
     interpolate_blips,
-    remove_blips,
 )
 from .dlcinterface import DLCProject
 from .gui import DUSTrack
@@ -126,8 +123,6 @@ __all__ = [
     "batch",
     "build_toc",
     "convert_to_mono",
-    "detect_blips",
-    "detect_and_interpolate_blips",
     "dlcpatch",
     "extract_snapshot_for_seeding",
     "get_seed_bundles_root",
@@ -135,7 +130,6 @@ __all__ = [
     "inspect_seed_bundle",
     "interpolate_blips",
     "list_seed_bundles",
-    "remove_blips",
     "lk_moving_average_filter",
     "lucas_kanade",
     "lucas_kanade_rstc",

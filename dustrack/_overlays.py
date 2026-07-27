@@ -24,7 +24,6 @@ from pathlib import Path
 from . import _config
 from . import dlcloader as _dlcloader
 
-
 # Phase / progress detection on DLC's stdout. We don't depend on any
 # single DLC version's exact format -- if nothing matches, the overlay
 # stays in indeterminate-busy mode and the status label shows the last
@@ -96,7 +95,6 @@ _PROGRESS_PATTERNS = [
     re.compile(r"\b(\d+)\s*/\s*(\d+)\s*\[", re.IGNORECASE),  # tqdm-style "  3/100 ["
 ]
 
-
 class _Tee:
     """Fan-out writer: forwards every write+flush to multiple sinks.
 
@@ -135,7 +133,6 @@ class _Tee:
     def isatty(self):
         return False
 
-
 class _QueueWriter:
     """File-like sink that pushes each write into a queue (non-blocking)."""
 
@@ -152,7 +149,6 @@ class _QueueWriter:
 
     def isatty(self):
         return False
-
 
 def _make_progress_overlay_class():
     """Build :class:`ProgressOverlay` lazily so importing ``dustrack``
@@ -365,7 +361,6 @@ def _make_progress_overlay_class():
             self._frame.deleteLater()
 
     return ProgressOverlay
-
 
 def _make_confirm_overlay_class():
     """Build :class:`ConfirmOverlay` lazily, mirroring
@@ -602,7 +597,6 @@ def _make_confirm_overlay_class():
 
     return ConfirmOverlay
 
-
 # ---------------------------------------------------------------------------
 # Training options modal (Train DLC model click flow, 1.2.0a2)
 # ---------------------------------------------------------------------------
@@ -620,7 +614,6 @@ def _make_confirm_overlay_class():
 # - :func:`_training_options_to_train_iteration_kwargs` translates the
 #   user-modified dialog state to ``train_iteration`` kwargs.
 # - :func:`_make_training_options_class` builds the Qt dialog lazily.
-
 
 def _default_training_options(dlcproject):
     """Initial state dict for the Training options modal.
@@ -672,7 +665,6 @@ def _default_training_options(dlcproject):
         "is_dlc3": bool(_dlcloader.DLC3),
     }
 
-
 def _training_options_to_train_iteration_kwargs(options):
     """Translate Training options dialog state to
     :meth:`DLCProject.train_iteration` kwargs.
@@ -708,7 +700,6 @@ def _training_options_to_train_iteration_kwargs(options):
             "external_snapshot_path": options["external_snapshot_path"],
         }
     raise ValueError(f"unknown refine_mode in options: {mode!r}")
-
 
 def _default_create_project_options(*, video_fname, layer_name, experimenter,
                                     last_project_root=None):
@@ -747,7 +738,6 @@ def _default_create_project_options(*, video_fname, layer_name, experimenter,
         "experimenter": str(experimenter),
     }
 
-
 def _validate_create_project_options(options):
     """Validate Create DLC Project modal state. Pure-Python.
 
@@ -779,7 +769,6 @@ def _validate_create_project_options(options):
     if "-" in experimenter:
         return False, "Experimenter cannot contain '-' (reserved by DLC's folder naming)."
     return True, ""
-
 
 def _make_training_options_class():
     """Build :class:`TrainingOptionsDialog` lazily, mirroring
@@ -1164,7 +1153,6 @@ def _make_training_options_class():
 
     return TrainingOptionsDialog
 
-
 def _make_create_project_options_class():
     """Build :class:`CreateProjectOptionsDialog` lazily, mirroring
     :func:`_make_training_options_class`'s qtpy-import-on-demand pattern.
@@ -1382,11 +1370,9 @@ def _make_create_project_options_class():
 
     return CreateProjectOptionsDialog
 
-
 # ---------------------------------------------------------------------------
 # Blip-detection options modal (Detect blip outliers click flow, 1.3.0)
 # ---------------------------------------------------------------------------
-
 
 def _format_blip_results_text(report) -> str:
     """Render a :class:`dustrack.blip.BlipReport` as the multi-line
@@ -1433,371 +1419,6 @@ def _format_blip_results_text(report) -> str:
             f"(skipped: edge={n_edge}  long={n_long}  noreturn={n_noreturn})"
         )
     return "\n".join(lines)
-
-
-def _make_blip_options_class():
-    """Build :class:`BlipOptionsDialog` lazily, mirroring
-    :func:`_make_training_options_class`'s qtpy-import-on-demand pattern.
-
-    Two-stage modal for the **Detect blip outliers** workflow button.
-    Stage 1: user tunes the three detection knobs (threshold factor,
-    max blip length, return position factor) and clicks **Detect** to
-    run :func:`dustrack.blip.detect_blips` synchronously against the
-    active annotation. Detection is fast (~0.14 s on a 36715-frame
-    pia02 trace), so an in-modal blocking call is fine and avoids the
-    overhead of an extra async overlay for the cheap stage.
-
-    Stage 2: results populate in-modal (per-label blip counts +
-    thresholds + length histogram); the **Interpolate** button enables.
-    Clicking Interpolate closes the modal and returns
-    ``(report, knobs)``; the caller (``DUSTrack.detect_blips_workflow``)
-    kicks off the slow LK interpolation pass under a separate
-    :class:`ProgressOverlay`. **Cancel** returns ``None`` -- caller
-    aborts.
-
-    Knobs persist across re-Detect clicks within the same modal session
-    so users can iterate ("tune down threshold_factor, look at the
-    histogram, tune again").
-    """
-    from qtpy.QtCore import QEvent, QEventLoop, QObject, Qt
-    from qtpy.QtWidgets import (
-        QCheckBox,
-        QDoubleSpinBox,
-        QFrame,
-        QHBoxLayout,
-        QLabel,
-        QPushButton,
-        QSpinBox,
-        QVBoxLayout,
-        QWidget,
-    )
-
-    # Reuse ConfirmOverlay's role QSS (same vocab as Train/Cancel).
-    _ROLE_QSS = {
-        "primary": (
-            "QPushButton { background-color: #3a86ff; color: white; "
-            "  border: 1px solid #2a76ef; padding: 6px 24px; "
-            "  font-size: 11pt; font-weight: bold; }"
-            "QPushButton:hover { background-color: #4a96ff; }"
-            "QPushButton:pressed { background-color: #2a76ef; }"
-            "QPushButton:disabled { background-color: #2a4a7a; color: #999999; "
-            "  border: 1px solid #244270; }"
-        ),
-        "neutral": (
-            "QPushButton { background-color: #555555; color: white; "
-            "  border: 1px solid #444444; padding: 6px 24px; "
-            "  font-size: 11pt; }"
-            "QPushButton:hover { background-color: #666666; }"
-            "QPushButton:pressed { background-color: #444444; }"
-        ),
-    }
-
-    # Checkbox QSS so the indicator + label are legible on the dark
-    # rgba(0,0,0,200) backdrop (Windows-native is too subtle per
-    # [[feedback_dark_overlay_native_disabled_subtle]]).
-    _CHECKBOX_QSS = (
-        "QCheckBox { color: white; font-size: 11pt; }"
-        "QCheckBox::indicator { width: 16px; height: 16px; }"
-    )
-
-    def _labeled_row(text: str, widget, tooltip: str = ""):
-        """Helper: ``[QLabel(text)  widget  <stretch>]`` row layout.
-
-        ``tooltip``, if non-empty, is attached to both the label and
-        the widget so hovering either surface explains the knob. Plain
-        text (no QSS); Qt renders it as a tooltip via the OS toolkit.
-        """
-        row = QHBoxLayout()
-        lbl = QLabel(text + ":")
-        lbl.setMinimumWidth(180)
-        if tooltip:
-            lbl.setToolTip(tooltip)
-            widget.setToolTip(tooltip)
-        row.addWidget(lbl)
-        row.addWidget(widget)
-        row.addStretch(1)
-        return row
-
-    class BlipOptionsDialog(QObject):
-        """Synchronous two-stage modal for Detect blip outliers.
-
-        ``exec_()`` returns ``(report, params_dict, drop_frame_if_any_blip)`` on Remove blips,
-        ``None`` on Cancel. ``report`` is whatever the last Detect run
-        produced (guaranteed to have ``len(blips) > 0`` because the
-        Interpolate button is gated on non-empty results).
-        """
-
-        def __init__(
-            self,
-            main_window,
-            *,
-            ann,
-            detect_fn,
-        ):
-            super().__init__(main_window)
-            self._mw = main_window
-            self._ann = ann
-            self._detect_fn = detect_fn
-            self._result = None
-            self._loop = QEventLoop()
-            self._last_report = None
-
-            self._frame = QFrame(main_window)
-            self._frame.setObjectName("dustrack_blip_options_overlay")
-            self._frame.setStyleSheet(
-                "#dustrack_blip_options_overlay { "
-                "  background-color: rgba(0, 0, 0, 200); "
-                "}"
-                "QLabel { color: white; }"
-                "#dustrack_blip_title { color: white; "
-                "  font-size: 22pt; font-weight: bold; }"
-                "#dustrack_blip_results { color: white; font-family: "
-                "  'Consolas', 'Courier New', monospace; font-size: 10pt; }"
-            )
-            self._frame.setFocusPolicy(Qt.StrongFocus)
-
-            outer = QVBoxLayout(self._frame)
-            outer.setAlignment(Qt.AlignCenter)
-            outer.addStretch(1)
-
-            title_lbl = QLabel("Detect blip outliers")
-            title_lbl.setObjectName("dustrack_blip_title")
-            title_lbl.setAlignment(Qt.AlignCenter)
-            outer.addWidget(title_lbl)
-
-            # Inner content card -- no QWidget QSS so native spinboxes
-            # keep their native rendering (per feedback_qt_qss_vs_palette).
-            content = QWidget()
-            content.setMaximumWidth(640)
-            content_layout = QVBoxLayout(content)
-            content_layout.setSpacing(12)
-
-            # Active-layer context line.
-            layer_name = getattr(ann, "name", None) or "<unnamed>"
-            n_labels = len(getattr(ann, "labels", []) or [])
-            n_frames = int(getattr(ann, "n_frames", 0) or 0)
-            ctx_lbl = QLabel(
-                f"Active layer: {layer_name!r}\n"
-                f"  {n_labels} label{'s' if n_labels != 1 else ''} × {n_frames} frames"
-            )
-            content_layout.addWidget(ctx_lbl)
-
-            # --- Detection-parameter spinboxes ---
-            params_lbl = QLabel("Detection parameters")
-            params_lbl.setStyleSheet("font-weight: bold;")
-            content_layout.addWidget(params_lbl)
-
-            # Spinbox ranges are generous on the upper end -- the
-            # algorithm imposes no hard cap, and users iterating
-            # against unusual data (very noisy traces, sustained
-            # model failures) may legitimately want larger values
-            # than the defaults suggest. Lower bounds are physically
-            # meaningful: threshold_factor must be positive,
-            # max_blip_length must be >=1 (single-frame blip),
-            # return tolerance must be positive.
-            self._threshold_spin = QDoubleSpinBox()
-            self._threshold_spin.setRange(0.1, 1000.0)
-            self._threshold_spin.setSingleStep(0.5)
-            self._threshold_spin.setDecimals(1)
-            self._threshold_spin.setValue(150.0)
-            content_layout.addLayout(
-                _labeled_row(
-                    "Threshold factor",
-                    self._threshold_spin,
-                    tooltip=(
-                        "How extreme a frame-to-frame jump has to be "
-                        "to count as the start of a blip, in units of "
-                        "robust sigma (1.4826 * MAD) above the per-"
-                        "label median displacement. Higher = stricter "
-                        "(fewer candidates flagged). The threshold is "
-                        "computed per label, so high-motion and low-"
-                        "motion labels get appropriately scaled cuts."
-                    ),
-                )
-            )
-
-            self._max_len_spin = QSpinBox()
-            self._max_len_spin.setRange(1, 1000)
-            self._max_len_spin.setValue(50)
-            content_layout.addLayout(
-                _labeled_row(
-                    "Max blip length",
-                    self._max_len_spin,
-                    tooltip=(
-                        "Maximum number of consecutive bad frames a "
-                        "spike can span and still be bracketed as a "
-                        "blip. Spikes whose forward scan doesn't find "
-                        "a return-position anchor within this many "
-                        "frames are skipped (counted as 'long' in the "
-                        "results pane) -- they're usually sustained "
-                        "model failures, not transient blips."
-                    ),
-                )
-            )
-
-            self._return_factor_spin = QDoubleSpinBox()
-            self._return_factor_spin.setRange(0.1, 1000.0)
-            self._return_factor_spin.setSingleStep(0.5)
-            self._return_factor_spin.setDecimals(1)
-            self._return_factor_spin.setValue(3.0)
-            content_layout.addLayout(
-                _labeled_row(
-                    "Return tolerance",
-                    self._return_factor_spin,
-                    tooltip=(
-                        "How close (in multiples of typical per-frame "
-                        "displacement) the position after the spike "
-                        "has to land near the position before the "
-                        "spike for the run to count as a blip. The "
-                        "tolerance scales with the run length, so a "
-                        "5-frame spike is allowed to land further "
-                        "from the pre-spike anchor than a 1-frame "
-                        "spike. Higher = more permissive (more spikes "
-                        "qualify as 'returning'); lower = stricter."
-                    ),
-                )
-            )
-
-            # Detect button (its own row, centered).
-            detect_row = QHBoxLayout()
-            detect_row.setAlignment(Qt.AlignCenter)
-            self._detect_btn = QPushButton("Detect")
-            self._detect_btn.setMinimumWidth(160)
-            self._detect_btn.setStyleSheet(_ROLE_QSS["primary"])
-            self._detect_btn.clicked.connect(self._on_detect_clicked)
-            detect_row.addWidget(self._detect_btn)
-            content_layout.addLayout(detect_row)
-
-            # Results section: blank until first Detect.
-            results_header = QLabel("Results")
-            results_header.setStyleSheet("font-weight: bold;")
-            content_layout.addWidget(results_header)
-            self._results_lbl = QLabel(_format_blip_results_text(None))
-            self._results_lbl.setObjectName("dustrack_blip_results")
-            self._results_lbl.setWordWrap(False)
-            self._results_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            content_layout.addWidget(self._results_lbl)
-
-            # Output options
-            options_header = QLabel("Output options")
-            options_header.setStyleSheet("font-weight: bold;")
-            content_layout.addWidget(options_header)
-            self._drop_frame_chk = QCheckBox(
-                "Drop all labels at frames where any blip was detected"
-            )
-            self._drop_frame_chk.setChecked(False)
-            self._drop_frame_chk.setStyleSheet(_CHECKBOX_QSS)
-            self._drop_frame_chk.setToolTip(
-                "When unchecked (default): only the blipped label's entry "
-                "is removed at each blip frame; other labels at the same "
-                "frame are preserved. When checked: every label is "
-                "dropped at any frame where any blip was detected -- "
-                "useful when blips correlate with bad image quality "
-                "(occlusion, motion blur) that compromises all labels at "
-                "the same instant."
-            )
-            content_layout.addWidget(self._drop_frame_chk)
-
-            # Cancel + Remove blips button row.
-            button_row = QHBoxLayout()
-            button_row.setAlignment(Qt.AlignCenter)
-            self._cancel_btn = QPushButton("Cancel")
-            self._cancel_btn.setMinimumWidth(160)
-            self._cancel_btn.setStyleSheet(_ROLE_QSS["neutral"])
-            self._cancel_btn.clicked.connect(self._on_cancel_clicked)
-            self._apply_btn = QPushButton("Remove blips →")
-            self._apply_btn.setMinimumWidth(160)
-            self._apply_btn.setStyleSheet(_ROLE_QSS["primary"])
-            self._apply_btn.setEnabled(False)
-            self._apply_btn.clicked.connect(self._on_apply_clicked)
-            button_row.addWidget(self._cancel_btn)
-            button_row.addWidget(self._apply_btn)
-            content_layout.addLayout(button_row)
-
-            outer.addWidget(content, alignment=Qt.AlignCenter)
-            outer.addStretch(1)
-
-            main_window.installEventFilter(self)
-            self._frame.show()
-            self._reposition()
-            self._frame.raise_()
-            self._detect_btn.setFocus()
-
-        # -- Slots -----------------------------------------------------
-
-        def _current_knobs(self) -> dict:
-            return dict(
-                threshold_factor=float(self._threshold_spin.value()),
-                max_blip_length=int(self._max_len_spin.value()),
-                return_position_factor=float(self._return_factor_spin.value()),
-            )
-
-        def _drop_frame_state(self) -> bool:
-            return bool(self._drop_frame_chk.isChecked())
-
-        def _on_detect_clicked(self):
-            knobs = self._current_knobs()
-            try:
-                self._last_report = self._detect_fn(self._ann, **knobs)
-            except Exception as exc:  # noqa: BLE001
-                # Surface the failure in the results pane rather than
-                # tearing down the modal; detect is supposed to be
-                # cheap + safe, so an exception here is a real signal
-                # (e.g. ann has no labels). Disable Interpolate.
-                self._last_report = None
-                self._results_lbl.setText(f"Detection failed: {exc}")
-                self._apply_btn.setEnabled(False)
-                return
-            self._results_lbl.setText(_format_blip_results_text(self._last_report))
-            self._apply_btn.setEnabled(len(self._last_report) > 0)
-
-        def _on_apply_clicked(self):
-            if self._last_report is None or len(self._last_report) == 0:
-                return  # button shouldn't have been clickable, but be defensive
-            self._result = (
-                self._last_report,
-                self._current_knobs(),
-                self._drop_frame_state(),
-            )
-            self._dismiss()
-            self._loop.quit()
-
-        def _on_cancel_clicked(self):
-            self._result = None
-            self._dismiss()
-            self._loop.quit()
-
-        # -- Lifecycle (mirror TrainingOptionsDialog) ------------------
-
-        def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
-            if obj is self._mw and event.type() == QEvent.Resize:
-                self._reposition()
-            return False
-
-        def _reposition(self):
-            self._frame.setGeometry(0, 0, self._mw.width(), self._mw.height())
-            self._frame.raise_()
-
-        def _dismiss(self):
-            try:
-                self._mw.removeEventFilter(self)
-            except Exception:
-                pass
-            self._frame.hide()
-            self._frame.deleteLater()
-
-        def exec_(self):
-            """Block until the user clicks Remove blips or Cancel.
-
-            Returns ``(report, knobs_dict, drop_frame_if_any_blip)``
-            on Remove blips; ``None``
-            on Cancel.
-            """
-            self._loop.exec_()
-            return self._result
-
-    return BlipOptionsDialog
-
 
 def _make_seed_bundle_picker_class():
     """Build :class:`SeedBundlePickerDialog` lazily, mirroring
@@ -2001,11 +1622,9 @@ def _make_seed_bundle_picker_class():
 
     return SeedBundlePickerDialog
 
-
 # ---------------------------------------------------------------------
 # 1.2.0a3: no-arg dustrack.open() welcome modal
 # ---------------------------------------------------------------------
-
 
 def _render_recent_session_label(session) -> str:
     """One-line label for a recent-sessions entry in the picker.
@@ -2039,7 +1658,6 @@ def _render_recent_session_label(session) -> str:
     except (ValueError, OSError):
         pass
     return f"{first.name} + {n - 1} more"
-
 
 def _make_open_video_overlay_class():
     """Lazy factory for the 1.2.0a3 no-arg :func:`dustrack.open`
@@ -2414,7 +2032,6 @@ def _make_open_video_overlay_class():
 
     return OpenVideoOverlay
 
-
 def _show_first_paint_notice(tracker) -> None:
     """One-shot modal asking the user to dismiss the dialog (or alt-tab
     away and back, or click any sidebar dropdown) to force a paint of
@@ -2471,7 +2088,6 @@ def _show_first_paint_notice(tracker) -> None:
         # Defensive: a failed notice should not block the session.
         pass
 
-
 # ---------------------------------------------------------------------
 # Video picker -- used by OpenVideoOverlay and also by dustrack.open()
 # ---------------------------------------------------------------------
@@ -2480,7 +2096,6 @@ def _show_first_paint_notice(tracker) -> None:
 # reachable via the "All files" fallback. Kept conservative so users
 # don't accidentally pick an audio/image asset and crash on construction.
 _VIDEO_PICKER_EXTENSIONS = ("mp4", "avi", "mov", "mkv", "mts", "m4v", "wmv", "webm")
-
 
 def _prompt_for_videos(parent=None):
     """Pop a Qt file-picker for one-or-more video files (or a DLC
@@ -2534,7 +2149,6 @@ def _prompt_for_videos(parent=None):
     if not paths:
         return None
     return [Path(p) for p in paths]
-
 
 def _make_decimate_gallery_class():
     """Build the cluster-per-row diverse-frame review modal lazily (qtpy on demand).
@@ -2915,7 +2529,6 @@ def _make_decimate_gallery_class():
             return self._result
 
     return DecimateGalleryDialog
-
 
 def _make_source_selection_class():
     """Build the diverse-selection *source* modal lazily (qtpy on demand).
