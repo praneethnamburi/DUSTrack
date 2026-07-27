@@ -1033,7 +1033,8 @@ class DLCProject:
         return self
 
     def analyze_videos(
-        self, iteration_num=None, snapshotindex=None, create_video=True, **kwargs
+        self, iteration_num=None, snapshotindex=None, create_video=True,
+        save_lk_predictions=True, **kwargs
     ):
         """
         Run inference on videos and optionally create labeled output videos.
@@ -1105,6 +1106,7 @@ class DLCProject:
             destfolder=self.paths["videos"] / f"iteration-{iteration_num}",
         )
 
+        analyzed_videos = list(common_params["videos"])
         _dlcloader.deeplabcut.analyze_videos(
             **common_params, save_as_csv=save_as_csv, **kwargs
         )
@@ -1112,7 +1114,63 @@ class DLCProject:
             _dlcloader.deeplabcut.create_labeled_video(**common_params)
 
         self.edit_config(snapshotindex=current_snapshotindex_value)
+
+        # The LK-from-previous-frame prediction is computed once here -- the
+        # frames were just decoded for inference -- and saved as a paired
+        # ``lk_`` layer, so blip detection later (GUI + autorefine) is a cheap
+        # array op with no second decode.
+        if save_lk_predictions:
+            try:
+                self._save_lk_layers(analyzed_videos, iteration_num)
+            except Exception as exc:                   # never fail inference on this
+                print(f"[analyze_videos] LK-layer save skipped: {exc!r}")
         return self
+
+    def _save_lk_layers(self, videos, iteration_num, *, max_workers: int = 4):
+        """Compute + save the paired ``lk_iteration-N_<snapshot>`` layer for each
+        analyzed video (parallel across videos, sequential fallback). Reads the
+        prediction h5 just written under ``videos/iteration-N/``."""
+        from dustrack import blip as _blip
+
+        from ._layer_names import get_fname_annotations
+
+        pred_dir = self.paths["videos"] / f"iteration-{iteration_num}"
+        jobs = []
+        for v in videos:
+            v = Path(v)
+            hits = sorted(pred_dir.glob(f"{v.stem}DLC*.h5"))
+            if not hits:
+                print(f"[analyze_videos] no prediction h5 for {v.name}; "
+                      "skipping its LK layer")
+                continue
+            snap = hits[0].stem.split("_")[-1]         # best-270 / 320 / ...
+            out = get_fname_annotations(
+                str(v), f"lk_iteration-{iteration_num}_{snap}")
+            jobs.append((str(v), str(hits[0]), out))
+        if not jobs:
+            return
+        print(f"[analyze_videos] saving {len(jobs)} LK-prediction layer(s) ...")
+
+        def _run(job):
+            _out, err = _blip._lk_layer_worker(job)
+            if err:
+                print(f"[analyze_videos] LK layer failed for "
+                      f"{Path(job[0]).name}: {err}")
+
+        n_workers = min(int(max_workers), len(jobs))
+        if n_workers > 1:
+            try:
+                from concurrent.futures import ProcessPoolExecutor
+                with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                    for out, err in ex.map(_blip._lk_layer_worker, jobs):
+                        if err:
+                            print(f"[analyze_videos] LK layer failed: {out}: {err}")
+                return
+            except Exception as exc:                   # spawn/pickle/env issues
+                print(f"[analyze_videos] parallel LK save failed ({exc!r}); "
+                      "falling back to sequential")
+        for job in jobs:
+            _run(job)
 
     # refine can be both bool or string, if string, it is the path of the model to initialize weights from
     def process(

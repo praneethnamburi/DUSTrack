@@ -489,3 +489,16 @@ class TestDeblipHelpers:
         out = deblip_trace(ann, corr)
         assert out == {"0": {10: [1.0, 1.0], 11: [9.0, 9.0], 12: [3.0, 3.0]}}
         assert ann.data["0"][11] == [2, 2]              # source untouched
+
+
+class TestLkLayerData:
+    def test_skips_nan_frames(self):
+        from dustrack.blip import _lk_layer_data
+        lk = np.array([[[np.nan, np.nan]], [[1, 2]], [[3, 4]]])   # frame 0 NaN
+        assert _lk_layer_data(lk, ["0"]) == {"0": {1: [1.0, 2.0], 2: [3.0, 4.0]}}
+
+    def test_two_points(self):
+        from dustrack.blip import _lk_layer_data
+        lk = np.array([[[1, 1], [2, 2]], [[3, 3], [np.nan, 9]]])
+        out = _lk_layer_data(lk, ["0", "1"])
+        assert out == {"0": {0: [1.0, 1.0], 1: [3.0, 3.0]}, "1": {0: [2.0, 2.0]}}

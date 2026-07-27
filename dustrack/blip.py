@@ -940,3 +940,52 @@ def deblip(ann, lk_pred, *, threshold_factor: float = 5.0, max_gap: int = 1,
     corrections = interpolate_blips(ann, report, lk_config=lk_config,
                                     progress_callback=progress_callback)
     return report, corrections, blipped_positions(ann, report), deblip_trace(ann, corrections)
+
+
+def _lk_layer_data(lk_pred, labels) -> dict:
+    """Dense ``{label: {frame: [x, y]}}`` from an ``(N, P, 2)`` LK-prediction
+    array, skipping NaN frames (e.g. frame 0 / any point with no previous
+    prediction). The payload of the saved ``lk_`` annotation layer."""
+    lk_pred = np.asarray(lk_pred, dtype=float)
+    out: dict[str, dict[int, list[float]]] = {str(lab): {} for lab in labels}
+    for j, lab in enumerate(labels):
+        col = lk_pred[:, j]
+        for f in range(len(col)):
+            if np.isfinite(col[f]).all():
+                out[str(lab)][int(f)] = [float(col[f, 0]), float(col[f, 1])]
+    return out
+
+
+def save_lk_layer(video_path, prediction_h5, out_fname, *, lk_config=None,
+                  progress_callback=None, overwrite=False):
+    """Compute the LK-from-previous prediction for a DLC prediction ``.h5`` and
+    save it as a dense ``lk_`` annotation layer at ``out_fname`` (paired with the
+    ``dlc_`` trace, for overlay + blip detection). Opens the video once, shared
+    between the LK pass and the layer. Skips an existing file unless
+    ``overwrite``. Returns ``out_fname``."""
+    import pandas as pd
+    from datanavigator.video_reader import VideoReader
+
+    from dustrack.flow_consistency import dlc_positions
+
+    if os.path.exists(out_fname) and not overwrite:
+        return out_fname
+    positions, labels = dlc_positions(pd.read_hdf(prediction_h5))
+    reader = VideoReader(str(video_path))
+    lk_pred = compute_lk_predictions(positions, reader, lk_config=lk_config,
+                                     progress_callback=progress_callback)
+    out = VideoAnnotation(fname=str(out_fname), vname=None, n_labels=len(labels),
+                          preloaded_json=_lk_layer_data(lk_pred, labels),
+                          video=reader)
+    out.save()
+    return out_fname
+
+
+def _lk_layer_worker(args):
+    """Picklable ProcessPool worker for :meth:`DLCProject._save_lk_layers`.
+    ``args`` is ``(video_path, prediction_h5, out_fname)``; returns
+    ``(out_fname, error_or_None)`` so one video's failure doesn't kill the pool."""
+    try:
+        return save_lk_layer(*args), None
+    except Exception as exc:                            # noqa: BLE001
+        return args[2], repr(exc)
