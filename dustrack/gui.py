@@ -2520,6 +2520,29 @@ class DUSTrack(VideoBrowser):
             return self._layer_positions(self.annotations[lk_name])
         return None
 
+    def _lk_pred_from_disk(self, vpath, h5, pos, labels):
+        """The saved ``lk_`` layer for a (video, prediction-h5) pair as an
+        ``(N, P, 2)`` array, read from the ``<video>_annotations_lk_*.json`` next
+        to the video (plain ``{label: {frame: [x, y]}}``). ``None`` if absent --
+        the caller then computes it. Used by the across-videos blip source, which
+        works from paths rather than loaded layers."""
+        import json
+
+        vpath, h5 = Path(vpath), Path(h5)
+        it = h5.parent.name.split("-")[-1]
+        snap = h5.stem.split("_")[-1]
+        lk_fname = vpath.parent / f"{vpath.stem}_annotations_lk_iteration-{it}_{snap}.json"
+        if not lk_fname.exists():
+            return None
+        data = json.loads(lk_fname.read_text())
+        lk = np.full_like(np.asarray(pos, dtype=float), np.nan)
+        for j, lab in enumerate(labels):
+            for f_str, xy in data.get(str(lab), {}).items():
+                f = int(f_str)
+                if 0 <= f < len(lk):
+                    lk[f, j] = xy
+        return lk
+
     def _build_derived_layer(self, name, data, *, plot_type, set_active,
                              set_overlay=None):
         """Write ``data`` (``{label: {frame: [x, y]}}``) as a derived annotation
@@ -5031,16 +5054,20 @@ class DUSTrack(VideoBrowser):
                         max_frames=self.ACROSS_MAX_PER_VIDEO):
                     seed.setdefault(int(f), model_labels(f))
             if "blips" in kinds:
-                res = _blip.flow_blips(
-                    pos, str(vpath), labels=labels, likelihood=lik,
-                    confident_high=0.9, detect_min=3.0, confirm_thr=5.0,
-                    trust_tol=3.0, max_candidates=self.ACROSS_MAX_PER_VIDEO)
+                lk_pred = self._lk_pred_from_disk(vpath, hits[0], pos, labels)
+                if lk_pred is None:
+                    lk_pred = _blip.compute_lk_predictions(pos, str(vpath))
+                report = _blip.disagreement_blips(pos, lk_pred, labels=labels,
+                                                  threshold_factor=5.0)
                 lab_to_bp = dict(zip(labels, bodyparts))
-                for lab, fr_map in res.corrections.items():
-                    bp = lab_to_bp.get(lab, lab)
-                    for f, xy in fr_map.items():
+                for b in report.blips:
+                    j = labels.index(b.label)
+                    for f in range(b.start, b.end + 1):
+                        if lik[f, j] < 0.9:            # confident-wrong only
+                            continue
                         d = seed.setdefault(int(f), model_labels(int(f)))
-                        d[bp] = [float(xy[0]), float(xy[1])]  # flow's answer wins
+                        d[lab_to_bp.get(b.label, b.label)] = [  # flow's answer wins
+                            float(lk_pred[f, j, 0]), float(lk_pred[f, j, 1])]
             for f, lbls in seed.items():
                 entries.append({"video": stem, "png": None,
                                 "video_path": str(vpath), "frame": int(f),
