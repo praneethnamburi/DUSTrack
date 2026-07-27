@@ -76,6 +76,9 @@ def init_bundles(dustrack, project, video_paths: list) -> None:
         frames_of_interest=list(dustrack.frames_of_interest),
         hydration_state=HYDRATION_READY,
     )
+    # Apply opt-in default_layers to the shell before snapshotting, so
+    # bundle 0 lands on the same defaults the background bundles get.
+    dustrack._apply_default_layers()
     active_bundle.selections = capture_statevar_selections(dustrack)
     dustrack._bundles = [active_bundle]
 
@@ -269,7 +272,38 @@ def await_hydration(bundle: _BundleState) -> bool:
     return bundle.is_ready
 
 
-def swap_to(dustrack, index: int) -> bool:
+def _merge_carry_selections(target, carry: dict) -> dict:
+    """Overlay ``carry`` (statevar -> value from the leaving video) onto
+    ``target.selections``, but only for values that actually EXIST in the
+    arriving bundle -- so "keep my current layer/overlay/point" degrades
+    gracefully to the target's own default wherever a name is missing.
+
+    Guards: ``annotation_layer`` must be a layer in the target;
+    ``annotation_overlay`` must be a layer or ``None``; ``annotation_label``
+    must be a label of the (post-merge) active layer, and drags
+    ``label_range`` along with it.
+    """
+    names = target.annotations.names
+    merged = dict(target.selections or {})
+    if carry.get("annotation_layer") in names:
+        merged["annotation_layer"] = carry["annotation_layer"]
+    if "annotation_overlay" in carry:
+        ov = carry["annotation_overlay"]
+        if ov is None or ov in names:
+            merged["annotation_overlay"] = ov
+    active = merged.get("annotation_layer")
+    lbl = carry.get("annotation_label")
+    if lbl is not None and active in names and lbl in target.annotations[active].labels:
+        merged["annotation_label"] = lbl
+        try:
+            r = int(lbl) // 10
+            merged["label_range"] = f"{r*10}-{r*10+9}"
+        except (TypeError, ValueError):
+            pass
+    return merged
+
+
+def swap_to(dustrack, index: int, carry: dict = None) -> bool:
     """Switch the active video to ``dustrack._bundles[index]``.
 
     Implements the swap contract:
@@ -281,6 +315,13 @@ def swap_to(dustrack, index: int) -> bool:
     5. Restore the arriving bundle's statevar selections + image /
        trace / enhance state.
     6. Repaint once.
+
+    ``carry`` (optional): a ``{statevar: value}`` snapshot of the leaving
+    video's active layer / overlay / label. When given, those selections
+    are carried onto the arriving bundle wherever the named layer/label
+    exists there (see :func:`_merge_carry_selections`) -- the "next video,
+    same view" navigation. When ``None`` the arriving bundle's own stored
+    (or first-visit default) selections are restored.
 
     Returns ``True`` on a successful swap (or no-op when ``index``
     is already active), ``False`` when the swap was rejected
@@ -337,10 +378,17 @@ def swap_to(dustrack, index: int) -> bool:
             dustrack._ax_trace_y.set_autoscaley_on(True)
             dustrack._frame_marker_cache = None
 
-    # 5. Restore statevars + image viewport + enhance state.
+    # 5. Restore statevars + image viewport + enhance state. With a
+    # carry request, overlay the leaving video's layer/overlay/label
+    # where those names exist here, and persist it so a swap-back lands
+    # on the carried view too.
+    selections = target.selections
+    if carry:
+        selections = _merge_carry_selections(target, carry)
+        target.selections = selections
     restore_statevar_selections(
         dustrack,
-        target.selections,
+        selections,
         target.annotations.names,
     )
     dustrack._set_image_view_state(target.image_view_state)

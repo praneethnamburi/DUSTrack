@@ -187,6 +187,7 @@ class DUSTrack(VideoBrowser):
         height_ratios: tuple = (10, 1, 1),
         fast_render: bool = True,
         plot_type_overrides: "Optional[dict[str, str]]" = None,
+        default_layers: "Optional[dict[str, str]]" = None,
         **kwargs,
     ):
         # Store enhancement settings. Defaults now correspond to "no
@@ -212,6 +213,14 @@ class DUSTrack(VideoBrowser):
         # non-``dlc_``-named dense track to a line without renaming layers
         # to game the name convention. Empty by default -> no change.
         self.plot_type_overrides = dict(plot_type_overrides or {})
+        # Opt-in default statevar selections for a freshly-hydrated bundle,
+        # keyed by statevar name -> layer/label name, e.g.
+        # {"annotation_layer": "M00", "annotation_overlay": "outliers"}. Each
+        # is applied by :func:`derive_initial_bundle_selections` only when the
+        # named layer/label exists in that video, so every video in a
+        # multi-video project lands on the same active layer + overlay when
+        # first visited. Empty by default -> the derived default is used.
+        self.default_layers = dict(default_layers or {})
         # Construction-time enhance defaults snapshot. Used by
         # :meth:`_set_enhance_state` to reset the sliders on a
         # first-visit swap to a bundle that has no saved
@@ -3231,11 +3240,11 @@ class DUSTrack(VideoBrowser):
     # Swap entry points
     # ------------------------------------------------------------------
 
-    def swap_to(self, index: int) -> bool:
+    def swap_to(self, index: int, carry: dict = None) -> bool:
         """Switch the active video to ``self._bundles[index]``.
         See :func:`._bundle_swap.swap_to`.
         """
-        return _bundle_swap.swap_to(self, index)
+        return _bundle_swap.swap_to(self, index, carry=carry)
 
     def swap_prev(self, event=None) -> bool:
         """Move to the previous bundle (no-op at index 0).
@@ -3253,6 +3262,56 @@ class DUSTrack(VideoBrowser):
         keybinding.
         """
         return self.swap_to(self._active_index + 1)
+
+    def _apply_default_layers(self) -> None:
+        """Apply :attr:`default_layers` to the shell's statevars for the
+        active bundle, so the FIRST video of a multi-video open lands on
+        the same defaults the background bundles get via
+        :func:`derive_initial_bundle_selections`. No-op when
+        ``default_layers`` is empty, so normal opens are unchanged. Each
+        selection is applied only when its layer/label exists here.
+        """
+        d = getattr(self, "default_layers", None) or {}
+        if not d:
+            return
+        names = self.annotations.names
+        svs = self.statevariables.names
+        if "annotation_layer" in svs and d.get("annotation_layer") in names:
+            self.statevariables["annotation_layer"].set_state(d["annotation_layer"])
+            self.update_annotation_label_states()
+        if "annotation_overlay" in svs and "annotation_overlay" in d:
+            ov = d["annotation_overlay"]
+            if ov is None or ov in names:
+                self.statevariables["annotation_overlay"].set_state(ov)
+        if "annotation_label" in svs and d.get("annotation_label") is not None:
+            active = self.statevariables["annotation_layer"].current_state
+            lbl = d["annotation_label"]
+            if active in names and lbl in self.annotations[active].labels:
+                try:
+                    self.statevariables["label_range"].set_state(int(lbl) // 10)
+                    self.update_annotation_label_states()
+                except (TypeError, ValueError):
+                    pass
+                self.statevariables["annotation_label"].set_state(lbl)
+
+    def _carry_selections(self) -> dict:
+        """The active video's layer / overlay / label, for a carry swap."""
+        carry = {}
+        for sv in ("annotation_layer", "annotation_overlay", "annotation_label"):
+            if sv in self.statevariables.names:
+                carry[sv] = self.statevariables[sv].current_state
+        return carry
+
+    def swap_prev_carry(self, event=None) -> bool:
+        """Previous video, carrying the current layer/overlay/point over
+        (``Ctrl+Alt+Left``). See :func:`._bundle_swap.swap_to`'s ``carry``."""
+        return self.swap_to(self._active_index - 1, carry=self._carry_selections())
+
+    def swap_next_carry(self, event=None) -> bool:
+        """Next video, carrying the current layer/overlay/point over
+        (``Ctrl+Alt+Right``). Layers/labels absent from the arriving video
+        fall back to its own default."""
+        return self.swap_to(self._active_index + 1, carry=self._carry_selections())
 
     # ------------------------------------------------------------------
     # Bundle list management (add / remove / replace-active)

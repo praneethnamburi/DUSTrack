@@ -621,10 +621,25 @@ def derive_initial_bundle_selections(dustrack, container, project=None) -> dict:
     active_layer = manuals[-1] if manuals else (names[0] if names else None)
     dlc_layers = [n for n in names if n.startswith("dlc_")]
     overlay = dlc_layers[-1] if dlc_layers else None
+    # Opt-in per-name defaults (dustrack.default_layers) win over the derived
+    # active layer / overlay when the requested name exists in THIS bundle --
+    # so a multi-video review can land every video on, e.g., M00 active +
+    # outliers overlay. A requested name absent from the bundle is ignored,
+    # leaving the derived default. The active-label override is applied below,
+    # after the active layer is settled (its label rotation depends on it).
+    defaults = getattr(dustrack, "default_layers", None) or {}
+    if defaults.get("annotation_layer") in names:
+        active_layer = defaults["annotation_layer"]
+    if "annotation_overlay" in defaults:
+        ov = defaults["annotation_overlay"]
+        if ov is None or ov in names:
+            overlay = ov
     # Active label / label_range -- derive from the active layer.
     ann = container[active_layer] if active_layer else None
     if ann and ann.labels:
         first_label = ann.labels[0]
+        if defaults.get("annotation_label") in ann.labels:
+            first_label = defaults["annotation_label"]
         try:
             label_range_idx = int(first_label) // 10
             label_range_value = f"{label_range_idx*10}-{label_range_idx*10+9}"

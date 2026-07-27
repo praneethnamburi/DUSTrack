@@ -129,6 +129,20 @@ def add_video_nav_key_bindings(dustrack) -> None:
             "Next video",
             group="0. Video navigation",
         )
+        # Carry the current layer / overlay / point into the next (prev)
+        # video where those names exist -- "next video, same view".
+        dustrack.add_key_binding(
+            "ctrl+alt+left",
+            dustrack.swap_prev_carry,
+            "Previous video (keep current layers + point)",
+            group="0. Video navigation",
+        )
+        dustrack.add_key_binding(
+            "ctrl+alt+right",
+            dustrack.swap_next_carry,
+            "Next video (keep current layers + point)",
+            group="0. Video navigation",
+        )
     except Exception:  # noqa: BLE001 - older dnav signature / no method
         pass
 
