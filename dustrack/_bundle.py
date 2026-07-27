@@ -558,6 +558,15 @@ def finalise_bundle_artists(
                 ann.set_plot_type("line", draw=False)
             except Exception:  # noqa: BLE001
                 pass
+        # Explicit per-name overrides win over the density default so a
+        # pinned display style (e.g. sparse "outliers" -> dot, dense-but-
+        # plainly-named "M00" -> line) survives the swap into this bundle.
+        override = getattr(dustrack, "plot_type_overrides", {}).get(ann.name)
+        if override in ("line", "dot"):
+            try:
+                ann.set_plot_type(override, draw=False)
+            except Exception:  # noqa: BLE001
+                pass
         # Invalidate the trace cache so the first update_display_trace
         # against the freshly-bound handles repopulates ydata.
         ann.invalidate_caches()

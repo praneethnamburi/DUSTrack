@@ -186,6 +186,7 @@ class DUSTrack(VideoBrowser):
         titlefunc: Optional[Callable] = None,
         height_ratios: tuple = (10, 1, 1),
         fast_render: bool = True,
+        plot_type_overrides: "Optional[dict[str, str]]" = None,
         **kwargs,
     ):
         # Store enhancement settings. Defaults now correspond to "no
@@ -203,6 +204,14 @@ class DUSTrack(VideoBrowser):
         self._gamma = gamma
         self._brightness = brightness
         self._dark_mode = dark_mode
+        # Opt-in explicit plot-type per layer NAME, applied on the active
+        # bundle at construction and re-applied to every background bundle
+        # as it hydrates (see :meth:`_apply_plot_type_overrides`). Wins over
+        # the density-based default (:func:`_is_dense_layer_name`) so a
+        # caller can pin, e.g., a sparse ``outliers`` layer to dots and a
+        # non-``dlc_``-named dense track to a line without renaming layers
+        # to game the name convention. Empty by default -> no change.
+        self.plot_type_overrides = dict(plot_type_overrides or {})
         # Construction-time enhance defaults snapshot. Used by
         # :meth:`_set_enhance_state` to reset the sliders on a
         # first-visit swap to a bundle that has no saved
@@ -332,6 +341,7 @@ class DUSTrack(VideoBrowser):
         self.add_annotation_layers(annotation_names, n_labels)
         if "buffer" in self.annotations.names:
             self.annotations["buffer"].plot_type = "line"
+        self._apply_plot_type_overrides(draw=False)
 
         # frames of interest
         self.frames_of_interest = []
@@ -2153,6 +2163,34 @@ class DUSTrack(VideoBrowser):
         dlc_names = [n for n in names if n.startswith("dlc_")]
         if dlc_names:
             self.statevariables["annotation_overlay"].set_state(dlc_names[-1])
+        # Explicit per-name overrides win over the density default above.
+        self._apply_plot_type_overrides(names=names)
+
+    def _apply_plot_type_overrides(self, names=None, draw: bool = True) -> None:
+        """Apply :attr:`plot_type_overrides` (layer name -> "line"/"dot")
+        to the current session's annotation layers.
+
+        Explicit and name-keyed: unlike :func:`_is_dense_layer_name`,
+        which *infers* a plot type from the layer name's shape, this
+        pins the plot type the caller asked for regardless of the name.
+        A caller sets it once (constructor kwarg or attribute) and it is
+        honoured on the active bundle at construction and re-applied to
+        every background bundle as it hydrates, so the display style
+        survives multi-video swaps without renaming layers.
+
+        ``names`` (optional) restricts the pass to those layer names
+        (in-place refresh scope); ``None`` = every current layer. Names
+        in the override map that aren't present, or values that aren't
+        "line"/"dot", are skipped silently.
+        """
+        overrides = getattr(self, "plot_type_overrides", None)
+        if not overrides:
+            return
+        scope = self.annotations.names if names is None else list(names)
+        for name in scope:
+            style = overrides.get(name)
+            if style in ("line", "dot") and name in self.annotations.names:
+                self.annotations[name].set_plot_type(style, draw=draw)
 
     def _restructure_annotation_order(self) -> None:
         """Regroup ``self.annotations`` into the canonical layer order
