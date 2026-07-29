@@ -279,6 +279,22 @@ class _BgHydrationWorker:
                     self.dustrack._refresh_nav_buttons()
                 except Exception:  # noqa: BLE001
                     pass
+        # Self-heal a wedged canvas (belt-and-braces to the
+        # _draw_on_main_thread guard in annotations.py): if any code
+        # requested a redraw from a non-Qt thread, QtAgg's
+        # ``_draw_pending`` flag is stuck True with no live timer to
+        # service it (the singleShot was posted on a threadless
+        # worker), and every main-thread ``draw_idle()`` silently
+        # no-ops until a native paintEvent clears it. Running
+        # ``_draw_idle()`` here -- on the Qt thread -- drains it; a
+        # no-op when nothing is pending. getattr-guarded so mpl
+        # renames or the mpl-fallback path degrade to doing nothing.
+        try:
+            canvas = self.dustrack.figure.canvas
+            if getattr(canvas, "_draw_pending", False):
+                canvas._draw_idle()
+        except Exception:  # noqa: BLE001
+            pass
         # Queue is drained for this tick. If every bundle has reached
         # a terminal state, stop the poller so it doesn't keep
         # firing forever on an empty queue.

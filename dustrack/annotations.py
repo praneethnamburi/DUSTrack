@@ -26,6 +26,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import threading
 import weakref
 from pathlib import Path
 from typing import Any, Mapping
@@ -39,6 +40,30 @@ from matplotlib.animation import FFMpegWriter
 
 from datanavigator import utils
 from datanavigator.assets import AssetContainer
+
+
+def _draw_on_main_thread() -> None:
+    """``plt.draw()``, dropped when called off the main (Qt) thread.
+
+    On QtAgg, ``draw_idle()`` posts its ``QTimer.singleShot(0,
+    _draw_idle)`` on the *calling* thread. Called from a non-Qt
+    thread (the bg hydration worker constructing
+    :class:`VideoAnnotation` objects), that timer never fires --
+    ``canvas._draw_pending`` sticks ``True`` and every subsequent
+    main-thread ``draw_idle()`` silently no-ops, freezing the trace
+    pane until a native paintEvent (alt-tab, resize, modal click)
+    clears the flag. This was the root cause of the multi-video
+    "draw_idle delivery failure" (band-aided in 1.2.0a3 by the
+    first-paint notice; solved 2026-07-28).
+
+    Off-main-thread draw requests are meaningless anyway: the
+    worker's artists aren't wired to any axes yet, and
+    ``finalise_bundle_artists`` redraws on the Qt thread when they
+    are. So drop them here, at the one choke point every display
+    method funnels through.
+    """
+    if threading.current_thread() is threading.main_thread():
+        plt.draw()
 
 
 class _TrackedFrameDict(dict):
@@ -1005,7 +1030,7 @@ class VideoAnnotation:
                     handle_name = f"trace_in_ax{ax_type}{ax_cnt}_label{label}"
                     if handle_name in self.plot_handles:
                         self.plot_handles[handle_name].remove()
-        plt.draw()
+        _draw_on_main_thread()
 
     def re_setup_display(self) -> None:
         """re-establish display elements when adding a label"""
@@ -1039,7 +1064,7 @@ class VideoAnnotation:
             scatter_offsets[:, :] = self.get_at_frame(frame_number)
             self.plot_handles[f"labels_in_ax{ax_cnt}"].set_offsets(scatter_offsets)
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def update_display_trace(
         self, label: str | None = None, draw: bool = False
@@ -1068,7 +1093,7 @@ class VideoAnnotation:
             self._trace_display_cache_key = cache_key
 
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def update_display(
         self, frame_number: int, label: str | None = None, draw: bool = False
@@ -1077,7 +1102,7 @@ class VideoAnnotation:
         self.update_display_scatter(frame_number, draw=False)
         self.update_display_trace(label, draw=False)
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     # display management - control visibility
     @property
@@ -1106,7 +1131,7 @@ class VideoAnnotation:
         for plot_handle in self._trace_or_label_handles.values():
             plot_handle.set_visible(visibility)
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def hide(self, draw: bool = True) -> None:
         """Hide all elements (scatter, traces) in this annotation."""
@@ -1123,7 +1148,7 @@ class VideoAnnotation:
             if plot_handle_name.endswith(f"_label{label}"):
                 plot_handle.set_visible(visibility)
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def show_trace(self, label: str, draw: bool = True) -> None:
         """Show trace for a specific label."""
@@ -1151,7 +1176,7 @@ class VideoAnnotation:
         for handle in self._trace_or_label_handles.values():
             handle.set_alpha(alpha)
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def set_plot_type(self, type_: str = "line", draw: bool = True) -> None:
         """Set the plot type for traces.
@@ -1176,7 +1201,7 @@ class VideoAnnotation:
                 trace_handle.set_linestyle("None")
                 trace_handle.set_marker("o")
         if draw:
-            plt.draw()
+            _draw_on_main_thread()
 
     def clip_labels(self, start_frame: int, end_frame: int) -> None:
         """Remove annotations outside the clip range. Clip range includes start and end frame."""

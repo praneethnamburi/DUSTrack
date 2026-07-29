@@ -280,3 +280,87 @@ class TestQueueBehavior:
         assert (worker._thread is first_thread) or (
             not first_thread.is_alive()
         )
+
+
+# ---------------------------------------------------------------------
+# Off-thread draw suppression (root cause of the bg-hydration freeze,
+# solved 2026-07-28)
+# ---------------------------------------------------------------------
+#
+# On QtAgg, ``plt.draw()`` from a non-Qt thread posts its
+# ``QTimer.singleShot(0, _draw_idle)`` on a threadless worker; the timer
+# never fires, ``canvas._draw_pending`` sticks True, and every
+# main-thread ``draw_idle()`` no-ops until a native paintEvent clears
+# it. Two layers of defense: ``_draw_on_main_thread`` suppresses the
+# draw at the source, and the Qt poller self-heals a wedged canvas.
+
+
+class TestOffThreadDrawSuppression:
+    def test_construction_in_worker_thread_never_draws(self, monkeypatch):
+        """The full worker-side per-layer sequence (construct ->
+        add_label -> re_setup_display -> set_plot_type) must not reach
+        ``plt.draw`` from the worker thread."""
+        import threading
+
+        import dustrack.annotations as anns
+
+        draw_calls = []
+        monkeypatch.setattr(
+            anns.plt, "draw",
+            lambda: draw_calls.append(threading.current_thread().name),
+        )
+
+        errors = []
+
+        def _worker_side_sequence():
+            try:
+                ann = anns.VideoAnnotation(n_labels=2)
+                ann.add_label()  # -> re_setup_display -> clear_display
+                ann.set_plot_type("line")  # draw=True default
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t = threading.Thread(
+            target=_worker_side_sequence, name="hydration-worker",
+        )
+        t.start()
+        t.join(timeout=30)
+        assert not t.is_alive()
+        assert not errors, errors
+        assert draw_calls == []
+
+    def test_main_thread_draw_passes_through(self, monkeypatch):
+        import dustrack.annotations as anns
+
+        draw_calls = []
+        monkeypatch.setattr(anns.plt, "draw", lambda: draw_calls.append(True))
+        anns._draw_on_main_thread()
+        assert draw_calls == [True]
+
+
+class TestPollerSelfHeal:
+    def test_drain_services_wedged_draw_pending(self):
+        """A stuck ``_draw_pending`` is drained by the Qt-thread poller
+        via ``_draw_idle()``."""
+        from dustrack.dlcinterface import _BgHydrationWorker
+        healed = []
+        canvas = SimpleNamespace(
+            _draw_pending=True, _draw_idle=lambda: healed.append(True),
+        )
+        dustrack = _make_fake_dustrack()
+        dustrack.figure = SimpleNamespace(canvas=canvas)
+        worker = _BgHydrationWorker(dustrack, project=object(), bundles=[])
+        worker.drain_finalisation_queue()
+        assert healed == [True]
+
+    def test_drain_leaves_healthy_canvas_alone(self):
+        from dustrack.dlcinterface import _BgHydrationWorker
+        healed = []
+        canvas = SimpleNamespace(
+            _draw_pending=False, _draw_idle=lambda: healed.append(True),
+        )
+        dustrack = _make_fake_dustrack()
+        dustrack.figure = SimpleNamespace(canvas=canvas)
+        worker = _BgHydrationWorker(dustrack, project=object(), bundles=[])
+        worker.drain_finalisation_queue()
+        assert healed == []

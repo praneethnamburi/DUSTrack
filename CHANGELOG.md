@@ -3,6 +3,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Multi-video trace pane frozen during background hydration -- root
+  cause of the 1.2.0a3 "draw_idle delivery failure" found and fixed.**
+  The hydration worker thread called `plt.draw()` (~18x per bundle, via
+  `VideoAnnotation.__init__ -> setup_display -> set_plot_type` and
+  `add_label -> re_setup_display -> clear_display`). On QtAgg,
+  `draw_idle()` posts `QTimer.singleShot(0, _draw_idle)` on the
+  *calling* thread; on the threadless daemon the timer silently never
+  fires, so `canvas._draw_pending` stuck `True` and every subsequent
+  main-thread `draw_idle()` no-oped -- the trace pane froze until a
+  native paintEvent (alt-tab, resize, modal click) ran
+  `paintEvent -> _draw_idle()`, then re-froze as the next bundle
+  hydrated. Historically band-aided by the first-paint notice modal +
+  `flush_events()`-only `update()` (which drains an empty queue -- the
+  "0 paintEvents in 200 updates" probe). Two-layer fix:
+  `_draw_on_main_thread()` drops draw requests off the main thread at
+  the `annotations.py` choke point (the worker's artists aren't wired
+  to axes yet, so the draws were meaningless), and the hydration
+  poller self-heals a wedged `_draw_pending` on the Qt thread each
+  50 ms tick. The `plt.draw()` sites date to the original March 2025
+  single-video import -- an interactive-idiom carryover, not a
+  deliberate threading decision. The first-paint notice modal is kept
+  for now; candidate for removal after interactive verification.
+
 ### Added
 - **`dustrack.predict.RangePredictor` -- range-restricted inference with a
   cached model.** `analyze_videos` is whole-video only (its one subsetting
