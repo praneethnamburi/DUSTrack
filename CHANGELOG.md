@@ -30,8 +30,24 @@ All notable changes to this project will be documented in this file.
   unless the caller supplies their own `inference_cfg`. Upstream state
   as of 2026-08-04: unreported in the DeepLabCut tracker and unfixed
   through v3.0.1 (the async design is unchanged rc13 -> v3.0.1), so
-  upgrading DLC does not help. Cost is throughput only (async bought
-  ~20-30% FPS per PR #3012). Full diagnosis: pn-portfolio
+  upgrading DLC does not help.
+
+  **Throughput cost, measured** (interleaved A/B, ResNet-50 BU,
+  706x558 gray, 600-frame clip, batchsize=4, RTX 4090 shared with a
+  training job so absolutes are contention-depressed; the ratio held
+  across rounds): `predict_frames` **91 -> 62 fps (-31%)**,
+  `analyze_videos` **94 -> 57 fps (-39%)**. That is a real cost, not a
+  rounding error -- roughly +50 s per 10k frames.
+
+  **`chunk_size` is the lever that buys most of it back**, because the
+  leak is per call: with async ON, chunk 32 / 128 / 600 gave 89 / 103 /
+  103 fps at 2.1 / 0.74 / 0.17 MB leaked per frame. Bigger chunks are
+  both faster (fewer thread spawns) and leak less per frame, at the cost
+  of coarser progress/cancellation granularity. So for a short-lived
+  process, `multithreaded_inference=True` with a large `chunk_size` is
+  strictly better than the default; the sequential default is the right
+  choice for long-lived daemons where any per-call leak accumulates
+  without bound. Full diagnosis: pn-portfolio
   `plans/20260804_pyav-leak-investigation.md`.
 - **Multi-video trace pane frozen during background hydration -- root
   cause of the 1.2.0a3 "draw_idle delivery failure" found and fixed.**
