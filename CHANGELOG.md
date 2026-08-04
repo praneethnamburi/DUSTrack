@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **`RangePredictor` no longer leaks ~2.5 MB of host memory per frame
+  predicted.** DLC 3.0.0rc13's async inference pipeline
+  (`InferenceConfig.multithreading.enabled`, on by default: a fresh
+  preprocessing thread + queue per `inference()` call) leaks host memory
+  at the C level on Windows / torch 2.6.0+cu124 -- no Python objects
+  retained (object census flat), unbounded growth, ~2GB per 15 s during a
+  whole-video `predict_range` pass, which is what filled 128 GB of RAM on
+  corpus sweeps. The sequential path is measured leak-free with identical
+  outputs, so `RangePredictor` now disables DLC's multithreaded inference
+  by default; pass `multithreaded_inference=True` to keep the old
+  behavior. Note `analyze_videos` builds its own runner and is still
+  subject to the DLC-side leak. Full diagnosis: pn-portfolio
+  `plans/20260804_pyav-leak-investigation.md`.
 - **Multi-video trace pane frozen during background hydration -- root
   cause of the 1.2.0a3 "draw_idle delivery failure" found and fixed.**
   The hydration worker thread called `plt.draw()` (~18x per bundle, via

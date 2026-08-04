@@ -67,6 +67,7 @@ Example:
 from __future__ import annotations
 
 import threading
+import warnings
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -265,6 +266,14 @@ class RangePredictor:
             the model config's choice.
         shuffle / trainingsetindex / modelprefix: Standard DLC model
             selectors, forwarded to ``DLCLoader``.
+        multithreaded_inference: If True, keep DLC's async inference
+            pipeline (preprocessing thread + queue). Default False: on
+            DLC 3.0.0rc13 / torch 2.6.0+cu124 / Windows the async path
+            leaks ~2.5 MB of host memory **per frame processed** at the
+            C level (no Python objects retained; a whole-video pass
+            reaches tens of GB), while the sequential path is measured
+            leak-free at identical outputs. Diagnosis:
+            pn-portfolio ``plans/20260804_pyav-leak-investigation.md``.
     """
 
     def __init__(
@@ -277,6 +286,7 @@ class RangePredictor:
         shuffle: int = 1,
         trainingsetindex: int = 0,
         modelprefix: str = "",
+        multithreaded_inference: bool = False,
     ) -> None:
         self.config_path = str(config_path)
         self.snapshot_index = snapshot_index
@@ -285,6 +295,7 @@ class RangePredictor:
         self.shuffle = shuffle
         self.trainingsetindex = trainingsetindex
         self.modelprefix = modelprefix
+        self.multithreaded_inference = bool(multithreaded_inference)
 
         self._runner = None
         self._loader = None
@@ -344,6 +355,19 @@ class RangePredictor:
             max_individuals=len(individuals),
             batch_size=self.batch_size,
         )
+        if not self.multithreaded_inference:
+            # DLC's async inference pipeline leaks host memory per frame
+            # (see the ``multithreaded_inference`` arg docstring); force
+            # the sequential path, which produces identical predictions.
+            try:
+                self._runner.inference_cfg.multithreading.enabled = False
+            except AttributeError:
+                warnings.warn(
+                    "could not disable DLC multithreaded inference "
+                    "(inference_cfg shape changed?) -- long inference "
+                    "runs may leak host memory",
+                    RuntimeWarning,
+                )
         self._loader = loader
         self._bodyparts = list(loader.model_cfg["metadata"]["bodyparts"])
         self.snapshot_path = str(snapshot.path)
