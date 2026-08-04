@@ -1097,6 +1097,18 @@ class DLCProject:
         else:
             kwargs["videos"] = self.video_list
 
+        # DLC 3's async multithreaded inference leaks ~100 MB of host
+        # memory per ``inference()`` call at the C level (torch 2.6 /
+        # Windows; no fix upstream through v3.0.1 -- see CHANGELOG
+        # 2026-08-04). One call per video here, so it is ~100 MB per
+        # video: invisible on one, ~80 GB across a corpus sweep. The
+        # sequential path is bit-exact. Callers may override by passing
+        # their own inference_cfg. DLC 2.x has no such kwarg.
+        if "inference_cfg" not in kwargs and getattr(
+            _dlcloader.deeplabcut, "__version__", ""
+        ).startswith("3"):
+            kwargs["inference_cfg"] = {"multithreading": {"enabled": False}}
+
         current_snapshotindex_value = self.config["snapshotindex"]
         self.edit_config(snapshotindex=snapshotindex)
 

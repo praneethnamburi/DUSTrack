@@ -4,18 +4,34 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- **`RangePredictor` no longer leaks ~2.5 MB of host memory per frame
-  predicted.** DLC 3.0.0rc13's async inference pipeline
-  (`InferenceConfig.multithreading.enabled`, on by default: a fresh
-  preprocessing thread + queue per `inference()` call) leaks host memory
-  at the C level on Windows / torch 2.6.0+cu124 -- no Python objects
-  retained (object census flat), unbounded growth, ~2GB per 15 s during a
-  whole-video `predict_range` pass, which is what filled 128 GB of RAM on
-  corpus sweeps. The sequential path is measured leak-free with identical
-  outputs, so `RangePredictor` now disables DLC's multithreaded inference
-  by default; pass `multithreaded_inference=True` to keep the old
-  behavior. Note `analyze_videos` builds its own runner and is still
-  subject to the DLC-side leak. Full diagnosis: pn-portfolio
+- **Inference no longer leaks ~100 MB of host memory per `inference()`
+  call.** DLC 3's async inference pipeline
+  (`InferenceConfig.multithreading.enabled`, on by default since
+  rc10/PR #3012: a fresh preprocessing thread + queue **per
+  `inference()` call**) leaks host memory at the C level on Windows /
+  torch 2.6.0+cu124 -- no Python objects retained (object census flat),
+  never reclaimed short of process exit. The leak is **per call, not per
+  frame**: holding 256 frames constant while varying `chunk_size`
+  32/64/128/256 gave ~100 MB per call across the board while the
+  per-frame figure moved 17x (6.9 -> 0.4 MB/frame). That is why it bites
+  hardest here -- `predict_frames` chunks at `DEFAULT_CHUNK_BATCHES *
+  batch_size` = 32 frames, so a whole-video pass makes hundreds of calls
+  (~3 MB/frame effective, ~2 GB per 15 s observed; it filled 128 GB of
+  RAM on a corpus sweep). `analyze_videos` calls `inference()` once per
+  video, so it leaks ~100 MB per video -- invisible on one video,
+  ~80 GB across a 781-video sweep.
+
+  Both paths now use DLC's sequential runner, which is measured
+  leak-free and **bit-exact identical** (max abs diff 0.0 over a
+  600-frame whole-video `analyze_videos` A/B):
+  `RangePredictor` takes `multithreaded_inference=False` by default
+  (pass `True` to restore), and `DLCProject.analyze_videos` forwards
+  `inference_cfg={"multithreading": {"enabled": False}}` on DLC 3
+  unless the caller supplies their own `inference_cfg`. Upstream state
+  as of 2026-08-04: unreported in the DeepLabCut tracker and unfixed
+  through v3.0.1 (the async design is unchanged rc13 -> v3.0.1), so
+  upgrading DLC does not help. Cost is throughput only (async bought
+  ~20-30% FPS per PR #3012). Full diagnosis: pn-portfolio
   `plans/20260804_pyav-leak-investigation.md`.
 - **Multi-video trace pane frozen during background hydration -- root
   cause of the 1.2.0a3 "draw_idle delivery failure" found and fixed.**

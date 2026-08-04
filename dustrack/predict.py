@@ -267,13 +267,16 @@ class RangePredictor:
         shuffle / trainingsetindex / modelprefix: Standard DLC model
             selectors, forwarded to ``DLCLoader``.
         multithreaded_inference: If True, keep DLC's async inference
-            pipeline (preprocessing thread + queue). Default False: on
-            DLC 3.0.0rc13 / torch 2.6.0+cu124 / Windows the async path
-            leaks ~2.5 MB of host memory **per frame processed** at the
-            C level (no Python objects retained; a whole-video pass
-            reaches tens of GB), while the sequential path is measured
-            leak-free at identical outputs. Diagnosis:
-            pn-portfolio ``plans/20260804_pyav-leak-investigation.md``.
+            pipeline (a fresh preprocessing thread + queue per
+            ``inference()`` call). Default False: on DLC 3 / torch
+            2.6.0+cu124 / Windows the async path leaks ~100 MB of host
+            memory **per call** at the C level (no Python objects
+            retained, never reclaimed). Since :meth:`predict_frames`
+            calls the runner once per ``chunk_size`` (32) frames, a
+            whole-video pass makes hundreds of calls and reaches tens of
+            GB. The sequential path is measured leak-free and bit-exact.
+            Diagnosis: pn-portfolio
+            ``plans/20260804_pyav-leak-investigation.md``.
     """
 
     def __init__(
@@ -356,9 +359,10 @@ class RangePredictor:
             batch_size=self.batch_size,
         )
         if not self.multithreaded_inference:
-            # DLC's async inference pipeline leaks host memory per frame
-            # (see the ``multithreaded_inference`` arg docstring); force
-            # the sequential path, which produces identical predictions.
+            # DLC's async inference pipeline leaks ~100 MB of host memory
+            # per call (see the ``multithreaded_inference`` arg
+            # docstring); force the sequential path, which produces
+            # bit-exact identical predictions.
             try:
                 self._runner.inference_cfg.multithreading.enabled = False
             except AttributeError:
