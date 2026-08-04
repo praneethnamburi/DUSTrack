@@ -453,6 +453,64 @@ class RangePredictor:
 
         return self._to_dataframe(predictions, done_frames)
 
+    def predict_images(
+        self,
+        images: "Sequence[np.ndarray]",
+        *,
+        index: "Sequence[int] | None" = None,
+        chunk_size: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> pd.DataFrame:
+        """Predict on in-memory frames directly -- no video open, seek, or decode.
+
+        ``images`` are decoded frame arrays -- HxWx3 uint8, or HxW grayscale which
+        is expanded to 3 channels (matching what the internal video iterator feeds
+        the runner; single-channel sources have R=G=B so channel order is moot).
+        Already-cropped if the model expects a crop. Use this when you already hold
+        the pixels: e.g. frames grabbed once to compare several models, or an
+        externally cached review set, so N models cost ONE decode, not N.
+
+        Args:
+            images: Frames to predict, in the order results should be returned.
+            index: Optional row labels for the returned DataFrame (default 0..n-1);
+                pass the source frame numbers to keep provenance.
+            chunk_size / progress_callback / cancel_event: As :meth:`predict_frames`.
+
+        Returns:
+            The same ``(scorer, bodypart, {x, y, likelihood})`` DataFrame as
+            :meth:`predict_frames`, indexed by ``index`` (or 0..n-1).
+        """
+        images = [np.asarray(im) for im in images]
+        if not images:
+            return self._empty_frame()
+        images = [np.repeat(im[:, :, None], 3, axis=2) if im.ndim == 2 else im
+                  for im in images]                    # grayscale -> 3-channel
+        runner = self._ensure_runner()
+        if chunk_size is None:
+            chunk_size = DEFAULT_CHUNK_BATCHES * self.batch_size
+        chunk_size = max(1, int(chunk_size))
+
+        predictions: list[dict] = []
+        total = len(images)
+        for start in range(0, total, chunk_size):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            chunk = images[start : start + chunk_size]
+            out = runner.inference(images=chunk)
+            predictions.extend(out)
+            if progress_callback is not None:
+                progress_callback(len(predictions), total)
+            if len(out) < len(chunk):            # short chunk == runner stopped early
+                break
+        if not predictions:
+            return self._empty_frame()
+        if index is not None:
+            idx = [int(i) for i in index][: len(predictions)]
+        else:
+            idx = list(range(len(predictions)))
+        return self._to_dataframe(predictions, idx)
+
     def predict_range(
         self,
         video_path: str | Path,

@@ -28,6 +28,16 @@ All notable changes to this project will be documented in this file.
   for now; candidate for removal after interactive verification.
 
 ### Added
+- **`RangePredictor.predict_images(images)` -- inference on in-memory frames,
+  no video open / seek / decode.** The public API was video-path-only, so
+  scoring the same scattered frames with N models re-opened and re-decoded
+  each video N times. `predict_images` takes decoded arrays (HxWx3, or HxW
+  grayscale expanded to 3 channels since single-channel sources have R=G=B)
+  straight to the same `PoseInferenceRunner` + DataFrame conversion as
+  `predict_frames` -- verified **identical** (0.0 px on single frames, ~5e-3 px
+  batched). Lets a caller decode once and fan out to many models and the
+  renderer; used by mithic's M3->M4 model-compare (781 videos: 3 opens each
+  -> 1).
 - **`dustrack.predict.RangePredictor` -- range-restricted inference with a
   cached model.** `analyze_videos` is whole-video only (its one subsetting
   axis is *which files*, never *which frames*) and rebuilds the pose model
