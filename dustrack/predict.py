@@ -682,6 +682,25 @@ class RangePredictor:
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
     # ------------------------------------------------------------------ #
+    def clear_readers(self) -> None:
+        """Drop cached per-video readers/iterators WITHOUT unloading the model.
+
+        The per-path reader cache exists to make *repeated* requests on one
+        video cheap (interactive refinement stays on the video being refined).
+        A caller that sweeps MANY videos -- e.g. a corpus-wide daemon -- would
+        otherwise accumulate a live reader (PyAV container + TOC + frame
+        buffers) per video and grow without bound. Call this after each
+        video/tile; the model and GPU state are untouched, so the next
+        prediction pays no reload.
+        """
+        for it in self._iterators.values():
+            try:
+                it.close()
+            except Exception:
+                pass
+        self._iterators.clear()
+        self._videos.clear()
+
     def close(self) -> None:
         """Release cached readers and drop the model.
 

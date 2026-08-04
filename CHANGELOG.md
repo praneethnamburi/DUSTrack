@@ -38,6 +38,12 @@ All notable changes to this project will be documented in this file.
   batched). Lets a caller decode once and fan out to many models and the
   renderer; used by mithic's M3->M4 model-compare (781 videos: 3 opens each
   -> 1).
+- **`RangePredictor.clear_readers()` -- drop cached per-video readers without
+  unloading the model.** The per-path reader cache speeds *repeated* requests on
+  one video, but leaks a live PyAV reader (+ TOC + frame buffers) per video for
+  a caller that sweeps many -- a corpus-wide daemon ran out of memory after a
+  handful of tiles. Frees the readers/iterators, keeps the model + GPU state
+  (no reload). Call it after each video/tile in a sweep.
 - **`dustrack.predict.RangePredictor` -- range-restricted inference with a
   cached model.** `analyze_videos` is whole-video only (its one subsetting
   axis is *which files*, never *which frames*) and rebuilds the pose model
