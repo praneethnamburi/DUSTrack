@@ -75,6 +75,7 @@ import numpy as np
 import pandas as pd
 
 from dustrack import dlcloader as _dlcloader
+from dustrack import dlcpatch as _dlcpatch
 from dustrack.annotations import VideoAnnotation
 
 __all__ = [
@@ -266,17 +267,17 @@ class RangePredictor:
             the model config's choice.
         shuffle / trainingsetindex / modelprefix: Standard DLC model
             selectors, forwarded to ``DLCLoader``.
-        multithreaded_inference: If True, keep DLC's async inference
-            pipeline (a fresh preprocessing thread + queue per
-            ``inference()`` call). Default False: on DLC 3 / torch
-            2.6.0+cu124 / Windows the async path leaks ~100 MB of host
-            memory **per call** at the C level (no Python objects
-            retained, never reclaimed). Since :meth:`predict_frames`
-            calls the runner once per ``chunk_size`` (32) frames, a
-            whole-video pass makes hundreds of calls and reaches tens of
-            GB. The sequential path is measured leak-free and bit-exact.
-            Diagnosis: pn-portfolio
-            ``plans/20260804_pyav-leak-investigation.md``.
+        multithreaded_inference: Whether to use DLC's async inference
+            pipeline (preprocessing thread + queue per ``inference()``
+            call). ``None`` (default) means *auto*: use it when
+            :func:`dustrack.dlcpatch.patch_dlc_async_h2d` can fix the
+            host-memory leak it otherwise carries (~100 MB per call on
+            DLC 3 / torch 2.6 -- see that function), and fall back to
+            DLC's sequential path when the patch cannot be applied.
+            Auto is both the fast and the safe choice: patched-async
+            measured 146 fps vs 108 sequential, at 0.1 MB/call. Pass
+            True to force async even unpatched (leaks), or False to
+            force sequential.
     """
 
     def __init__(
@@ -289,7 +290,7 @@ class RangePredictor:
         shuffle: int = 1,
         trainingsetindex: int = 0,
         modelprefix: str = "",
-        multithreaded_inference: bool = False,
+        multithreaded_inference: bool | None = None,
     ) -> None:
         self.config_path = str(config_path)
         self.snapshot_index = snapshot_index
@@ -298,7 +299,7 @@ class RangePredictor:
         self.shuffle = shuffle
         self.trainingsetindex = trainingsetindex
         self.modelprefix = modelprefix
-        self.multithreaded_inference = bool(multithreaded_inference)
+        self.multithreaded_inference = multithreaded_inference
 
         self._runner = None
         self._loader = None
@@ -358,11 +359,16 @@ class RangePredictor:
             max_individuals=len(individuals),
             batch_size=self.batch_size,
         )
-        if not self.multithreaded_inference:
-            # DLC's async inference pipeline leaks ~100 MB of host memory
-            # per call (see the ``multithreaded_inference`` arg
-            # docstring); force the sequential path, which produces
-            # bit-exact identical predictions.
+        # DLC's async inference pipeline leaks ~100 MB of host memory per
+        # call unless the producer-side-H2D patch is in force (see the
+        # ``multithreaded_inference`` arg docstring). Auto: async when
+        # patched, sequential otherwise. Both are bit-exact.
+        use_async = self.multithreaded_inference
+        if use_async is None:
+            use_async = _dlcpatch.patch_dlc_async_h2d(verbose=False)
+        elif use_async:
+            _dlcpatch.patch_dlc_async_h2d(verbose=False)
+        if not use_async:
             try:
                 self._runner.inference_cfg.multithreading.enabled = False
             except AttributeError:
@@ -372,6 +378,7 @@ class RangePredictor:
                     "runs may leak host memory",
                     RuntimeWarning,
                 )
+        self._async_inference_in_use = bool(use_async)
         self._loader = loader
         self._bodyparts = list(loader.model_cfg["metadata"]["bodyparts"])
         self.snapshot_path = str(snapshot.path)

@@ -32,6 +32,13 @@ Detection key: presence of ``_safe_put``.
 
 Opt-out: ``DUSTRACK_DISABLE_DLC_PATCH=1``.
 
+A third, independent patch (``patch_dlc_async_h2d``) fixes a host-memory
+leak in DLC 3's async inference (~100 MB per ``inference()`` call) by
+moving the host->device copy onto the producer thread. Unlike the two
+patches above it **is applied automatically** by the inference entry
+points, because the leak it fixes is unbounded. Opt-out:
+``DUSTRACK_DISABLE_DLC_H2D_PATCH=1``.
+
 A separate decoder patch (``patch_dlc_decoder``) replaces DLC's
 ``cv2.VideoCapture``-backed ``VideoReader`` with a dnav PyAV+TOC reader
 so that annotation, training-frame extraction, and inference all go
@@ -64,6 +71,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 _PATCHED = False
 _DECODER_PATCHED = False
+_H2D_PATCHED = False
 
 DEFAULT_NUM_WORKERS = 4
 DEFAULT_RAW_QUEUE_SIZE = 16
@@ -392,6 +400,99 @@ def _make_patched_pose_predict(_orig):
         ]
 
     return predict
+
+
+# --------------------------------------------------------------------------- #
+# Async-inference host-memory leak fix (2026-08-04).
+# --------------------------------------------------------------------------- #
+
+
+def _make_device_safe_put(_orig):
+    """Move each queued batch to the model's device on the *producer*
+    thread, before it is handed to the consumer."""
+
+    def _safe_put(self, item):
+        if (
+            torch is not None
+            and isinstance(item, tuple)
+            and len(item) == 2
+            and torch.is_tensor(item[0])
+        ):
+            batch, model_kwargs = item
+            device = getattr(self, "device", None)
+            if device is not None and str(device) != "cpu":
+                # ``.to`` is a no-op when the tensor is already on the
+                # device, so this stays correct if DLC ever moves the
+                # copy itself. Pageable H2D is host-synchronous and both
+                # threads use the default stream, so the copy is complete
+                # and ordered before the consumer's forward pass.
+                item = (batch.to(device), model_kwargs)
+        return _orig(self, item)
+
+    return _safe_put
+
+
+def patch_dlc_async_h2d(verbose: bool = True) -> bool:
+    """Fix the host-memory leak in DLC 3's async inference. Idempotent.
+
+    DLC's ``_async_inference`` leaks ~100 MB of host memory **per
+    ``inference()`` call** on DLC 3.0.0rc13-v3.0.1 / torch 2.6 / Windows
+    -- unbounded, never reclaimed, and enough to exhaust 128 GB during a
+    corpus sweep. A 2×2 bisect (2026-08-04) isolated the trigger: it is
+    neither the producer thread nor the forward pass alone, but the
+    **host->device copy executing on the consumer thread while the
+    producer thread runs**. Moving that copy onto the producer -- one
+    ``.to(device)`` before the queue hand-off -- removes the leak
+    entirely (~0.1 MB/call) *and* is the fastest variant measured
+    (146 fps vs 143 leaky-async and 108 sequential on ResNet-50 BU,
+    706x558, RTX 4090). Consumer-side ``.clone()`` and shipping numpy
+    instead of tensors do **not** help, so the tensor's origin thread is
+    not the issue.
+
+    Patch point is ``InferenceRunner._safe_put``, which is the single
+    choke point for both DLC's own ``_preprocessing_worker`` and this
+    module's :func:`_worker_rc13`. Values are unchanged: DLC's
+    ``predict`` already calls ``inputs.to(self.device)``, which becomes a
+    no-op. Verified bit-exact against the sequential path.
+
+    Only applies to the post-refactor API (``_safe_put`` present, i.e.
+    ``deeplabcut`` >= 3.0.0rc13); returns False on older DLC, which has
+    no ``_safe_put`` and is handled by callers falling back to
+    sequential inference.
+
+    Opt-out: ``DUSTRACK_DISABLE_DLC_H2D_PATCH=1``.
+
+    Full diagnosis: pn-portfolio
+    ``plans/20260804_pyav-leak-investigation.md``.
+
+    Returns:
+        True if the patch is in force, False if skipped.
+    """
+    global _H2D_PATCHED
+    if _H2D_PATCHED:
+        return True
+    if os.environ.get("DUSTRACK_DISABLE_DLC_H2D_PATCH"):
+        return False
+    try:
+        from deeplabcut.pose_estimation_pytorch.runners.inference import (
+            InferenceRunner,
+        )
+    except Exception:  # noqa: BLE001 -- DLC absent / import error
+        return False
+
+    orig = getattr(InferenceRunner, "_safe_put", None)
+    if orig is None:
+        # Pre-rc13 API: no queue hand-off to patch.
+        return False
+
+    InferenceRunner._safe_put = _make_device_safe_put(orig)
+    _H2D_PATCHED = True
+    if verbose:
+        print(
+            "dustrack: patched DLC async inference (producer-side H2D) -- "
+            "fixes the ~100 MB/call host-memory leak"
+        )
+    return True
 
 
 # --------------------------------------------------------------------------- #
