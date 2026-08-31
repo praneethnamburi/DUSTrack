@@ -376,7 +376,11 @@ def lk_moving_average_filter(
         assert (
             video_name is not None
         ), "video_name must be provided if tracked_points is a file path."
-        ann = VideoAnnotation(video_name, tracked_points)
+        # VideoAnnotation's signature is (fname, vname) -- the annotation file first, the video
+        # second. Passing them the other way round made _parse_inp assert is_video() on the JSON
+        # path, so this branch always raised; only the VideoAnnotation-object branch below was
+        # ever exercised (the GUI never passes a path).
+        ann = VideoAnnotation(tracked_points, video_name)
     else:
         ann = tracked_points
 
