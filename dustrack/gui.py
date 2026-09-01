@@ -3906,6 +3906,12 @@ class DUSTrack(VideoBrowser):
             "Copy annotations in selected interval from overlay",
             group=sec5c,
         )
+        self.add_key_binding(
+            "ctrl+alt+m",
+            self.average_frames_in_interval_with_overlay,
+            "Average current layer with overlay in selected interval (mean of the two)",
+            group=sec5c,
+        )
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
         self.add_key_binding("s", self.save, "Save current annotation layer")
@@ -4438,6 +4444,38 @@ class DUSTrack(VideoBrowser):
                 location = ann_overlay.data[label].get(frame_number, None)
                 if location is not None:
                     self.ann.add(location, label, frame_number)
+        self.update()
+
+    def average_frames_in_interval_with_overlay(self) -> None:
+        """Replace the current label's points in the selected interval with the MEAN of the
+        current layer and the overlay.
+
+        Sibling of :meth:`copy_frames_in_interval_from_overlay` (``ctrl+alt+c``), which takes the
+        overlay wholesale. Averaging exists because the two filtered traces fail in complementary
+        ways: LK-RSTC is motion-aware but can re-track onto the wrong feature, while a
+        frequency-domain smoother never wanders but attenuates fast motion. Where neither is
+        right on its own, their mean often is -- so this gives a per-interval third option
+        without leaving the GUI.
+
+        Only frames present in BOTH layers are touched; a frame missing from either is left
+        alone rather than silently half-applied.
+        """
+        start_frame, end_frame = self.get_selected_interval()
+        if self._current_overlay is None:
+            return
+        ann_overlay = self.annotations[self._current_overlay]
+        label = self._current_label
+        if label not in ann_overlay.labels:
+            return
+        for frame_number in range(start_frame, end_frame + 1):
+            here = self.ann.data[label].get(frame_number, None)
+            there = ann_overlay.data[label].get(frame_number, None)
+            if here is not None and there is not None:
+                self.ann.add(
+                    [(here[0] + there[0]) / 2.0, (here[1] + there[1]) / 2.0],
+                    label,
+                    frame_number,
+                )
         self.update()
 
     def _add_annotation(
