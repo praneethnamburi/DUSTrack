@@ -3916,8 +3916,8 @@ class DUSTrack(VideoBrowser):
         )
         self.add_key_binding(
             "ctrl+g",
-            (lambda s: s.increment(2)).__get__(self),
-            "Next video frame x2 (skip every other frame -- faster scrubbing)",
+            self.increment_2x,
+            "Next video frame x2 (sequential-decode fast path)",
             group=sec3,
         )
 
@@ -4452,6 +4452,29 @@ class DUSTrack(VideoBrowser):
                 location = ann_overlay.data[label].get(frame_number, None)
                 if location is not None:
                     self.ann.add(location, label, frame_number)
+        self.update()
+
+    def increment_2x(self, event: "Any | None" = None) -> None:
+        """Advance two frames while keeping the decoder on its sequential fast path.
+
+        The video reader only has a fast path for the *immediately next* frame; any other index
+        triggers a seek + re-decode from the preceding keyframe. Measured on a COM h265 file:
+        329 reads/s sequential vs ~3/s for ANY jump -- stride 2 is as expensive as fully random
+        access. So the obvious ``increment(2)`` is *slower* than pressing the right arrow twice,
+        which is exactly what it felt like.
+
+        Touching the intermediate frame costs one cheap sequential decode and leaves the second
+        read on the fast path: measured 204 displayed-frames/s versus 16.7 for the naive jump.
+        The intermediate frame is decoded and discarded -- never rendered.
+        """
+        n = len(self)
+        nxt = min(self._current_idx + 1, n - 1)
+        if nxt != self._current_idx:
+            try:
+                _ = self.data[nxt]          # keep the decoder sequential; result discarded
+            except Exception:               # noqa: BLE001 -- never block navigation on a warm-up read
+                pass
+        self._current_idx = min(self._current_idx + 2, n - 1)
         self.update()
 
     def average_frames_in_interval_with_overlay(self) -> None:
