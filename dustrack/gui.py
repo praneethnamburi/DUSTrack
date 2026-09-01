@@ -3920,6 +3920,12 @@ class DUSTrack(VideoBrowser):
             "Next video frame x2 (sequential-decode fast path)",
             group=sec3,
         )
+        self.add_key_binding(
+            "ctrl+t",
+            self.increment_4x,
+            "Next video frame x4 (sequential-decode fast path)",
+            group=sec3,
+        )
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
         self.add_key_binding("s", self.save, "Save current annotation layer")
@@ -4454,28 +4460,38 @@ class DUSTrack(VideoBrowser):
                     self.ann.add(location, label, frame_number)
         self.update()
 
-    def increment_2x(self, event: "Any | None" = None) -> None:
-        """Advance two frames while keeping the decoder on its sequential fast path.
+    def increment_stepped(self, step: int, event: "Any | None" = None) -> None:
+        """Advance ``step`` frames while keeping the decoder on its sequential fast path.
 
         The video reader only has a fast path for the *immediately next* frame; any other index
         triggers a seek + re-decode from the preceding keyframe. Measured on a COM h265 file:
-        329 reads/s sequential vs ~3/s for ANY jump -- stride 2 is as expensive as fully random
-        access. So the obvious ``increment(2)`` is *slower* than pressing the right arrow twice,
-        which is exactly what it felt like.
+        329 reads/s sequential vs ~3/s for ANY jump -- even stride 2 is as expensive as fully
+        random access. So a plain ``increment(step)`` is *slower* than pressing the right arrow
+        ``step`` times.
 
-        Touching the intermediate frame costs one cheap sequential decode and leaves the second
-        read on the fast path: measured 204 displayed-frames/s versus 16.7 for the naive jump.
-        The intermediate frame is decoded and discarded -- never rendered.
+        Walking the intermediate frames costs ~3ms each (sequential) instead of ~280ms (seek),
+        so the displayed frame stays on the fast path: measured 204 displayed-frames/s versus
+        16.7 for the naive 2x jump. Intermediates are decoded and discarded -- never rendered.
         """
         n = len(self)
-        nxt = min(self._current_idx + 1, n - 1)
-        if nxt != self._current_idx:
+        for k in range(1, max(1, step)):
+            idx = self._current_idx + k
+            if idx >= n:
+                break
             try:
-                _ = self.data[nxt]          # keep the decoder sequential; result discarded
+                _ = self.data[idx]          # keep the decoder sequential; result discarded
             except Exception:               # noqa: BLE001 -- never block navigation on a warm-up read
-                pass
-        self._current_idx = min(self._current_idx + 2, n - 1)
+                break
+        self._current_idx = min(self._current_idx + max(1, step), n - 1)
         self.update()
+
+    def increment_2x(self, event: "Any | None" = None) -> None:
+        """Advance two frames (see :meth:`increment_stepped`)."""
+        self.increment_stepped(2)
+
+    def increment_4x(self, event: "Any | None" = None) -> None:
+        """Advance four frames (see :meth:`increment_stepped`)."""
+        self.increment_stepped(4)
 
     def average_frames_in_interval_with_overlay(self) -> None:
         """Replace the current label's points in the selected interval with the MEAN of the
