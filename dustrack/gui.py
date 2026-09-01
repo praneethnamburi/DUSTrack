@@ -3906,11 +3906,19 @@ class DUSTrack(VideoBrowser):
             "Copy annotations in selected interval from overlay",
             group=sec5c,
         )
+        # ctrl+f / ctrl+g: deliberately LEFT-HAND-ONLY, so the reviewing hand never leaves the
+        # mouse during a correction pass. (ctrl+alt+m was the first cut and needed both hands.)
         self.add_key_binding(
-            "ctrl+alt+m",
+            "ctrl+f",
             self.average_frames_in_interval_with_overlay,
             "Average current layer with overlay in selected interval (mean of the two)",
             group=sec5c,
+        )
+        self.add_key_binding(
+            "ctrl+g",
+            (lambda s: s.increment(2)).__get__(self),
+            "Next video frame x2 (skip every other frame -- faster scrubbing)",
+            group=sec3,
         )
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
