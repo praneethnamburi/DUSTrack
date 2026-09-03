@@ -4813,11 +4813,28 @@ class DUSTrack(VideoBrowser):
         return tracked_loc
 
     def get_selected_interval(self) -> "tuple[int, int]":
+        """Return the ``z``-selected ``(start_frame, end_frame)``, clamped to the video.
+
+        The picker rounds a click x-position to a frame number and applies no bounds check, so
+        dragging past either end of the trace yields a frame that does not exist -- most often
+        ``len(self)`` when selecting to the end, which is one past the last valid index. Every
+        consumer here trusts this pair: :meth:`lucas_kanade_interval` indexes the video with it,
+        and the interval averagers slice with it. An out-of-range endpoint therefore surfaces as
+        an IndexError from deep inside a filter rather than as "your selection ran off the end".
+
+        Clamping at this single choke point fixes all seven call sites at once. Selecting past
+        the end now means "to the last frame", which is what the gesture already looks like.
+        """
         start_frame, end_frame = (
             self.events["interp_with_lk"]
             ._data[(Path(self.fname).stem, self._current_layer, self._current_label)]
             .get_times()[-1]
         )
+        last = len(self) - 1
+        start_frame = int(min(max(int(start_frame), 0), last))
+        end_frame = int(min(max(int(end_frame), 0), last))
+        if start_frame > end_frame:
+            start_frame, end_frame = end_frame, start_frame
         return start_frame, end_frame
 
     def remove_labels_in_interval(self, all_labels: bool = False) -> None:
