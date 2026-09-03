@@ -3926,6 +3926,23 @@ class DUSTrack(VideoBrowser):
             "Next video frame x4 (sequential-decode fast path)",
             group=sec3,
         )
+        # x8/x16 for near-stationary stretches, where every frame looks the same and x4 is still
+        # too slow to cross them. Left-hand reachable like the rest of the correction-pass keys.
+        # These stay on the walk-the-intermediates path: a stride-16 SEEK decodes at ~3 frames/s
+        # while sequential reads run at ~329/s, so walking 16 and showing the last is ~20 displayed
+        # frames/s (~320 video-frames/s of travel) where seeking would be ~3.
+        self.add_key_binding(
+            "ctrl+r",
+            self.increment_8x,
+            "Next video frame x8 (sequential-decode fast path)",
+            group=sec3,
+        )
+        self.add_key_binding(
+            "ctrl+e",
+            self.increment_16x,
+            "Next video frame x16 (sequential-decode fast path)",
+            group=sec3,
+        )
 
         # Bindings not depicted on the docs PNG -- fall through to "Other".
         self.add_key_binding("s", self.save, "Save current annotation layer")
@@ -4492,6 +4509,14 @@ class DUSTrack(VideoBrowser):
     def increment_4x(self, event: "Any | None" = None) -> None:
         """Advance four frames (see :meth:`increment_stepped`)."""
         self.increment_stepped(4)
+
+    def increment_8x(self, event: "Any | None" = None) -> None:
+        """Advance eight frames (see :meth:`increment_stepped`)."""
+        self.increment_stepped(8)
+
+    def increment_16x(self, event: "Any | None" = None) -> None:
+        """Advance sixteen frames (see :meth:`increment_stepped`)."""
+        self.increment_stepped(16)
 
     def average_frames_in_interval_with_overlay(self) -> None:
         """Replace the current label's points in the selected interval with the MEAN of the
