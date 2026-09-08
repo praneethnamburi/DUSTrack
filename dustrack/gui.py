@@ -628,6 +628,7 @@ class DUSTrack(VideoBrowser):
         # before losing in-memory annotation diffs. The Train pre-flight
         # already catches this path; this hook covers every other way
         # the window can close (X button, alt-F4, plt.close()).
+        self._disable_mpl_quit_keys()
         self._install_close_guard()
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
@@ -1571,6 +1572,28 @@ class DUSTrack(VideoBrowser):
         See :func:`._close_guard.scan_unsaved_layers_all_bundles`.
         """
         return _close_guard.scan_unsaved_layers_all_bundles(self._bundles)
+
+    def _disable_mpl_quit_keys(self) -> None:
+        """Stop matplotlib's built-in quit shortcuts from tearing down the figure.
+
+        ``rcParams["keymap.quit"]`` defaults to ``['ctrl+w', 'cmd+w', 'q']``. DUSTrack binds
+        ``q`` itself, but nothing binds ``ctrl+w`` -- so a stray ctrl+w during a correction pass
+        starts matplotlib's teardown. The close guard then interrupts it with the unsaved-changes
+        modal, and choosing Discard leaves a window that survived a partial teardown: the canvas
+        no longer gets idle repaints, so the frame marker and ``z z`` span stop rendering until a
+        mouse click forces a paintEvent. Reported from a live session, and it costs the reviewer
+        their place in a file.
+
+        An annotation tool should not be one keystroke from quitting. The window still closes via
+        the X button, which routes through the close guard properly.
+        """
+        try:
+            import matplotlib as _mpl
+            for _k in ("keymap.quit", "keymap.quit_all"):
+                if _k in _mpl.rcParams:
+                    _mpl.rcParams[_k] = []
+        except Exception:  # noqa: BLE001
+            pass
 
     def _install_close_guard(self) -> None:
         """Install the QMainWindow closeEvent hook.
@@ -3085,10 +3108,19 @@ class DUSTrack(VideoBrowser):
         # whether (a) ``draw_idle`` is being scheduled but never
         # delivered, or (b) ``set_data`` is not setting stale=True
         # after the first paint cycle.
-        # try:
-        #     self.figure.canvas.update()
-        # except Exception:  # noqa: BLE001
-        #     pass
+        # Step (1) was left commented out in the 1.2.0rc1 extraction, which disabled the repair
+        # this comment describes: ``flush_events`` only DRAINS posted events, so with nothing
+        # posted there is nothing to drain and the pane stays stale until some unrelated Qt event
+        # (mouse click, alt-tab, modal) delivers a paintEvent. Reported from a live session:
+        # after an accidental ctrl+w -> unsaved modal -> Discard, neither the frame marker nor the
+        # ``z z`` span rendered until the canvas was clicked.
+        #
+        # Re-enabled. ``QWidget.update()`` is cheap and Qt COALESCES repeated calls into a single
+        # paintEvent, so holding a stepping key does not multiply repaints.
+        try:
+            self.figure.canvas.update()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.figure.canvas.flush_events()
         except Exception:  # noqa: BLE001
