@@ -4813,20 +4813,45 @@ class DUSTrack(VideoBrowser):
             return
 
         def _tick():
+            """Snapshot on the GUI thread (fast), serialise and write on a worker (slow).
+
+            Serialising ~130k points and pushing ~6.5 MB over SMB takes seconds. Doing that in the
+            timer callback would freeze the window every interval -- unusable on a large file, and
+            a worse trade than the crash it protects against. So the GUI thread only takes a
+            shallow copy of the per-label dicts (tens of ms), and the encode + write happen off
+            the event loop.
+
+            The snapshot must be taken on the GUI thread: copying while the user is placing points
+            would otherwise capture a half-mutated state.
+            """
             try:
-                import json  # noqa: PLC0415  -- local: gui.py has no module-level json import
+                import threading  # noqa: PLC0415
+                if getattr(self, "_autosave_busy", False):
+                    return                                   # previous write still going; skip
                 ann = self.ann
                 fname = getattr(ann, "fname", None)
                 if not fname or Path(fname).suffix.lower() != ".json":
                     return
+                snap = {k: dict(d) for k, d in ann.data.items()}   # fast, consistent
                 dst = Path(fname).with_suffix(".autosave.json")
-                data = {k: {str(f): [float(v[0]), float(v[1])] for f, v in d.items()}
-                        for k, d in ann.data.items()}
-                tmp = dst.with_suffix(".tmp")
-                tmp.write_text(json.dumps(data))
-                tmp.replace(dst)                      # atomic: never a half-written autosave
+                self._autosave_busy = True
+
+                def _write():
+                    try:
+                        import json  # noqa: PLC0415
+                        payload = {k: {str(f): [float(v[0]), float(v[1])] for f, v in d.items()}
+                                   for k, d in snap.items()}
+                        tmp = dst.with_suffix(".tmp")
+                        tmp.write_text(json.dumps(payload))
+                        tmp.replace(dst)                     # atomic: never a half-written file
+                    except Exception:  # noqa: BLE001
+                        pass
+                    finally:
+                        self._autosave_busy = False
+
+                threading.Thread(target=_write, name="dustrack-autosave", daemon=True).start()
             except Exception:  # noqa: BLE001
-                pass
+                self._autosave_busy = False
 
         t = QtCore.QTimer(qt_window)
         t.timeout.connect(_tick)
