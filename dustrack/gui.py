@@ -630,6 +630,7 @@ class DUSTrack(VideoBrowser):
         # the window can close (X button, alt-F4, plt.close()).
         self._disable_mpl_quit_keys()
         self._install_close_guard()
+        self._install_autosave()
 
         self.statevariables._text._pos = dnav.utils._parse_pos("bottom left")
 
@@ -4782,6 +4783,56 @@ class DUSTrack(VideoBrowser):
             )
             return
         self.ann.save()
+
+    # ------------------------------------------------------------------
+    # Crash insurance
+    # ------------------------------------------------------------------
+    def _install_autosave(self, minutes: float = 5.0) -> None:
+        """Periodically snapshot the editable layer to ``<layer>.autosave.json``.
+
+        A correction pass is long and the edits live only in memory until the user presses ``s``.
+        On 2026-09-10 python.exe died with 0xC00000FD (stack overflow) inside OpenBLAS after ~45
+        minutes of work on a 65k-frame file, and every edit was lost -- the layer on disk was
+        byte-identical to the seed it was built from.
+
+        Writes a SEPARATE file rather than the layer itself: silently rewriting the working file
+        would change what "saved" means and could surprise someone mid-edit. Recovery is an
+        explicit copy of the autosave over the layer.
+
+        Best-effort throughout -- autosave must never be able to take the session down.
+        """
+        try:
+            from PySide6 import QtCore  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            try:
+                from PyQt5 import QtCore  # noqa: PLC0415
+            except Exception:  # noqa: BLE001
+                return
+        qt_window = self._find_qt_window()
+        if qt_window is None or getattr(self, "_autosave_timer", None) is not None:
+            return
+
+        def _tick():
+            try:
+                import json  # noqa: PLC0415  -- local: gui.py has no module-level json import
+                ann = self.ann
+                fname = getattr(ann, "fname", None)
+                if not fname or Path(fname).suffix.lower() != ".json":
+                    return
+                dst = Path(fname).with_suffix(".autosave.json")
+                data = {k: {str(f): [float(v[0]), float(v[1])] for f, v in d.items()}
+                        for k, d in ann.data.items()}
+                tmp = dst.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data))
+                tmp.replace(dst)                      # atomic: never a half-written autosave
+            except Exception:  # noqa: BLE001
+                pass
+
+        t = QtCore.QTimer(qt_window)
+        t.timeout.connect(_tick)
+        t.start(int(minutes * 60_000))
+        self._autosave_timer = t
+        print(f"[autosave] every {minutes:g} min -> <layer>.autosave.json")
 
     def select_label_with_mouse(self, event: Any) -> None:
         """Select a label by clicking on it with the left mousebutton."""
