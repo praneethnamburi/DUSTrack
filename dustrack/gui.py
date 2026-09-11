@@ -3947,6 +3947,21 @@ class DUSTrack(VideoBrowser):
             "Average current layer with overlay in selected interval (mean of the two)",
             group=sec5c,
         )
+        # alt+f sits under the same finger as its sibling ctrl+f: both take a z-selected interval
+        # and replace it with a smoother version of itself. alt+d steps the aggressiveness back
+        # down, so the pair is explorable rather than one-way.
+        self.add_key_binding(
+            "alt+f",
+            self.lowpass_interval,
+            "Low-pass current layer in selected interval (press again = more aggressive)",
+            group=sec5c,
+        )
+        self.add_key_binding(
+            "alt+d",
+            lambda: self.lowpass_interval(step=-1),
+            "Step the alt+f low-pass back down a level (level 0 = original)",
+            group=sec5c,
+        )
         self.add_key_binding(
             "ctrl+g",
             self.increment_2x,
@@ -4582,6 +4597,123 @@ class DUSTrack(VideoBrowser):
                     frame_number,
                 )
         self.update()
+
+    #: Cutoff PERIOD in frames for each successive ``alt+f``: a press removes wobble repeating
+    #: faster than this. Geometric (~1.6x) so every press is a visible step rather than a shade,
+    #: spanning ~33Hz to ~1Hz at 165fps -- "just take the jitter off" through "flatten to trend".
+    _LOWPASS_LADDER = (5, 8, 13, 21, 34, 55, 89, 144)
+
+    def lowpass_interval(self, step: int = 1) -> None:
+        """Low-pass the current label in the ``z``-selected interval; press again to go harder.
+
+        Escalation re-filters the ORIGINAL track at a lower cutoff -- it does NOT filter the
+        already-filtered result. Cascading would make the effective cutoff a function of how many
+        times a key got pressed: unreproducible, unloggable, and impossible to step back from. This
+        way level N always means one stated cutoff, every level is reachable from every other, and
+        ``alt+d`` walks back down -- level 0 being the untouched track, so the gesture is safe to
+        explore with.
+
+        The filter is a symmetric FIR, so it is linear-phase by construction: a smoothed stretch
+        stays time-aligned with the video instead of lagging the motion it describes. Levels whose
+        window is too wide for the selection are not offered -- see the clamp below.
+
+        Context outside the selection is fed to the filter but never written back, and the first
+        and last few frames crossfade from the original, so the smoothed stretch joins its
+        neighbours continuously. Without that, a hard edge leaves a step at each end -- and a step
+        is exactly what the blip metric counts as a real one-frame excursion, so a careless
+        implementation would manufacture the artefact this is meant to remove.
+        """
+        label = self._current_label
+        if label not in self.ann.data:
+            return
+        start, end = self.get_selected_interval()
+        key = (str(self.fname), self._current_layer, label, start, end)
+        st = getattr(self, "_lowpass_state", None)
+        if st is None or st["key"] != key:
+            # Snapshot the pristine interval ONCE per selection; every level re-filters from it.
+            src = self.ann.data[label]
+            st = {"key": key, "level": 0,
+                  "original": {f: list(src[f]) for f in range(start, end + 1) if f in src}}
+            self._lowpass_state = st
+        if not st["original"]:
+            return
+        # A level is only offered if two full cycles of its cutoff period fit inside the selection.
+        # Past that the window is wider than the thing being filtered, so the result is a trend
+        # drawn mostly from OUTSIDE the selection -- measured on a 61-frame interval, the top
+        # levels made it demonstrably rougher, not smoother (rms|dd| 0.005 -> 0.018). Clamping
+        # turns that into a visible ceiling instead of a silent degradation.
+        n_sel = end - start + 1
+        top = max(1, sum(1 for p in self._LOWPASS_LADDER if 2 * p <= n_sel))
+        level = max(0, min(top, st["level"] + step))
+        st["level"] = level
+        for frame_number, xy in st["original"].items():      # always restore, then filter once
+            self.ann.add(list(xy), label, frame_number)
+        if level:
+            self._lowpass_apply(label, start, end, self._LOWPASS_LADDER[level - 1], st["original"])
+        note = (f"lowpass L{level}/{top} ({self._LOWPASS_LADDER[level - 1]}-frame window"
+                f"{', max for this selection' if level == top < len(self._LOWPASS_LADDER) else ''})"
+                if level else "lowpass off (original)")
+        print(f"[{start}-{end}] {label}: {note}", flush=True)
+        try:
+            w = self._find_qt_window()
+            base = w.windowTitle().split("   |   ")[0]
+            w.setWindowTitle(f"{base}   |   {note}")
+        except Exception:
+            pass
+        self.update()
+
+    def _lowpass_apply(self, label, start, end, period, original) -> None:
+        """Write a linear-phase FIR low-pass over ``[start, end]``, crossfaded at the ends.
+
+        FIR rather than IIR because the support is EXACTLY known: a ``2*period+1`` Hann-windowed
+        sinc reads ``period`` frames either side of the selection and not one more. That matters
+        here in a way it would not in a batch filter -- the reviewer is filtering a hand-picked
+        window, so "which frames influenced this edit" has to be answerable, and with an IIR the
+        honest answer is "all of them, decaying". It also sidesteps the conditioning question at
+        the low-cutoff end of the ladder entirely, since a windowed sinc has no poles.
+
+        The cost objection to FIR (taps grow as the cutoff falls) does not bite at this scale:
+        the widest rung is 289 taps over a few thousand frames, measured in single-digit ms.
+        """
+        import numpy as np
+        from scipy.signal import firwin
+
+        src = self.ann.data[label]
+        taps = firwin(2 * period + 1, 1.0 / period, window="hann", fs=1.0)
+        half = len(taps) // 2                    # exact, bounded context -- no decaying tail
+        idx = np.arange(start - half, end + half + 1)
+        last = len(self) - 1
+        xy = np.full((idx.size, 2), np.nan)
+        for i, frame_number in enumerate(idx):
+            if 0 <= frame_number <= last:
+                point = src.get(int(frame_number))
+                if point is not None:
+                    xy[i] = point
+        have = ~np.isnan(xy[:, 0])
+        if have.sum() < 8:
+            return                                # too little signal to filter meaningfully
+        # Bridge gaps, and hold the end value past the video boundary, so the convolution is fed a
+        # continuous signal. Neither the gaps nor the out-of-range frames are ever written back.
+        for c in (0, 1):
+            xy[:, c] = np.interp(idx, idx[have], xy[have, c])
+        smoothed = np.stack([np.convolve(xy[:, c], taps, mode="same") for c in (0, 1)], axis=1)
+        lo = idx[0]
+        n = end - start + 1
+        weight = np.ones(n)
+        # Ramp capped at 20 frames. Letting it scale with the period meant the top of the ladder
+        # crossfaded 48 frames at each end -- ~24% of a 400-frame selection left partly unfiltered,
+        # so the last press came out LESS smooth than the one before it. 20 frames is ample for
+        # continuity (worst measured edge step +0.055px) and bounds what the ramp gives back.
+        k = int(min(n // 4, max(3, min(period // 3, 20))))
+        if k > 0:
+            ramp = 0.5 * (1 - np.cos(np.linspace(0, np.pi, k + 2)[1:-1]))
+            weight[:k], weight[-k:] = ramp, ramp[::-1]
+        for j, frame_number in enumerate(range(start, end + 1)):
+            if frame_number not in original:      # never invent a frame that was missing
+                continue
+            point = np.asarray(original[frame_number], dtype=float)
+            blended = point + weight[j] * (smoothed[frame_number - lo] - point)
+            self.ann.add([float(blended[0]), float(blended[1])], label, int(frame_number))
 
     def _add_annotation(
         self,
